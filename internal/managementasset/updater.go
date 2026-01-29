@@ -204,6 +204,17 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	if _, errStat := os.Stat(localPath); errStat != nil {
 		if errors.Is(errStat, os.ErrNotExist) {
 			localFileMissing = true
+			// Try to use embedded asset immediately if local file is missing
+			if embeddedData := GetEmbeddedManagementHTML(); len(embeddedData) > 0 {
+				if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll == nil {
+					if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
+						sum := sha256.Sum256(embeddedData)
+						embeddedHash := hex.EncodeToString(sum[:])
+						log.Infof("management asset initialized from embedded asset (hash=%s)", embeddedHash)
+						localFileMissing = false
+					}
+				}
+			}
 		} else {
 			log.WithError(errStat).Debug("failed to stat local management asset")
 		}
@@ -281,6 +292,19 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
+	// Try embedded asset first (local development/customization)
+	if embeddedData := GetEmbeddedManagementHTML(); len(embeddedData) > 0 {
+		if err := atomicWriteFile(localPath, embeddedData); err != nil {
+			log.WithError(err).Warn("failed to persist embedded management control panel page")
+		} else {
+			sum := sha256.Sum256(embeddedData)
+			embeddedHash := hex.EncodeToString(sum[:])
+			log.Infof("management asset updated from embedded asset successfully (hash=%s)", embeddedHash)
+			return true
+		}
+	}
+
+	// Fallback to remote URL
 	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
