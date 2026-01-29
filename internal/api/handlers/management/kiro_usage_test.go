@@ -3,7 +3,9 @@ package management
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -112,5 +114,40 @@ func TestExtractKiroEmail_Nil(t *testing.T) {
 	email := extractKiroEmail(nil)
 	if email != "" {
 		t.Errorf("expected empty string for nil auth")
+	}
+}
+
+func TestParseKiroResetTime_Seconds(t *testing.T) {
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	resetTime := now.Add(48 * time.Hour)
+	resetStr := strconv.FormatInt(resetTime.Unix(), 10)
+
+	days, nextDate := parseKiroResetTime(resetStr, now)
+	if days != 2 {
+		t.Fatalf("expected days_until 2, got %d", days)
+	}
+	if nextDate != resetTime.Format(time.RFC3339) {
+		t.Fatalf("expected next_date %q, got %q", resetTime.Format(time.RFC3339), nextDate)
+	}
+}
+
+func TestParseKiroResetTime_Milliseconds(t *testing.T) {
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	resetTime := now.Add(72 * time.Hour)
+	resetStr := strconv.FormatInt(resetTime.UnixMilli(), 10)
+
+	days, nextDate := parseKiroResetTime(resetStr, now)
+	if days != 3 {
+		t.Fatalf("expected days_until 3, got %d", days)
+	}
+	if nextDate != resetTime.Format(time.RFC3339) {
+		t.Fatalf("expected next_date %q, got %q", resetTime.Format(time.RFC3339), nextDate)
+	}
+}
+
+func TestParseKiroResetTime_Invalid(t *testing.T) {
+	dayCount, nextDate := parseKiroResetTime("not-a-number", time.Unix(0, 0))
+	if dayCount != 0 || nextDate != "" {
+		t.Fatalf("expected empty parse result, got days=%d date=%q", dayCount, nextDate)
 	}
 }

@@ -89,15 +89,7 @@ func (h *Handler) GetKiroUsage(c *gin.Context) {
 		percentage = (usageInfo.CurrentUsage / usageInfo.UsageLimit) * 100
 	}
 
-	var daysUntilReset int
-	var nextResetDate string
-	if strings.TrimSpace(usageInfo.NextReset) != "" {
-		if ts, err := strconv.ParseFloat(usageInfo.NextReset, 64); err == nil && ts > 0 {
-			resetTime := time.Unix(int64(ts), 0)
-			daysUntilReset = int(time.Until(resetTime).Hours() / 24)
-			nextResetDate = resetTime.Format(time.RFC3339)
-		}
-	}
+	daysUntilReset, nextResetDate := parseKiroResetTime(usageInfo.NextReset, time.Now())
 
 	email := extractKiroEmail(auth)
 
@@ -174,4 +166,24 @@ func extractKiroEmail(auth *coreauth.Auth) string {
 	}
 
 	return ""
+}
+
+func parseKiroResetTime(raw string, now time.Time) (daysUntilReset int, nextResetDate string) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, ""
+	}
+	ts, err := strconv.ParseFloat(raw, 64)
+	if err != nil || ts <= 0 {
+		return 0, ""
+	}
+	if ts > 1e12 {
+		ts = ts / 1000
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	resetTime := time.Unix(int64(ts), 0).UTC()
+	daysUntilReset = int(resetTime.Sub(now).Hours() / 24)
+	nextResetDate = resetTime.Format(time.RFC3339)
+	return daysUntilReset, nextResetDate
 }
