@@ -34,3 +34,7 @@ bin/*
 .bmad/*
 _bmad/*
 _bmad-output/*
+
+# Frontend build artifacts (will be built in Docker)
+web/node_modules/*
+web/dist/*

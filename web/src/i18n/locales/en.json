@@ -324,7 +324,20 @@
     "openai_test_success": "Test succeeded. The model responded.",
     "openai_test_failed": "Test failed",
     "openai_test_select_placeholder": "Choose from current models",
-    "openai_test_select_empty": "No models configured. Add models first"
+    "openai_test_select_empty": "No models configured. Add models first",
+    "kiro_title": "Kiro",
+    "kiro_empty_title": "No Kiro Accounts",
+    "kiro_empty_desc": "Go to OAuth page to authorize Kiro accounts",
+    "kiro_go_auth": "Go to Authorize",
+    "kiro_subscription": "Subscription",
+    "kiro_usage": "Usage",
+    "kiro_reset": "Resets in",
+    "kiro_days": "days",
+    "kiro_delete_title": "Delete Kiro Account",
+    "kiro_delete_confirm": "Are you sure you want to delete this Kiro account?",
+    "kiro_usage_loading": "Loading usage...",
+    "kiro_usage_error": "Failed to load usage",
+    "kiro_retry": "Retry"
   },
   "auth_files": {
     "title": "Auth Files Management",
@@ -909,7 +922,8 @@
     "gemini_api_key": "Gemini API key",
     "codex_api_key": "Codex API key",
     "claude_api_key": "Claude API key",
-    "link_copied": "Link copied to clipboard"
+    "link_copied": "Link copied to clipboard",
+    "kiro_deleted": "Kiro account deleted"
   },
   "language": {
     "switch": "Language",

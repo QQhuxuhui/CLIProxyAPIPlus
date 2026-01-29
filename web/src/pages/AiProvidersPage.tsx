@@ -6,6 +6,7 @@ import {
   ClaudeSection,
   CodexSection,
   GeminiSection,
+  KiroSection,
   OpenAISection,
   VertexSection,
   useProviderStats,
@@ -20,9 +21,9 @@ import {
   withDisableAllModelsRule,
   withoutDisableAllModelsRule,
 } from '@/components/providers/utils';
-import { ampcodeApi, providersApi } from '@/services/api';
+import { ampcodeApi, providersApi, authFilesApi, kiroApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore, useThemeStore } from '@/stores';
-import type { GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
+import type { GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig, KiroAccount } from '@/types';
 import { buildHeaderObject } from '@/utils/headers';
 import styles from './AiProvidersPage.module.scss';
 
@@ -45,6 +46,9 @@ export function AiProvidersPage() {
   const [claudeConfigs, setClaudeConfigs] = useState<ProviderKeyConfig[]>([]);
   const [vertexConfigs, setVertexConfigs] = useState<ProviderKeyConfig[]>([]);
   const [openaiProviders, setOpenaiProviders] = useState<OpenAIProviderConfig[]>([]);
+  const [kiroAccounts, setKiroAccounts] = useState<KiroAccount[]>([]);
+  const [kiroLoading, setKiroLoading] = useState(false);
+  const [kiroError, setKiroError] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [configSwitchingKey, setConfigSwitchingKey] = useState<string | null>(null);
@@ -101,10 +105,172 @@ export function AiProvidersPage() {
     }
   }, [clearCache, fetchConfig, t, updateConfigValue]);
 
+  const loadKiroAccounts = useCallback(async () => {
+    setKiroLoading(true);
+    setKiroError(null);
+    try {
+      const authFilesResult = await authFilesApi.list();
+      const kiroFiles = (authFilesResult.files || []).filter((file) => {
+        const rawAuthIndex = file['auth_index'] ?? file.authIndex;
+        return file.provider?.toLowerCase() === 'kiro' && rawAuthIndex != null;
+      });
+
+      const accounts: KiroAccount[] = kiroFiles.map((file) => ({
+        name: file.name,
+        authIndex: String(file['auth_index'] ?? file.authIndex),
+        loading: true,
+      }));
+
+      setKiroAccounts(accounts);
+
+      // Load usage for all accounts in parallel, keeping authIndex for error cases
+      const usagePromises = accounts.map((account) =>
+        kiroApi
+          .getUsage(account.authIndex)
+          .then((result) => ({ authIndex: account.authIndex, status: 'fulfilled' as const, result }))
+          .catch((err) => ({
+            authIndex: account.authIndex,
+            status: 'rejected' as const,
+            error: getErrorMessage(err) || 'Unknown error',
+          }))
+      );
+      const results = await Promise.all(usagePromises);
+
+      // Build a map of authIndex -> result for safe matching
+      const resultMap = new Map<string, (typeof results)[number]>();
+      results.forEach((entry) => {
+        resultMap.set(entry.authIndex, entry);
+      });
+
+      setKiroAccounts((prev) =>
+        prev.map((acc) => {
+          const entry = resultMap.get(acc.authIndex);
+          if (!entry) {
+            // No result for this account (maybe added during request)
+            return acc;
+          }
+          if (entry.status === 'rejected') {
+            return { ...acc, loading: false, error: entry.error || 'Unknown error' };
+          }
+          const usageResult = entry.result;
+          if (usageResult.success && usageResult.data) {
+            const { email, subscription, usage, reset } = usageResult.data;
+            return {
+              ...acc,
+              email,
+              subscription,
+              usage: {
+                current: usage.current,
+                limit: usage.limit,
+                percentage: usage.percentage,
+              },
+              reset: {
+                daysUntil: reset.days_until,
+                nextDate: reset.next_date,
+              },
+              loading: false,
+              error: undefined,
+            };
+          } else {
+            return { ...acc, loading: false, error: usageResult.error || 'Unknown error' };
+          }
+        })
+      );
+    } catch (err: unknown) {
+      const message = getErrorMessage(err) || t('notification.refresh_failed');
+      setKiroError(message);
+      setKiroAccounts([]);
+    } finally {
+      setKiroLoading(false);
+    }
+  }, [t]);
+
+  const retryKiroUsage = useCallback(async (index: number) => {
+    const account = kiroAccounts[index];
+    if (!account) return;
+    const { authIndex } = account;
+
+    setKiroAccounts((prev) =>
+      prev.map((acc) => (acc.authIndex === authIndex ? { ...acc, loading: true, error: undefined } : acc))
+    );
+
+    try {
+      const usageResult = await kiroApi.getUsage(account.authIndex);
+      if (usageResult.success && usageResult.data) {
+        const { email, subscription, usage, reset } = usageResult.data;
+        setKiroAccounts((prev) =>
+          prev.map((acc) =>
+            acc.authIndex === authIndex
+              ? {
+                  ...acc,
+                  email,
+                  subscription,
+                  usage: {
+                    current: usage.current,
+                    limit: usage.limit,
+                    percentage: usage.percentage,
+                  },
+                  reset: {
+                    daysUntil: reset.days_until,
+                    nextDate: reset.next_date,
+                  },
+                  loading: false,
+                  error: undefined,
+                }
+              : acc
+          )
+        );
+      } else {
+        setKiroAccounts((prev) =>
+          prev.map((acc) =>
+            acc.authIndex === authIndex
+              ? { ...acc, loading: false, error: usageResult.error || 'Unknown error' }
+              : acc
+          )
+        );
+      }
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      setKiroAccounts((prev) =>
+        prev.map((acc) =>
+          acc.authIndex === authIndex ? { ...acc, loading: false, error: message } : acc
+        )
+      );
+    }
+  }, [kiroAccounts]);
+
+  const deleteKiroAccount = async (index: number) => {
+    const account = kiroAccounts[index];
+    if (!account || account.deleting) return;
+    showConfirmation({
+      title: t('ai_providers.kiro_delete_title'),
+      message: t('ai_providers.kiro_delete_confirm'),
+      variant: 'danger',
+      confirmText: t('common.confirm'),
+      onConfirm: async () => {
+        setKiroAccounts((prev) =>
+          prev.map((acc, idx) => (idx === index ? { ...acc, deleting: true } : acc))
+        );
+        try {
+          await authFilesApi.deleteFile(account.name);
+          setKiroAccounts((prev) => prev.filter((_, idx) => idx !== index));
+          showNotification(t('notification.kiro_deleted'), 'success');
+        } catch (err: unknown) {
+          const message = getErrorMessage(err);
+          setKiroAccounts((prev) =>
+            prev.map((acc, idx) => (idx === index ? { ...acc, deleting: false } : acc))
+          );
+          showNotification(`${t('notification.delete_failed')}: ${message}`, 'error');
+        }
+      },
+    });
+  };
+
   useEffect(() => {
     loadConfigs();
     loadKeyStats();
-  }, [loadConfigs, loadKeyStats]);
+    loadKiroAccounts();
+  }, [loadConfigs, loadKeyStats, loadKiroAccounts]);
 
   useEffect(() => {
     if (config?.geminiApiKeys) setGeminiKeys(config.geminiApiKeys);
@@ -592,6 +758,16 @@ export function AiProvidersPage() {
           onToggle={(index, enabled) => void setConfigEnabled('claude', index, enabled)}
           onCloseModal={closeModal}
           onSave={(form, editIndex) => saveProvider('claude', form, editIndex)}
+        />
+
+        <KiroSection
+          accounts={kiroAccounts}
+          loading={kiroLoading}
+          error={kiroError}
+          disableControls={disableControls}
+          onDelete={deleteKiroAccount}
+          onRetryUsage={retryKiroUsage}
+          onRetryLoad={loadKiroAccounts}
         />
 
         <VertexSection

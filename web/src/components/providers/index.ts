@@ -2,6 +2,7 @@ export { AmpcodeSection } from './AmpcodeSection';
 export { ClaudeSection } from './ClaudeSection';
 export { CodexSection } from './CodexSection';
 export { GeminiSection } from './GeminiSection';
+export { KiroSection } from './KiroSection';
 export { OpenAISection } from './OpenAISection';
 export { VertexSection } from './VertexSection';
 export { ProviderList } from './ProviderList';

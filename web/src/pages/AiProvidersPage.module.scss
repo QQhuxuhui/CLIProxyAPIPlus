@@ -470,6 +470,24 @@
   background: var(--failure-badge-bg, #fee2e2);
 }
 
+// Kiro 用量进度条
+.usageBarContainer {
+  width: 100%;
+  max-width: 280px;
+  height: 8px;
+  background: var(--bg-tertiary, #e5e7eb);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.usageBar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
 // 暗色主题适配
 :global([data-theme='dark']) {
   .headerBadge {

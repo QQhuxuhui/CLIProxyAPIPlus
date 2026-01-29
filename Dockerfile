@@ -1,3 +1,18 @@
+# Stage 1: Build frontend
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app/web
+
+# Copy package files first for better caching
+COPY web/package*.json ./
+
+RUN npm ci
+
+COPY web/ ./
+
+RUN npm run build
+
+# Stage 2: Build backend
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
@@ -10,12 +25,16 @@ RUN go mod download
 
 COPY . .
 
+# Copy built frontend from frontend-builder
+COPY --from=frontend-builder /app/web/dist/index.html ./internal/managementasset/static/management.html
+
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X 'main.Version=${VERSION}-plus' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPIPlus ./cmd/server/
 
+# Stage 3: Runtime
 FROM alpine:3.22.0
 
 RUN apk add --no-cache tzdata
