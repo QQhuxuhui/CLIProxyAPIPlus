@@ -51,6 +51,18 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
+  server: {
+    proxy: {
+      '/v0/management': 'http://localhost:8080',
+      '/v1': 'http://localhost:8080',
+      '/anthropic': 'http://localhost:8080',
+      '/codex': 'http://localhost:8080',
+      '/google': 'http://localhost:8080',
+      '/kiro': 'http://localhost:8080',
+      '/iflow': 'http://localhost:8080',
+      '/antigravity': 'http://localhost:8080'
+    }
+  },
   css: {
     modules: {
       localsConvention: 'camelCase',
