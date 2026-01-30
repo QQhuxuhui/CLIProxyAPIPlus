@@ -839,6 +839,11 @@ func (h *OAuthWebHandler) handleImportToken(c *gin.Context) {
 	tokenData.AuthMethod = "social"
 	tokenData.Provider = "imported"
 
+	// Extract email from JWT access token for unique filename generation
+	if tokenData.Email == "" {
+		tokenData.Email = ExtractEmailFromJWT(tokenData.AccessToken)
+	}
+
 	// Save token to file first
 	if err := h.saveTokenToFile(tokenData); err != nil {
 		log.Errorf("OAuth Web: failed to save imported token: %v", err)
