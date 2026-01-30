@@ -57,13 +57,14 @@ type webAuthSession struct {
 	startURL         string // Used for IDC
 	codeVerifier     string // Used for social auth PKCE
 	codeChallenge    string // Used for social auth PKCE
+	managementState  string // State from management API for session tracking
 }
 
 type OAuthWebHandler struct {
 	cfg              *config.Config
 	sessions         map[string]*webAuthSession
 	mu               sync.RWMutex
-	onTokenObtained  func(*KiroTokenData)
+	onTokenObtained  func(*KiroTokenData, string) // callback with token data and management state
 }
 
 func NewOAuthWebHandler(cfg *config.Config) *OAuthWebHandler {
@@ -73,7 +74,7 @@ func NewOAuthWebHandler(cfg *config.Config) *OAuthWebHandler {
 	}
 }
 
-func (h *OAuthWebHandler) SetTokenCallback(callback func(*KiroTokenData)) {
+func (h *OAuthWebHandler) SetTokenCallback(callback func(*KiroTokenData, string)) {
 	h.onTokenObtained = callback
 }
 
@@ -99,14 +100,21 @@ func generateStateID() (string, error) {
 }
 
 func (h *OAuthWebHandler) handleSelect(c *gin.Context) {
-	h.renderSelectPage(c)
+	// Pass management state to the template so it can be included in start links
+	managementState := c.Query("state")
+	h.renderSelectPage(c, managementState)
 }
 
 func (h *OAuthWebHandler) handleStart(c *gin.Context) {
 	method := c.Query("method")
-	
+	managementState := c.Query("state") // Management API state for session tracking
+
 	if method == "" {
-		c.Redirect(http.StatusFound, "/v0/oauth/kiro")
+		redirectURL := "/v0/oauth/kiro"
+		if managementState != "" {
+			redirectURL += "?state=" + managementState
+		}
+		c.Redirect(http.StatusFound, redirectURL)
 		return
 	}
 
@@ -116,9 +124,9 @@ func (h *OAuthWebHandler) handleStart(c *gin.Context) {
 		// due to AWS Cognito redirect_uri restrictions
 		h.renderError(c, "Google/GitHub login is not available for third-party applications. Please use AWS Builder ID or import your token from Kiro IDE.")
 	case "builder-id":
-		h.startBuilderIDAuth(c)
+		h.startBuilderIDAuth(c, managementState)
 	case "idc":
-		h.startIDCAuth(c)
+		h.startIDCAuth(c, managementState)
 	default:
 		h.renderError(c, fmt.Sprintf("Unknown authentication method: %s", method))
 	}
@@ -189,7 +197,7 @@ func (h *OAuthWebHandler) getSocialCallbackURL(c *gin.Context) string {
 	return fmt.Sprintf("%s://%s/v0/oauth/kiro/social/callback", scheme, c.Request.Host)
 }
 
-func (h *OAuthWebHandler) startBuilderIDAuth(c *gin.Context) {
+func (h *OAuthWebHandler) startBuilderIDAuth(c *gin.Context, managementState string) {
 	stateID, err := generateStateID()
 	if err != nil {
 		h.renderError(c, "Failed to generate state parameter")
@@ -240,6 +248,7 @@ func (h *OAuthWebHandler) startBuilderIDAuth(c *gin.Context) {
 		authMethod:      "builder-id",
 		startURL:        startURL,
 		cancelFunc:      cancel,
+		managementState: managementState,
 	}
 
 	h.mu.Lock()
@@ -251,7 +260,7 @@ func (h *OAuthWebHandler) startBuilderIDAuth(c *gin.Context) {
 	h.renderStartPage(c, session)
 }
 
-func (h *OAuthWebHandler) startIDCAuth(c *gin.Context) {
+func (h *OAuthWebHandler) startIDCAuth(c *gin.Context, managementState string) {
 	startURL := c.Query("startUrl")
 	region := c.Query("region")
 
@@ -310,6 +319,7 @@ func (h *OAuthWebHandler) startIDCAuth(c *gin.Context) {
 		authMethod:      "idc",
 		startURL:        startURL,
 		cancelFunc:      cancel,
+		managementState: managementState,
 	}
 
 	h.mu.Lock()
@@ -390,6 +400,18 @@ func (h *OAuthWebHandler) pollForToken(ctx context.Context, session *webAuthSess
 					StartURL:     session.startURL,
 				}
 
+			// Save token to file first, before marking session as success
+			if err := h.saveTokenToFile(tokenData); err != nil {
+				log.Errorf("OAuth Web: failed to save token: %v", err)
+				h.mu.Lock()
+				session.status = statusFailed
+				session.error = fmt.Sprintf("Failed to save token: %v", err)
+				session.completedAt = time.Now()
+				h.mu.Unlock()
+				return
+			}
+
+			// Only mark session as success after successful save
 			h.mu.Lock()
 			session.status = statusSuccess
 			session.completedAt = time.Now()
@@ -397,12 +419,10 @@ func (h *OAuthWebHandler) pollForToken(ctx context.Context, session *webAuthSess
 			session.tokenData = tokenData
 			h.mu.Unlock()
 
+			// Only call callback after successful save, with specific management state
 			if h.onTokenObtained != nil {
-				h.onTokenObtained(tokenData)
+				h.onTokenObtained(tokenData, session.managementState)
 			}
-
-			// Save token to file
-			h.saveTokenToFile(tokenData)
 
 			log.Infof("OAuth Web: authentication successful for %s", email)
 			return
@@ -411,7 +431,7 @@ func (h *OAuthWebHandler) pollForToken(ctx context.Context, session *webAuthSess
 }
 
 // saveTokenToFile saves the token data to the auth directory
-func (h *OAuthWebHandler) saveTokenToFile(tokenData *KiroTokenData) {
+func (h *OAuthWebHandler) saveTokenToFile(tokenData *KiroTokenData) error {
 	// Get auth directory from config or use default
 	authDir := ""
 	if h.cfg != nil && h.cfg.AuthDir != "" {
@@ -421,23 +441,23 @@ func (h *OAuthWebHandler) saveTokenToFile(tokenData *KiroTokenData) {
 			log.Errorf("OAuth Web: failed to resolve auth directory: %v", err)
 		}
 	}
-	
+
 	// Fall back to default location
 	if authDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			log.Errorf("OAuth Web: failed to get home directory: %v", err)
-			return
+			return fmt.Errorf("failed to get home directory: %w", err)
 		}
 		authDir = filepath.Join(home, ".cli-proxy-api")
 	}
-	
+
 	// Create directory if not exists
 	if err := os.MkdirAll(authDir, 0700); err != nil {
 		log.Errorf("OAuth Web: failed to create auth directory: %v", err)
-		return
+		return fmt.Errorf("failed to create auth directory: %w", err)
 	}
-	
+
 	// Generate filename based on auth method
 	// Format: kiro-{authMethod}.json or kiro-{authMethod}-{email}.json
 	fileName := fmt.Sprintf("kiro-%s.json", tokenData.AuthMethod)
@@ -448,9 +468,9 @@ func (h *OAuthWebHandler) saveTokenToFile(tokenData *KiroTokenData) {
 		sanitizedEmail = strings.ReplaceAll(sanitizedEmail, ".", "-")
 		fileName = fmt.Sprintf("kiro-%s-%s.json", tokenData.AuthMethod, sanitizedEmail)
 	}
-	
+
 	authFilePath := filepath.Join(authDir, fileName)
-	
+
 	// Convert to storage format and save
 	storage := &KiroTokenStorage{
 		Type:         "kiro",
@@ -467,13 +487,14 @@ func (h *OAuthWebHandler) saveTokenToFile(tokenData *KiroTokenData) {
 		StartURL:     tokenData.StartURL,
 		Email:        tokenData.Email,
 	}
-	
+
 	if err := storage.SaveTokenToFile(authFilePath); err != nil {
 		log.Errorf("OAuth Web: failed to save token to file: %v", err)
-		return
+		return fmt.Errorf("failed to save token to file: %w", err)
 	}
-	
+
 	log.Infof("OAuth Web: token saved to %s", authFilePath)
+	return nil
 }
 
 func (h *OAuthWebHandler) ssoClient(session *webAuthSession) *SSOOIDCClient {
@@ -593,6 +614,23 @@ func (h *OAuthWebHandler) handleSocialCallback(c *gin.Context) {
 		Region:       "us-east-1",
 	}
 
+	if session.cancelFunc != nil {
+		session.cancelFunc()
+	}
+
+	// Save token to file first, before marking session as success
+	if err := h.saveTokenToFile(tokenData); err != nil {
+		log.Errorf("OAuth Web: failed to save social token: %v", err)
+		h.mu.Lock()
+		session.status = statusFailed
+		session.error = fmt.Sprintf("Failed to save token: %v", err)
+		session.completedAt = time.Now()
+		h.mu.Unlock()
+		h.renderError(c, fmt.Sprintf("Failed to save token: %v", err))
+		return
+	}
+
+	// Only mark session as success after successful save
 	h.mu.Lock()
 	session.status = statusSuccess
 	session.completedAt = time.Now()
@@ -600,16 +638,10 @@ func (h *OAuthWebHandler) handleSocialCallback(c *gin.Context) {
 	session.tokenData = tokenData
 	h.mu.Unlock()
 
-	if session.cancelFunc != nil {
-		session.cancelFunc()
-	}
-
+	// Only call callback after successful save, with specific management state
 	if h.onTokenObtained != nil {
-		h.onTokenObtained(tokenData)
+		h.onTokenObtained(tokenData, session.managementState)
 	}
-
-	// Save token to file
-	h.saveTokenToFile(tokenData)
 
 	log.Infof("OAuth Web: social authentication successful for %s via %s", email, provider)
 	h.renderSuccess(c, session)
@@ -675,7 +707,7 @@ func (h *OAuthWebHandler) renderStartPage(c *gin.Context, session *webAuthSessio
 	}
 }
 
-func (h *OAuthWebHandler) renderSelectPage(c *gin.Context) {
+func (h *OAuthWebHandler) renderSelectPage(c *gin.Context, managementState string) {
 	tmpl, err := template.New("select").Parse(oauthWebSelectPageHTML)
 	if err != nil {
 		log.Errorf("OAuth Web: failed to parse select template: %v", err)
@@ -683,8 +715,12 @@ func (h *OAuthWebHandler) renderSelectPage(c *gin.Context) {
 		return
 	}
 
+	data := map[string]interface{}{
+		"ManagementState": managementState,
+	}
+
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(c.Writer, nil); err != nil {
+	if err := tmpl.Execute(c.Writer, data); err != nil {
 		log.Errorf("OAuth Web: failed to render select template: %v", err)
 	}
 }
@@ -803,13 +839,23 @@ func (h *OAuthWebHandler) handleImportToken(c *gin.Context) {
 	tokenData.AuthMethod = "social"
 	tokenData.Provider = "imported"
 
-	// Notify callback if set
-	if h.onTokenObtained != nil {
-		h.onTokenObtained(tokenData)
+	// Save token to file first
+	if err := h.saveTokenToFile(tokenData); err != nil {
+		log.Errorf("OAuth Web: failed to save imported token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to save token: %v", err),
+		})
+		return
 	}
 
-	// Save token to file
-	h.saveTokenToFile(tokenData)
+	// Get management state from query parameter (if provided via form)
+	managementState := c.Query("state")
+
+	// Notify callback after successful save
+	if h.onTokenObtained != nil {
+		h.onTokenObtained(tokenData, managementState)
+	}
 
 	// Generate filename for response
 	fileName := fmt.Sprintf("kiro-%s.json", tokenData.AuthMethod)
@@ -931,10 +977,9 @@ func (h *OAuthWebHandler) handleManualRefresh(c *gin.Context) {
 		log.Infof("OAuth Web: manually refreshed token in %s, expires at %s", name, tokenData.ExpiresAt)
 		refreshedCount++
 
-		// Notify callback if set
-		if h.onTokenObtained != nil {
-			h.onTokenObtained(tokenData)
-		}
+		// Note: Manual refresh does NOT call onTokenObtained callback
+		// because it's refreshing existing tokens, not completing new authentications.
+		// Calling the callback would incorrectly complete pending OAuth sessions.
 	}
 
 	if refreshedCount == 0 && len(errors) > 0 {

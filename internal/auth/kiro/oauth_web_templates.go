@@ -591,36 +591,37 @@ const (
     <div class="container">
         <h1>🔐 Select Authentication Method</h1>
         <p class="subtitle">Choose how you want to authenticate with Kiro</p>
-        
+
         <div class="auth-methods">
-            <a href="/v0/oauth/kiro/start?method=builder-id" class="auth-btn aws">
+            <a href="/v0/oauth/kiro/start?method=builder-id{{if .ManagementState}}&state={{.ManagementState}}{{end}}" class="auth-btn aws">
                 <span class="icon">🔶</span>
                 AWS Builder ID (Recommended)
             </a>
-            
+
             <button type="button" class="auth-btn idc" onclick="toggleIdcForm()">
                 <span class="icon">🏢</span>
                 AWS Identity Center (IDC)
             </button>
-            
+
             <div class="divider"><span>or</span></div>
-            
+
             <button type="button" class="auth-btn manual" onclick="toggleManualForm()">
                 <span class="icon">📋</span>
                 Import RefreshToken from Kiro IDE
             </button>
-            
+
             <button type="button" class="auth-btn refresh" onclick="manualRefresh()" id="refreshBtn">
                 <span class="icon">🔄</span>
                 Manual Refresh All Tokens
             </button>
-            
+
             <div class="status-message" id="refreshStatus"></div>
         </div>
-        
+
         <div class="idc-form" id="idcForm">
             <form action="/v0/oauth/kiro/start" method="get">
                 <input type="hidden" name="method" value="idc">
+                {{if .ManagementState}}<input type="hidden" name="state" value="{{.ManagementState}}">{{end}}
                 
                 <div class="form-group">
                     <label for="startUrl">Start URL</label>
@@ -713,7 +714,13 @@ const (
             statusEl.style.display = 'none';
             
             try {
-                const response = await fetch('/v0/oauth/kiro/import', {
+                // Include management state in the URL if available
+                const managementState = '{{.ManagementState}}';
+                let importUrl = '/v0/oauth/kiro/import';
+                if (managementState) {
+                    importUrl += '?state=' + encodeURIComponent(managementState);
+                }
+                const response = await fetch(importUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ refreshToken: refreshToken })

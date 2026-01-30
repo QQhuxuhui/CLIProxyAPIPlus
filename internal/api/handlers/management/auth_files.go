@@ -2302,6 +2302,19 @@ const kiroCallbackPort = 9876
 func (h *Handler) RequestKiroToken(c *gin.Context) {
 	ctx := context.Background()
 
+	// Check if this is a web UI request - if so, return the Kiro OAuth web page URL
+	if isWebUIRequest(c) {
+		state := fmt.Sprintf("kiro-%d", time.Now().UnixNano())
+		RegisterOAuthSession(state, "kiro")
+
+		// Return relative path for Kiro OAuth web page - frontend will construct full URL
+		// This works correctly for both local and remote/reverse-proxy scenarios
+		kiroOAuthURL := fmt.Sprintf("/v0/oauth/kiro?state=%s", state)
+
+		c.JSON(200, gin.H{"status": "ok", "url": kiroOAuthURL, "state": state})
+		return
+	}
+
 	// Get the login method from query parameter (default: aws for device code flow)
 	method := strings.ToLower(strings.TrimSpace(c.Query("method")))
 	if method == "" {
