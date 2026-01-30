@@ -2,14 +2,16 @@ package management
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // GetKiroUsage handles GET /v0/management/kiro-usage
@@ -58,6 +60,9 @@ func (h *Handler) GetKiroUsage(c *gin.Context) {
 		return
 	}
 
+	// Log diagnostic information
+	log.Debugf("GetKiroUsage: auth_index=%s, profileArn='%s', accessToken length=%d", authIndex, profileArn, len(accessToken))
+
 	if h.cfg == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -66,16 +71,14 @@ func (h *Handler) GetKiroUsage(c *gin.Context) {
 		return
 	}
 
-	kAuth := kiroauth.NewKiroAuth(h.cfg)
-	tokenData := &kiroauth.KiroTokenData{
-		AccessToken: strings.TrimSpace(accessToken),
-		ProfileArn:  strings.TrimSpace(profileArn),
-	}
+	// Use CodeWhispererClient which uses the REST API (GET with query params)
+	// This works without profileArn, unlike the JSON-RPC API
+	cwClient := kiro.NewCodeWhispererClient(h.cfg, "")
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	usageInfo, err := kAuth.GetUsageLimits(ctx, tokenData)
+	usageResp, err := cwClient.GetUsageLimits(ctx, strings.TrimSpace(accessToken))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -84,12 +87,32 @@ func (h *Handler) GetKiroUsage(c *gin.Context) {
 		return
 	}
 
-	var percentage float64
-	if usageInfo.UsageLimit > 0 {
-		percentage = (usageInfo.CurrentUsage / usageInfo.UsageLimit) * 100
+	var currentUsage, usageLimit float64
+	if len(usageResp.UsageBreakdownList) > 0 {
+		breakdown := usageResp.UsageBreakdownList[0]
+		if breakdown.CurrentUsageWithPrecision != nil {
+			currentUsage = *breakdown.CurrentUsageWithPrecision
+		}
+		if breakdown.UsageLimitWithPrecision != nil {
+			usageLimit = *breakdown.UsageLimitWithPrecision
+		}
 	}
 
-	daysUntilReset, nextResetDate := parseKiroResetTime(usageInfo.NextReset, time.Now())
+	var percentage float64
+	if usageLimit > 0 {
+		percentage = (currentUsage / usageLimit) * 100
+	}
+
+	var nextResetRaw string
+	if usageResp.NextDateReset != nil {
+		nextResetRaw = fmt.Sprintf("%v", *usageResp.NextDateReset)
+	}
+	daysUntilReset, nextResetDate := parseKiroResetTime(nextResetRaw, time.Now())
+
+	var subscriptionTitle string
+	if usageResp.SubscriptionInfo != nil {
+		subscriptionTitle = usageResp.SubscriptionInfo.SubscriptionTitle
+	}
 
 	email := extractKiroEmail(auth)
 
@@ -97,10 +120,10 @@ func (h *Handler) GetKiroUsage(c *gin.Context) {
 		"success": true,
 		"data": gin.H{
 			"email":        email,
-			"subscription": usageInfo.SubscriptionTitle,
+			"subscription": subscriptionTitle,
 			"usage": gin.H{
-				"current":    usageInfo.CurrentUsage,
-				"limit":      usageInfo.UsageLimit,
+				"current":    currentUsage,
+				"limit":      usageLimit,
 				"percentage": percentage,
 			},
 			"reset": gin.H{
