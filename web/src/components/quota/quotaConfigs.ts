@@ -16,9 +16,11 @@ import type {
   CodexUsagePayload,
   GeminiCliParsedBucket,
   GeminiCliQuotaBucketState,
-  GeminiCliQuotaState
+  GeminiCliQuotaState,
+  KiroQuotaState,
+  KiroUsageResponseData
 } from '@/types';
-import { apiCallApi, authFilesApi, getApiCallErrorMessage } from '@/services/api';
+import { apiCallApi, authFilesApi, kiroApi, getApiCallErrorMessage } from '@/services/api';
 import {
   ANTIGRAVITY_QUOTA_URLS,
   ANTIGRAVITY_REQUEST_HEADERS,
@@ -41,11 +43,13 @@ import {
   formatQuotaResetTime,
   buildAntigravityQuotaGroups,
   buildGeminiCliQuotaBuckets,
+  computeKiroRemaining,
   createStatusError,
   getStatusFromError,
   isAntigravityFile,
   isCodexFile,
   isGeminiCliFile,
+  isKiroFile,
   isRuntimeOnlyAuthFile
 } from '@/utils/quota';
 import type { QuotaRenderHelpers } from './QuotaCard';
@@ -53,7 +57,7 @@ import styles from '@/pages/QuotaPage.module.scss';
 
 type QuotaUpdater<T> = T | ((prev: T) => T);
 
-type QuotaType = 'antigravity' | 'codex' | 'gemini-cli';
+type QuotaType = 'antigravity' | 'codex' | 'gemini-cli' | 'kiro';
 
 const DEFAULT_ANTIGRAVITY_PROJECT_ID = 'bamboo-precept-lgxtn';
 
@@ -61,9 +65,11 @@ export interface QuotaStore {
   antigravityQuota: Record<string, AntigravityQuotaState>;
   codexQuota: Record<string, CodexQuotaState>;
   geminiCliQuota: Record<string, GeminiCliQuotaState>;
+  kiroQuota: Record<string, KiroQuotaState>;
   setAntigravityQuota: (updater: QuotaUpdater<Record<string, AntigravityQuotaState>>) => void;
   setCodexQuota: (updater: QuotaUpdater<Record<string, CodexQuotaState>>) => void;
   setGeminiCliQuota: (updater: QuotaUpdater<Record<string, GeminiCliQuotaState>>) => void;
+  setKiroQuota: (updater: QuotaUpdater<Record<string, KiroQuotaState>>) => void;
   clearQuotaCache: () => void;
 }
 
@@ -355,6 +361,24 @@ const fetchGeminiCliQuota = async (
   return buildGeminiCliQuotaBuckets(parsedBuckets);
 };
 
+const fetchKiroQuota = async (
+  file: AuthFileItem,
+  t: TFunction
+): Promise<KiroUsageResponseData> => {
+  const rawAuthIndex = file['auth_index'] ?? file.authIndex;
+  const authIndex = normalizeAuthIndexValue(rawAuthIndex);
+  if (!authIndex) {
+    throw new Error(t('kiro_quota.missing_auth_index'));
+  }
+
+  const result = await kiroApi.getUsage(authIndex);
+  if (!result.success || !result.data) {
+    throw new Error(result.error || t('kiro_quota.fetch_failed'));
+  }
+
+  return result.data;
+};
+
 const renderAntigravityItems = (
   quota: AntigravityQuotaState,
   t: TFunction,
@@ -530,6 +554,68 @@ const renderGeminiCliItems = (
   });
 };
 
+const renderKiroItems = (
+  quota: KiroQuotaState,
+  t: TFunction,
+  helpers: QuotaRenderHelpers
+): ReactNode => {
+  const { styles: styleMap, QuotaProgressBar } = helpers;
+  const { createElement: h, Fragment } = React;
+  const nodes: ReactNode[] = [];
+
+  // Subscription info
+  if (quota.subscription) {
+    nodes.push(
+      h(
+        'div',
+        { key: 'subscription', className: styleMap.codexPlan },
+        h('span', { className: styleMap.codexPlanLabel }, t('kiro_quota.subscription_label')),
+        h('span', { className: styleMap.codexPlanValue }, quota.subscription)
+      )
+    );
+  }
+
+  // Usage info
+  if (quota.current !== undefined && quota.limit !== undefined) {
+    const { remainingPercent, remainingAmount } = computeKiroRemaining({
+      current: quota.current,
+      limit: quota.limit,
+      percentage: quota.percentage
+    });
+    const resetLabel = quota.resetDaysUntil !== undefined
+      ? `${quota.resetDaysUntil} ${t('kiro_quota.days')}${quota.resetNextDate ? ` (${quota.resetNextDate.split('T')[0]})` : ''}`
+      : '-';
+    const percentLabel = remainingPercent === null ? '--' : `${Math.round(remainingPercent)}%`;
+    const amountLabel = remainingAmount === null ? null : `${remainingAmount} / ${quota.limit}`;
+
+    nodes.push(
+      h(
+        'div',
+        { key: 'usage', className: styleMap.quotaRow },
+        h(
+          'div',
+          { className: styleMap.quotaRowHeader },
+          h('span', { className: styleMap.quotaModel }, t('kiro_quota.usage_label')),
+          h(
+            'div',
+            { className: styleMap.quotaMeta },
+            h('span', { className: styleMap.quotaPercent }, percentLabel),
+            amountLabel ? h('span', { className: styleMap.quotaAmount }, amountLabel) : null,
+            h('span', { className: styleMap.quotaReset }, resetLabel)
+          )
+        ),
+        h(QuotaProgressBar, { percent: remainingPercent, highThreshold: 80, mediumThreshold: 50 })
+      )
+    );
+  }
+
+  if (nodes.length === 0) {
+    return h('div', { className: styleMap.quotaMessage }, t('kiro_quota.no_data'));
+  }
+
+  return h(Fragment, null, ...nodes);
+};
+
 export const ANTIGRAVITY_CONFIG: QuotaConfig<AntigravityQuotaState, AntigravityQuotaGroup[]> = {
   type: 'antigravity',
   i18nPrefix: 'antigravity_quota',
@@ -601,4 +687,34 @@ export const GEMINI_CLI_CONFIG: QuotaConfig<GeminiCliQuotaState, GeminiCliQuotaB
   controlClassName: styles.geminiCliControl,
   gridClassName: styles.geminiCliGrid,
   renderQuotaItems: renderGeminiCliItems
+};
+
+export const KIRO_CONFIG: QuotaConfig<KiroQuotaState, KiroUsageResponseData> = {
+  type: 'kiro',
+  i18nPrefix: 'kiro_quota',
+  filterFn: (file) => isKiroFile(file),
+  fetchQuota: fetchKiroQuota,
+  storeSelector: (state) => state.kiroQuota,
+  storeSetter: 'setKiroQuota',
+  buildLoadingState: () => ({ status: 'loading' }),
+  buildSuccessState: (data) => ({
+    status: 'success',
+    email: data.email,
+    subscription: data.subscription,
+    current: data.usage.current,
+    limit: data.usage.limit,
+    percentage: data.usage.percentage,
+    resetDaysUntil: data.reset.days_until,
+    resetNextDate: data.reset.next_date
+  }),
+  buildErrorState: (message, status) => ({
+    status: 'error',
+    error: message,
+    errorStatus: status
+  }),
+  cardClassName: styles.kiroCard,
+  controlsClassName: styles.kiroControls,
+  controlClassName: styles.kiroControl,
+  gridClassName: styles.kiroGrid,
+  renderQuotaItems: renderKiroItems
 };
