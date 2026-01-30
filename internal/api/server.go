@@ -302,9 +302,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 			managementHandlers.CompleteOAuthSession(managementState)
 			log.Infof("Kiro OAuth completed for %s, notified management API (state: %s)", tokenData.Email, managementState)
 		} else {
-			// Fallback: complete all Kiro sessions if no specific state provided
-			managementHandlers.CompleteOAuthSessionsByProvider("kiro")
-			log.Infof("Kiro OAuth completed for %s, notified management API (all sessions)", tokenData.Email)
+			log.Infof("Kiro OAuth completed for %s without management state; no management sessions updated", tokenData.Email)
 		}
 	})
 	kiroOAuthHandler.RegisterRoutes(engine)
