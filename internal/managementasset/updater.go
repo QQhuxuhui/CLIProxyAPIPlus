@@ -203,7 +203,9 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	localPath := filepath.Join(staticDir, managementAssetName)
 	embeddedData := GetEmbeddedManagementHTML()
 	hasEmbedded := len(embeddedData) > 0
-	hasCustomRepo := strings.TrimSpace(panelRepository) != ""
+	// Treat default repository as "no custom repo" - embedded asset takes priority
+	trimmedRepo := strings.TrimSpace(panelRepository)
+	hasCustomRepo := trimmedRepo != "" && trimmedRepo != config.DefaultPanelGitHubRepository
 
 	// If we have embedded asset and no custom repo is configured, use embedded asset exclusively
 	if hasEmbedded && !hasCustomRepo {
