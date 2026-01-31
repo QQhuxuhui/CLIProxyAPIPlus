@@ -292,16 +292,19 @@ func wrapResponsesPayloadAsCompleted(payload []byte) []byte {
 }
 
 func writeConvertedResponsesChunk(c *gin.Context, ctx context.Context, modelName string, originalChatJSON, responsesRequestJSON, chunk []byte, param *any) {
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	outputs := codexconverter.ConvertCodexResponseToOpenAI(ctx, modelName, originalChatJSON, responsesRequestJSON, chunk, param)
 	for _, out := range outputs {
 		if out == "" {
 			continue
 		}
-		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", out)
+		rewritten := rewriteOpenAIResponseModel([]byte(out), responseModel)
+		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(rewritten))
 	}
 }
 
 func (h *OpenAIAPIHandler) forwardResponsesAsChatStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, ctx context.Context, modelName string, originalChatJSON, responsesRequestJSON []byte, param *any) {
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
 			outputs := codexconverter.ConvertCodexResponseToOpenAI(ctx, modelName, originalChatJSON, responsesRequestJSON, chunk, param)
@@ -309,7 +312,8 @@ func (h *OpenAIAPIHandler) forwardResponsesAsChatStream(c *gin.Context, flusher 
 				if out == "" {
 					continue
 				}
-				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", out)
+				rewritten := rewriteOpenAIResponseModel([]byte(out), responseModel)
+				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(rewritten))
 			}
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
@@ -512,6 +516,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	resp, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 	if errMsg != nil {
@@ -519,6 +524,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 		cliCancel(errMsg.Error)
 		return
 	}
+	resp = rewriteOpenAIResponseModel(resp, responseModel)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -527,6 +533,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponseViaResponses(c *gin.Context
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	resp, errMsg := h.ExecuteWithAuthManager(cliCtx, OpenaiResponse, modelName, rawJSON, h.GetAlt(c))
 	if errMsg != nil {
@@ -543,6 +550,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponseViaResponses(c *gin.Context
 		cliCancel(fmt.Errorf("response conversion failed"))
 		return
 	}
+	converted = rewriteOpenAIResponseModel(converted, responseModel)
 	_, _ = c.Writer.Write(converted)
 	cliCancel()
 }
@@ -568,6 +576,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 	}
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
 
@@ -611,11 +620,12 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 			// Success! Commit to streaming headers.
 			setSSEHeaders()
 
+			chunk = rewriteOpenAIStreamChunkModel(chunk, responseModel)
 			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 			flusher.Flush()
 
 			// Continue streaming the rest
-			h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+			h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, responseModel)
 			return
 		}
 	}
@@ -696,6 +706,7 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 	chatCompletionsJSON := convertCompletionsRequestToChatCompletions(rawJSON)
 
 	modelName := gjson.GetBytes(chatCompletionsJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
@@ -706,6 +717,7 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 		return
 	}
 	completionsResp := convertChatCompletionsResponseToCompletions(resp)
+	completionsResp = rewriteOpenAIResponseModel(completionsResp, responseModel)
 	_, _ = c.Writer.Write(completionsResp)
 	cliCancel()
 }
@@ -778,6 +790,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			// Write the first chunk
 			converted := convertChatCompletionsStreamChunkToCompletions(chunk)
 			if converted != nil {
+				converted = rewriteOpenAIStreamChunkModel(converted, normalizeRequestedModelForResponse(modelName))
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(converted))
 				flusher.Flush()
 			}
@@ -813,14 +826,15 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			h.handleStreamResult(c, flusher, func(err error) {
 				stop()
 				cliCancel(err)
-			}, convertedChan, errChan)
+			}, convertedChan, errChan, normalizeRequestedModelForResponse(modelName))
 			return
 		}
 	}
 }
-func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, modelName string) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
+			chunk = rewriteOpenAIStreamChunkModel(chunk, modelName)
 			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {

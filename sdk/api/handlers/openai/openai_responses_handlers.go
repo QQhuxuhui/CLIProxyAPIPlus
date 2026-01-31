@@ -117,6 +117,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
@@ -127,6 +128,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 		cliCancel(errMsg.Error)
 		return
 	}
+	resp = rewriteOpenAIResponseModel(resp, responseModel)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -135,6 +137,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponseViaChat(c *gin.Con
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(chatJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	resp, errMsg := h.ExecuteWithAuthManager(cliCtx, OpenAI, modelName, chatJSON, "")
 	if errMsg != nil {
@@ -152,7 +155,8 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponseViaChat(c *gin.Con
 		cliCancel(fmt.Errorf("response conversion failed"))
 		return
 	}
-	_, _ = c.Writer.Write([]byte(converted))
+	rewritten := rewriteOpenAIResponseModel([]byte(converted), responseModel)
+	_, _ = c.Writer.Write(rewritten)
 	cliCancel()
 }
 
@@ -178,6 +182,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 
 	// New core execution path
 	modelName := gjson.GetBytes(rawJSON, "model").String()
+	responseModel := normalizeRequestedModelForResponse(modelName)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 
@@ -222,6 +227,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			setSSEHeaders()
 
 			// Write first chunk logic (matching forwardResponsesStream)
+			chunk = rewriteOpenAIResponsesStreamChunkModel(chunk, responseModel)
 			if bytes.HasPrefix(chunk, []byte("event:")) {
 				_, _ = c.Writer.Write([]byte("\n"))
 			}
@@ -230,7 +236,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			flusher.Flush()
 
 			// Continue
-			h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+			h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, responseModel)
 			return
 		}
 	}
@@ -346,9 +352,10 @@ func (h *OpenAIResponsesAPIHandler) forwardChatAsResponsesStream(c *gin.Context,
 	})
 }
 
-func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, modelName string) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
+			chunk = rewriteOpenAIResponsesStreamChunkModel(chunk, modelName)
 			if bytes.HasPrefix(chunk, []byte("event:")) {
 				_, _ = c.Writer.Write([]byte("\n"))
 			}
