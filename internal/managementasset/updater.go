@@ -183,6 +183,7 @@ func FilePath(configFilePath string) string {
 // EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
 // The function is designed to run in a background goroutine and will never panic.
 // It enforces a 3-hour rate limit to avoid frequent checks on config/auth file changes.
+// If an embedded asset is available and no custom panel repository is configured, the embedded asset takes priority.
 func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -200,12 +201,57 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	}
 
 	localPath := filepath.Join(staticDir, managementAssetName)
+	embeddedData := GetEmbeddedManagementHTML()
+	hasEmbedded := len(embeddedData) > 0
+	// Treat default repository as "no custom repo" - embedded asset takes priority
+	trimmedRepo := strings.TrimSpace(panelRepository)
+	hasCustomRepo := trimmedRepo != "" && trimmedRepo != config.DefaultPanelGitHubRepository
+
+	// If we have embedded asset and no custom repo is configured, use embedded asset exclusively
+	if hasEmbedded && !hasCustomRepo {
+		if _, errStat := os.Stat(localPath); errStat != nil {
+			if errors.Is(errStat, os.ErrNotExist) {
+				if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll == nil {
+					if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
+						sum := sha256.Sum256(embeddedData)
+						embeddedHash := hex.EncodeToString(sum[:])[0:12]
+						log.Infof("management asset initialized from embedded asset (hash=%s...)", embeddedHash)
+					}
+				}
+			}
+			return
+		}
+
+		// Local file exists, check if it matches embedded asset
+		localHash, err := fileSHA256(localPath)
+		if err != nil {
+			log.WithError(err).Debug("failed to read local management asset hash")
+			return
+		}
+
+		embeddedSum := sha256.Sum256(embeddedData)
+		embeddedHash := hex.EncodeToString(embeddedSum[:])
+		if strings.EqualFold(localHash, embeddedHash) {
+			log.Debug("management asset matches embedded asset, skipping update")
+			return
+		}
+
+		// Local file differs from embedded, update it
+		if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
+			log.Infof("management asset updated from embedded asset (hash=%s...)", embeddedHash[0:12])
+		} else {
+			log.WithError(errWrite).Warn("failed to update management asset from embedded asset")
+		}
+		return
+	}
+
+	// No embedded asset or custom repo configured, use remote update logic
 	localFileMissing := false
 	if _, errStat := os.Stat(localPath); errStat != nil {
 		if errors.Is(errStat, os.ErrNotExist) {
 			localFileMissing = true
 			// Try to use embedded asset immediately if local file is missing
-			if embeddedData := GetEmbeddedManagementHTML(); len(embeddedData) > 0 {
+			if hasEmbedded {
 				if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll == nil {
 					if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
 						sum := sha256.Sum256(embeddedData)

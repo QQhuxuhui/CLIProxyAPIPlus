@@ -469,6 +469,22 @@
     "fetch_all": "Fetch All",
     "remaining_amount": "Remaining {{count}}"
   },
+  "kiro_quota": {
+    "title": "Kiro Quota",
+    "empty_title": "No Kiro Auth Files",
+    "empty_desc": "Login with Kiro OAuth to view remaining quota.",
+    "idle": "Not loaded. Click Refresh Button.",
+    "loading": "Loading quota...",
+    "load_failed": "Failed to load quota: {{message}}",
+    "missing_auth_index": "Auth file missing auth_index",
+    "fetch_failed": "Failed to fetch Kiro usage",
+    "no_data": "No quota data available",
+    "refresh_button": "Refresh Quota",
+    "fetch_all": "Fetch All",
+    "subscription_label": "Subscription",
+    "usage_label": "Remaining",
+    "days": "days"
+  },
   "vertex_import": {
     "title": "Vertex JSON Login",
     "description": "Upload a Google service account JSON to store it as auth-dir/vertex-<project>.json using the same rules as the CLI vertex-import helper.",

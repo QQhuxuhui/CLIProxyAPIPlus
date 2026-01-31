@@ -295,6 +295,16 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// === CLIProxyAPIPlus 扩展: 注册 Kiro OAuth Web 路由 ===
 	kiroOAuthHandler := kiro.NewOAuthWebHandler(cfg)
+	// Set callback to notify management API when Kiro authentication is successful
+	kiroOAuthHandler.SetTokenCallback(func(tokenData *kiro.KiroTokenData, managementState string) {
+		// Complete the specific OAuth session by state, not all Kiro sessions
+		if managementState != "" {
+			managementHandlers.CompleteOAuthSession(managementState)
+			log.Infof("Kiro OAuth completed for %s, notified management API (state: %s)", tokenData.Email, managementState)
+		} else {
+			log.Infof("Kiro OAuth completed for %s without management state; no management sessions updated", tokenData.Email)
+		}
+	})
 	kiroOAuthHandler.RegisterRoutes(engine)
 	log.Info("Kiro OAuth Web routes registered at /v0/oauth/kiro/*")
 

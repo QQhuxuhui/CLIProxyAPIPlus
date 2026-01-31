@@ -145,3 +145,16 @@ export interface CodexQuotaState {
   error?: string;
   errorStatus?: number;
 }
+
+export interface KiroQuotaState {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  email?: string;
+  subscription?: string;
+  current?: number;
+  limit?: number;
+  percentage?: number;
+  resetDaysUntil?: number;
+  resetNextDate?: string;
+  error?: string;
+  errorStatus?: number;
+}

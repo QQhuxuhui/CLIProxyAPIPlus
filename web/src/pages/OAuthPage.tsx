@@ -150,6 +150,12 @@ export function OAuthPage() {
         provider === 'gemini-cli' ? { projectId: projectId || undefined } : undefined
       );
       updateProviderState(provider, { url: res.url, state: res.state, status: 'waiting', polling: true });
+
+      // For Kiro, automatically open the OAuth page in a popup
+      if (provider === 'kiro' && res.url) {
+        window.open(res.url, '_blank', 'width=600,height=700,noopener,noreferrer');
+      }
+
       if (res.state) {
         startPolling(provider, res.state);
       }

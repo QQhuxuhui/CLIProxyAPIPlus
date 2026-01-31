@@ -171,6 +171,9 @@ func (k *KiroAuth) makeRequest(ctx context.Context, target string, accessToken s
 //   - *KiroUsageInfo: The usage information
 //   - error: An error if the request fails
 func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData) (*KiroUsageInfo, error) {
+	// Log diagnostic information
+	log.Debugf("GetUsageLimits: profileArn='%s', accessToken length=%d", tokenData.ProfileArn, len(tokenData.AccessToken))
+
 	payload := map[string]interface{}{
 		"origin":       "AI_EDITOR",
 		"profileArn":   tokenData.ProfileArn,
