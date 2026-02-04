@@ -95,6 +95,7 @@
     "usage_stats": "Usage Statistics",
     "config_management": "Config Management",
     "logs": "Logs Viewer",
+    "masquerade_trace": "Masquerade Trace",
     "system_info": "Management Center Info"
   },
   "dashboard": {
@@ -756,6 +757,33 @@
   "stats": {
     "success": "Success",
     "failure": "Failure"
+  },
+  "masquerade_trace": {
+    "title": "Masquerade Trace",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "empty_title": "No Trace Records",
+    "empty_desc": "Enable masquerade-trace in config to see header masquerade records here",
+    "search_placeholder": "Search by model, auth ID, or user ID",
+    "search_empty_title": "No Matching Records",
+    "search_empty_desc": "Try a different keyword or clear the filters",
+    "clear_button": "Clear Records",
+    "clear_confirm_title": "Clear All Records",
+    "clear_confirm": "Are you sure you want to clear all masquerade trace records? This action cannot be undone!",
+    "clear_success": "Trace records cleared",
+    "load_error": "Failed to load trace records",
+    "col_time": "Time",
+    "col_model": "Model",
+    "col_auth": "Auth ID",
+    "col_changes": "Changes",
+    "headers_modified": "{{count}} headers",
+    "user_id_changed": "User ID changed",
+    "detail_title": "Trace Details",
+    "original": "Original",
+    "masked": "Masked",
+    "user_id_section": "User ID Comparison",
+    "headers_section": "Headers Comparison",
+    "hash_source": "Hash Source"
   },
   "logs": {
     "title": "Logs Viewer",

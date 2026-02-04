@@ -661,6 +661,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/github-auth-url", s.mgmt.RequestGitHubToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		mgmt.GET("/masquerade-trace", s.mgmt.ListMasqueradeTraces)
+		mgmt.GET("/masquerade-trace/:id", s.mgmt.GetMasqueradeTrace)
+		mgmt.DELETE("/masquerade-trace", s.mgmt.ClearMasqueradeTraces)
 	}
 }
 

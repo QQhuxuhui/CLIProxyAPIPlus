@@ -18,6 +18,7 @@ import {
   IconBot,
   IconChartLine,
   IconFileText,
+  IconFingerprint,
   IconInfo,
   IconKey,
   IconLayoutDashboard,
@@ -49,6 +50,7 @@ const sidebarIcons: Record<string, ReactNode> = {
   usage: <IconChartLine size={18} />,
   config: <IconSettings size={18} />,
   logs: <IconScrollText size={18} />,
+  masqueradeTrace: <IconFingerprint size={18} />,
   system: <IconInfo size={18} />,
 };
 
@@ -368,6 +370,7 @@ export function MainLayout() {
     ...(config?.loggingToFile
       ? [{ path: '/logs', label: t('nav.logs'), icon: sidebarIcons.logs }]
       : []),
+    { path: '/masquerade-trace', label: t('nav.masquerade_trace'), icon: sidebarIcons.masqueradeTrace },
     { path: '/system', label: t('nav.system_info'), icon: sidebarIcons.system },
   ];
   const navOrder = navItems.map((item) => item.path);

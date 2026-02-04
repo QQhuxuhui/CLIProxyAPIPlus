@@ -95,6 +95,7 @@
     "usage_stats": "使用统计",
     "config_management": "配置管理",
     "logs": "日志查看",
+    "masquerade_trace": "伪装追踪",
     "system_info": "中心信息"
   },
   "dashboard": {
@@ -756,6 +757,33 @@
   "stats": {
     "success": "成功",
     "failure": "失败"
+  },
+  "masquerade_trace": {
+    "title": "伪装追踪",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "empty_title": "暂无追踪记录",
+    "empty_desc": "启用 masquerade-trace 配置后，请求头伪装记录将显示在这里",
+    "search_placeholder": "搜索模型、认证标识或用户ID",
+    "search_empty_title": "未找到匹配的记录",
+    "search_empty_desc": "尝试更换关键字或清空筛选条件",
+    "clear_button": "清空记录",
+    "clear_confirm_title": "清空所有记录",
+    "clear_confirm": "确定要清空所有伪装追踪记录吗？此操作不可恢复！",
+    "clear_success": "追踪记录已清空",
+    "load_error": "加载追踪记录失败",
+    "col_time": "时间",
+    "col_model": "模型",
+    "col_auth": "认证标识",
+    "col_changes": "变更",
+    "headers_modified": "{{count}} 个请求头",
+    "user_id_changed": "用户ID已变更",
+    "detail_title": "追踪详情",
+    "original": "原始",
+    "masked": "伪装后",
+    "user_id_section": "用户ID 对比",
+    "headers_section": "请求头对比",
+    "hash_source": "哈希来源"
   },
   "logs": {
     "title": "日志查看",
