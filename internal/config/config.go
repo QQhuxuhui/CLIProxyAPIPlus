@@ -122,7 +122,20 @@ type Config struct {
 	// from your current session. Default: false.
 	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
 
+	// MasqueradeTrace configures masquerade tracing for debugging.
+	MasqueradeTrace MasqueradeTraceConfig `yaml:"masquerade-trace,omitempty" json:"masquerade-trace,omitempty"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+}
+
+// MasqueradeTraceConfig controls masquerade tracing for debugging.
+type MasqueradeTraceConfig struct {
+	// Enable toggles masquerade tracing. Default: false
+	Enable bool `yaml:"enable,omitempty" json:"enable,omitempty"`
+
+	// MaxRecords limits the number of trace records kept in memory.
+	// Uses ring buffer, oldest records are overwritten. Default: 100
+	MaxRecords int `yaml:"max-records,omitempty" json:"max-records,omitempty"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -278,6 +291,16 @@ type CloakConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters.
 	// This can help bypass certain content filters.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// MaxSessions controls the session pool size for this credential.
+	// Sessions are rotated periodically to avoid detection patterns.
+	// Default: 5
+	MaxSessions int `yaml:"max-sessions,omitempty" json:"max-sessions,omitempty"`
+
+	// RotationInterval controls how often sessions are rotated.
+	// Format: duration string (e.g., "6h", "30m", "1h30m")
+	// Default: 6h
+	RotationInterval string `yaml:"rotation-interval,omitempty" json:"rotation-interval,omitempty"`
 }
 
 // ClaudeKey represents the configuration for a Claude API key,

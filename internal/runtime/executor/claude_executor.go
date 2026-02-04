@@ -636,15 +636,11 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		ginHeaders = ginCtx.Request.Header
 	}
 
-	baseBetas := "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
-	if val := strings.TrimSpace(ginHeaders.Get("Anthropic-Beta")); val != "" {
-		baseBetas = val
-		if !strings.Contains(val, "oauth") {
-			baseBetas += ",oauth-2025-04-20"
-		}
-	}
+	// Anthropic-Beta: fixed base value (no header passthrough for masquerade consistency)
+	// Updated to Claude CLI 2.1.29 standard
+	baseBetas := "claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05"
 
-	// Merge extra betas from request body
+	// Merge extra betas from request body only (not from HTTP headers)
 	if len(extraBetas) > 0 {
 		existingSet := make(map[string]bool)
 		for _, b := range strings.Split(baseBetas, ",") {
@@ -663,18 +659,23 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Version", "2023-06-01")
 	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Dangerous-Direct-Browser-Access", "true")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-App", "cli")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Helper-Method", "stream")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Retry-Count", "0")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime-Version", "v24.3.0")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Package-Version", "0.55.1")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime", "node")
+	// X-Stainless-Helper-Method removed in CLI 2.1.29
+
+	// Stainless SDK headers (8 headers, updated to v24.13.0 / 0.70.0)
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Lang", "js")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Arch", "arm64")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Os", "MacOS")
-	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Timeout", "60")
-	misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", "claude-cli/1.0.83 (external, cli)")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime", "node")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Runtime-Version", "v24.13.0")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Os", "Linux")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Arch", "x64")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Package-Version", "0.70.0")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Retry-Count", "0")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Stainless-Timeout", "600")
+
+	// User-Agent updated to CLI 2.1.29
+	misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", "claude-cli/2.1.29 (external, cli)")
 	r.Header.Set("Connection", "keep-alive")
-	r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	// Accept-Encoding updated (removed deflate, zstd)
+	r.Header.Set("Accept-Encoding", "gzip, br")
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
 	} else {
@@ -894,6 +895,7 @@ func resolveClaudeKeyCloakConfig(cfg *config.Config, auth *cliproxyauth.Auth) *c
 }
 
 // injectFakeUserID generates and injects a fake user ID into the request metadata.
+// Deprecated: Use injectPooledUserID for session pool support.
 func injectFakeUserID(payload []byte) []byte {
 	metadata := gjson.GetBytes(payload, "metadata")
 	if !metadata.Exists() {
@@ -905,6 +907,26 @@ func injectFakeUserID(payload []byte) []byte {
 	if existingUserID == "" || !isValidUserID(existingUserID) {
 		payload, _ = sjson.SetBytes(payload, "metadata.user_id", generateFakeUserID())
 	}
+	return payload
+}
+
+// injectPooledUserID injects a user ID from the session pool into the request metadata.
+// This ensures consistent session UUIDs across requests while the hash part is stable.
+func injectPooledUserID(payload []byte, authID, apiKey string, maxSessions int, rotationInterval time.Duration) []byte {
+	// Extract existing user_id from client request for hash inheritance
+	existingUserID := gjson.GetBytes(payload, "metadata.user_id").String()
+
+	// Get pooled user ID
+	pooledUserID := getPooledUserID(authID, apiKey, existingUserID, maxSessions, rotationInterval)
+
+	// Set the user_id in metadata
+	metadata := gjson.GetBytes(payload, "metadata")
+	if !metadata.Exists() {
+		payload, _ = sjson.SetBytes(payload, "metadata.user_id", pooledUserID)
+		return payload
+	}
+
+	payload, _ = sjson.SetBytes(payload, "metadata.user_id", pooledUserID)
 	return payload
 }
 
@@ -939,7 +961,7 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 }
 
 // applyCloaking applies cloaking transformations to the payload based on config and client.
-// Cloaking includes: system prompt injection, fake user ID, and sensitive word obfuscation.
+// Cloaking includes: system prompt injection, pooled user ID, and sensitive word obfuscation.
 func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, payload []byte, model string) []byte {
 	clientUserAgent := getClientUserAgent(ctx)
 
@@ -950,11 +972,19 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	var cloakMode string
 	var strictMode bool
 	var sensitiveWords []string
+	var maxSessions int
+	var rotationInterval time.Duration
 
 	if cloakCfg != nil {
 		cloakMode = cloakCfg.Mode
 		strictMode = cloakCfg.StrictMode
 		sensitiveWords = cloakCfg.SensitiveWords
+		maxSessions = cloakCfg.MaxSessions
+		if cloakCfg.RotationInterval != "" {
+			if parsed, err := time.ParseDuration(cloakCfg.RotationInterval); err == nil {
+				rotationInterval = parsed
+			}
+		}
 	}
 
 	// Fallback to auth attributes if no config found
@@ -979,8 +1009,19 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		payload = checkSystemInstructionsWithMode(payload, strictMode)
 	}
 
-	// Inject fake user ID
-	payload = injectFakeUserID(payload)
+	// Inject pooled user ID (uses session pool for consistent sessions)
+	var authID, apiKey string
+	if auth != nil {
+		authID = auth.ID
+		apiKey, _ = claudeCreds(auth)
+	}
+	if authID == "" {
+		authID = "default"
+	}
+	if apiKey == "" {
+		apiKey = authID // Fallback for hash generation
+	}
+	payload = injectPooledUserID(payload, authID, apiKey, maxSessions, rotationInterval)
 
 	// Apply sensitive word obfuscation
 	if len(sensitiveWords) > 0 {
