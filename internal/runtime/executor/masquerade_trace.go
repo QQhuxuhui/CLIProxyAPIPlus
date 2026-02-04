@@ -10,6 +10,27 @@ import (
 // DefaultMaxTraceRecords is the default maximum number of trace records to keep.
 const DefaultMaxTraceRecords = 100
 
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneTraceRecord(in *MasqueradeTraceRecord) *MasqueradeTraceRecord {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.OriginalHeaders = cloneStringMap(in.OriginalHeaders)
+	out.MaskedHeaders = cloneStringMap(in.MaskedHeaders)
+	return &out
+}
+
 // MasqueradeTraceRecord represents a single masquerade trace entry.
 // It captures the original request and the masqueraded version for comparison.
 type MasqueradeTraceRecord struct {
@@ -105,7 +126,7 @@ func NewMasqueradeTraceStore(maxSize int) *MasqueradeTraceStore {
 	return &MasqueradeTraceStore{
 		records: make([]*MasqueradeTraceRecord, maxSize),
 		maxSize: maxSize,
-		enabled: true, // Enabled by default
+		enabled: false, // Disabled by default (opt-in for debugging)
 	}
 }
 
@@ -131,6 +152,9 @@ func (s *MasqueradeTraceStore) Add(record *MasqueradeTraceRecord) string {
 	if !s.enabled {
 		return ""
 	}
+	if record == nil {
+		return ""
+	}
 
 	// Assign ID and timestamp if not set
 	if record.ID == "" {
@@ -141,7 +165,7 @@ func (s *MasqueradeTraceStore) Add(record *MasqueradeTraceRecord) string {
 	}
 
 	// Store in ring buffer
-	s.records[s.index] = record
+	s.records[s.index] = cloneTraceRecord(record)
 	s.index = (s.index + 1) % s.maxSize
 	s.count++
 	if s.count >= s.maxSize {
@@ -159,8 +183,7 @@ func (s *MasqueradeTraceStore) Get(id string) *MasqueradeTraceRecord {
 	for i := range s.records {
 		if s.records[i] != nil && s.records[i].ID == id {
 			// Return a copy to prevent mutation
-			copy := *s.records[i]
-			return &copy
+			return cloneTraceRecord(s.records[i])
 		}
 	}
 	return nil
@@ -206,15 +229,13 @@ func (s *MasqueradeTraceStore) ListFull() []*MasqueradeTraceRecord {
 		for i := 0; i < s.maxSize; i++ {
 			idx := (s.index - 1 - i + s.maxSize) % s.maxSize
 			if s.records[idx] != nil {
-				copy := *s.records[idx]
-				result = append(result, &copy)
+				result = append(result, cloneTraceRecord(s.records[idx]))
 			}
 		}
 	} else {
 		for i := s.index - 1; i >= 0; i-- {
 			if s.records[i] != nil {
-				copy := *s.records[i]
-				result = append(result, &copy)
+				result = append(result, cloneTraceRecord(s.records[i]))
 			}
 		}
 	}

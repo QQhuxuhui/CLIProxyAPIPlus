@@ -35,6 +35,8 @@ GEMINI.md
 .vscode/*
 .codex/*
 .claude/*
+.gocache/*
+.gomodcache/*
 .gemini/*
 .serena/*
 .agent/*

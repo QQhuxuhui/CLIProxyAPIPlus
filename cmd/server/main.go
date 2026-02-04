@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -454,6 +455,7 @@ func main() {
 		cfg.AuthDir = resolvedAuthDir
 	}
 	managementasset.SetCurrentConfig(cfg)
+	runtimeexecutor.ApplyMasqueradeTraceConfig(cfg)
 
 	// Create login options to be used in authentication flows.
 	options := &cmd.LoginOptions{
