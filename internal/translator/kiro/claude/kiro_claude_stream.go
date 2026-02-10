@@ -121,7 +121,7 @@ func BuildClaudeMessageDeltaEvent(stopReason string, usageInfo usage.Detail) []b
 			"input_tokens":                usageInfo.InputTokens,
 			"output_tokens":               usageInfo.OutputTokens,
 			"cache_read_input_tokens":     usageInfo.CachedTokens,
-			"cache_creation_input_tokens": int64(0),
+			"cache_creation_input_tokens": usageInfo.CacheCreationTokens,
 		},
 	}
 	deltaResult, _ := json.Marshal(deltaEvent)

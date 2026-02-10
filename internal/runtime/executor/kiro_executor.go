@@ -116,6 +116,40 @@ func cacheSimulationRatio(inputTokens int64) float64 {
 	return ratio
 }
 
+// extractKiroCacheTokens extracts cache read/write token counts from tokenUsage.
+// Returns read tokens, creation tokens, and whether upstream explicitly provided cache fields.
+func extractKiroCacheTokens(tokenUsage map[string]interface{}) (int64, int64, bool) {
+	var cacheReadTokens int64
+	var cacheCreationTokens int64
+	hasUpstreamCacheField := false
+
+	if cacheReadRaw, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+		cacheReadTokens = int64(cacheReadRaw)
+		hasUpstreamCacheField = true
+	}
+	if cacheWriteRaw, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+		cacheCreationTokens = int64(cacheWriteRaw)
+		hasUpstreamCacheField = true
+	}
+
+	return cacheReadTokens, cacheCreationTokens, hasUpstreamCacheField
+}
+
+// shouldSimulateKiroCacheReadTokens decides whether cache_read_input_tokens should be simulated.
+// Only simulate when upstream provided no cache fields at all.
+func shouldSimulateKiroCacheReadTokens(inputTokens, cacheReadTokens, cacheCreationTokens int64, hasUpstreamCacheField bool) bool {
+	if inputTokens <= cacheSimulationMinInputTokens {
+		return false
+	}
+	if hasUpstreamCacheField {
+		return false
+	}
+	if cacheReadTokens > 0 || cacheCreationTokens > 0 {
+		return false
+	}
+	return true
+}
+
 // Global FingerprintManager for dynamic User-Agent generation per token
 // Each token gets a unique fingerprint on first use, which is cached for subsequent requests
 var (
@@ -1832,6 +1866,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 	// Upstream usage tracking - Kiro API returns credit usage and context percentage
 	var upstreamContextPercentage float64 // Context usage percentage from upstream (e.g., 78.56)
+	var hasUpstreamCacheFields bool       // Whether upstream explicitly returned cacheRead/cacheWrite fields
 
 	for {
 		msg, eventErr := e.readEventStreamMessage(reader)
@@ -2042,25 +2077,28 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 					usageInfo.InputTokens = int64(uncachedInputTokens)
 					log.Infof("kiro: parseEventStream found uncachedInputTokens in tokenUsage: %d", usageInfo.InputTokens)
 				}
+				cacheReadTokens, cacheCreationTokens, hasCacheFields := extractKiroCacheTokens(tokenUsage)
+				if hasCacheFields {
+					hasUpstreamCacheFields = true
+				}
+
 				// cacheReadInputTokens - tokens read from cache
-				if cacheReadTokens, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
-					usageInfo.CachedTokens = int64(cacheReadTokens)
+				if _, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+					usageInfo.CachedTokens = cacheReadTokens
 					// Add to input tokens if we have uncached tokens, otherwise use as input
 					if usageInfo.InputTokens > 0 {
-						usageInfo.InputTokens += int64(cacheReadTokens)
+						usageInfo.InputTokens += cacheReadTokens
 					} else {
-						usageInfo.InputTokens = int64(cacheReadTokens)
+						usageInfo.InputTokens = cacheReadTokens
 					}
 					log.Infof("kiro: [CACHE-DIAG] parseEventStream SET CachedTokens=%d from cacheReadInputTokens", usageInfo.CachedTokens)
 				} else {
 					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheReadInputTokens NOT FOUND in tokenUsage")
 				}
 				// cacheWriteInputTokens - tokens written to cache (first request)
-				if cacheWriteTokens, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
-					if usageInfo.CachedTokens == 0 {
-						usageInfo.CachedTokens = int64(cacheWriteTokens)
-					}
-					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheWriteInputTokens=%d, CachedTokens=%d", int64(cacheWriteTokens), usageInfo.CachedTokens)
+				if _, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+					usageInfo.CacheCreationTokens = cacheCreationTokens
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream SET CacheCreationTokens=%d from cacheWriteInputTokens", usageInfo.CacheCreationTokens)
 				} else {
 					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheWriteInputTokens NOT FOUND in tokenUsage")
 				}
@@ -2328,8 +2366,8 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		}
 	}
 
-	// Simulate cache tokens if upstream didn't provide them.
-	if usageInfo.CachedTokens == 0 && usageInfo.InputTokens > cacheSimulationMinInputTokens {
+	// Simulate cache read tokens only when upstream omitted cache fields entirely.
+	if shouldSimulateKiroCacheReadTokens(usageInfo.InputTokens, usageInfo.CachedTokens, usageInfo.CacheCreationTokens, hasUpstreamCacheFields) {
 		ratio := cacheSimulationRatio(usageInfo.InputTokens)
 		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * ratio)
 		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.1f%% of input=%d)",
@@ -2571,6 +2609,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	var upstreamCreditUsage float64       // Credit usage from upstream (e.g., 1.458)
 	var upstreamContextPercentage float64 // Context usage percentage from upstream (e.g., 78.56)
 	var hasUpstreamUsage bool             // Whether we received usage from upstream
+	var hasUpstreamCacheFields bool       // Whether upstream explicitly returned cacheRead/cacheWrite fields
 
 	// Translator param for maintaining tool call state across streaming events
 	// IMPORTANT: This must persist across all TranslateStream calls
@@ -3510,14 +3549,19 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					hasUpstreamUsage = true
 					log.Infof("kiro: streamToChannel found uncachedInputTokens in tokenUsage: %d", totalUsage.InputTokens)
 				}
+				cacheReadTokens, cacheCreationTokens, hasCacheFields := extractKiroCacheTokens(tokenUsage)
+				if hasCacheFields {
+					hasUpstreamCacheFields = true
+				}
+
 				// cacheReadInputTokens - tokens read from cache
-				if cacheReadTokens, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
-					totalUsage.CachedTokens = int64(cacheReadTokens)
+				if _, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+					totalUsage.CachedTokens = cacheReadTokens
 					// Add to input tokens if we have uncached tokens, otherwise use as input
 					if totalUsage.InputTokens > 0 {
-						totalUsage.InputTokens += int64(cacheReadTokens)
+						totalUsage.InputTokens += cacheReadTokens
 					} else {
-						totalUsage.InputTokens = int64(cacheReadTokens)
+						totalUsage.InputTokens = cacheReadTokens
 					}
 					hasUpstreamUsage = true
 					log.Infof("kiro: [CACHE-DIAG] streamToChannel SET CachedTokens=%d from cacheReadInputTokens", totalUsage.CachedTokens)
@@ -3525,12 +3569,10 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheReadInputTokens NOT FOUND in tokenUsage")
 				}
 				// cacheWriteInputTokens - tokens written to cache (first request)
-				if cacheWriteTokens, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
-					if totalUsage.CachedTokens == 0 {
-						totalUsage.CachedTokens = int64(cacheWriteTokens)
-					}
+				if _, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+					totalUsage.CacheCreationTokens = cacheCreationTokens
 					hasUpstreamUsage = true
-					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheWriteInputTokens=%d, CachedTokens=%d", int64(cacheWriteTokens), totalUsage.CachedTokens)
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel SET CacheCreationTokens=%d from cacheWriteInputTokens", totalUsage.CacheCreationTokens)
 				} else {
 					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheWriteInputTokens NOT FOUND in tokenUsage")
 				}
@@ -3728,9 +3770,8 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.OutputTokens
 
-	// Simulate cache tokens if upstream didn't provide them.
-	// This makes the service appear to have Claude-style prompt caching for downstream consumers.
-	if totalUsage.CachedTokens == 0 && totalUsage.InputTokens > cacheSimulationMinInputTokens {
+	// Simulate cache read tokens only when upstream omitted cache fields entirely.
+	if shouldSimulateKiroCacheReadTokens(totalUsage.InputTokens, totalUsage.CachedTokens, totalUsage.CacheCreationTokens, hasUpstreamCacheFields) {
 		ratio := cacheSimulationRatio(totalUsage.InputTokens)
 		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * ratio)
 		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.1f%% of input=%d)",

@@ -41,3 +41,27 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 9)
 	}
 }
+
+func TestParseClaudeUsage_SeparatesReadAndCreationTokens(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":7}}`)
+	detail := parseClaudeUsage(data)
+
+	if detail.CachedTokens != 30 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 30)
+	}
+	if detail.CacheCreationTokens != 7 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 7)
+	}
+}
+
+func TestParseClaudeUsage_FallbackAggregateMaintained(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":9}}`)
+	detail := parseClaudeUsage(data)
+
+	if detail.CachedTokens != 9 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 9)
+	}
+	if detail.CacheCreationTokens != 9 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 9)
+	}
+}
