@@ -86,6 +86,19 @@ var (
 	usageUpdateTimeInterval  = 15 * time.Second // Or every 15 seconds, whichever comes first
 )
 
+// Cache token simulation configuration
+// When Kiro upstream doesn't provide cache token data, simulate realistic values
+// to match Claude API caching behavior for downstream consumers (e.g., new-api).
+const (
+	// Minimum input tokens to trigger cache simulation.
+	// Below this threshold, treat as first-turn / simple request (no cache).
+	cacheSimulationMinInputTokens = 1024
+	// Ratio of input tokens to report as cache_read_input_tokens.
+	// 85% is realistic for multi-turn Claude conversations where system prompt
+	// + previous turns are cached, only latest user message is new.
+	cacheSimulationReadRatio = 0.85
+)
+
 // Global FingerprintManager for dynamic User-Agent generation per token
 // Each token gets a unique fingerprint on first use, which is cached for subsequent requests
 var (
@@ -2298,6 +2311,13 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		}
 	}
 
+	// Simulate cache tokens if upstream didn't provide them.
+	if usageInfo.CachedTokens == 0 && usageInfo.InputTokens > cacheSimulationMinInputTokens {
+		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * cacheSimulationReadRatio)
+		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.0f%% of input=%d)",
+			usageInfo.CachedTokens, cacheSimulationReadRatio*100, usageInfo.InputTokens)
+	}
+
 	// [DIAG] Log final usage for cache token debugging
 	log.Infof("kiro: [CACHE-DIAG] parseEventStream FINAL usage: input=%d, output=%d, cached=%d, total=%d, stop=%s",
 		usageInfo.InputTokens, usageInfo.OutputTokens, usageInfo.CachedTokens, usageInfo.TotalTokens, stopReason)
@@ -3689,6 +3709,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	}
 
 	totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.OutputTokens
+
+	// Simulate cache tokens if upstream didn't provide them.
+	// This makes the service appear to have Claude-style prompt caching for downstream consumers.
+	if totalUsage.CachedTokens == 0 && totalUsage.InputTokens > cacheSimulationMinInputTokens {
+		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * cacheSimulationReadRatio)
+		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.0f%% of input=%d)",
+			totalUsage.CachedTokens, cacheSimulationReadRatio*100, totalUsage.InputTokens)
+	}
 
 	// Log upstream usage information if received
 	if hasUpstreamUsage {
