@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -93,11 +94,27 @@ const (
 	// Minimum input tokens to trigger cache simulation.
 	// Below this threshold, treat as first-turn / simple request (no cache).
 	cacheSimulationMinInputTokens = 1024
-	// Ratio of input tokens to report as cache_read_input_tokens.
-	// 85% is realistic for multi-turn Claude conversations where system prompt
-	// + previous turns are cached, only latest user message is new.
-	cacheSimulationReadRatio = 0.85
+	// Cache read ratio range: simulate between 75%-92% cache hit rate.
+	// Real Claude multi-turn conversations typically see 70-95% cache hits
+	// depending on conversation length and new content size.
+	cacheSimulationReadRatioMin = 0.75
+	cacheSimulationReadRatioMax = 0.92
 )
+
+// cacheSimulationRatio returns a random cache read ratio in [min, max] range.
+// Uses input token count as additional entropy to vary ratio per request naturally.
+func cacheSimulationRatio(inputTokens int64) float64 {
+	jitter := rand.Float64() // [0.0, 1.0)
+	ratio := cacheSimulationReadRatioMin + jitter*(cacheSimulationReadRatioMax-cacheSimulationReadRatioMin)
+	// Slightly higher cache hit for larger contexts (more accumulated history = more cache)
+	if inputTokens > 50000 {
+		ratio += 0.02
+		if ratio > 0.95 {
+			ratio = 0.95
+		}
+	}
+	return ratio
+}
 
 // Global FingerprintManager for dynamic User-Agent generation per token
 // Each token gets a unique fingerprint on first use, which is cached for subsequent requests
@@ -2313,9 +2330,10 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 	// Simulate cache tokens if upstream didn't provide them.
 	if usageInfo.CachedTokens == 0 && usageInfo.InputTokens > cacheSimulationMinInputTokens {
-		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * cacheSimulationReadRatio)
-		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.0f%% of input=%d)",
-			usageInfo.CachedTokens, cacheSimulationReadRatio*100, usageInfo.InputTokens)
+		ratio := cacheSimulationRatio(usageInfo.InputTokens)
+		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * ratio)
+		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.1f%% of input=%d)",
+			usageInfo.CachedTokens, ratio*100, usageInfo.InputTokens)
 	}
 
 	// [DIAG] Log final usage for cache token debugging
@@ -3713,9 +3731,10 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	// Simulate cache tokens if upstream didn't provide them.
 	// This makes the service appear to have Claude-style prompt caching for downstream consumers.
 	if totalUsage.CachedTokens == 0 && totalUsage.InputTokens > cacheSimulationMinInputTokens {
-		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * cacheSimulationReadRatio)
-		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.0f%% of input=%d)",
-			totalUsage.CachedTokens, cacheSimulationReadRatio*100, totalUsage.InputTokens)
+		ratio := cacheSimulationRatio(totalUsage.InputTokens)
+		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * ratio)
+		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.1f%% of input=%d)",
+			totalUsage.CachedTokens, ratio*100, totalUsage.InputTokens)
 	}
 
 	// Log upstream usage information if received
