@@ -31,15 +31,15 @@ const (
 
 	// DefaultAssistantContentWithTools is the fallback content for assistant messages
 	// that have tool_use but no text content. Kiro API requires non-empty content.
-	// IMPORTANT: Use a minimal neutral string that the model won't mimic in responses.
-	// Previously "I'll help you with that." which caused the model to parrot it back.
-	DefaultAssistantContentWithTools = "."
+	// IMPORTANT: Use an invisible character so the model won't mimic it in responses.
+	// Previously "." which the model would echo back as a standalone line in output.
+	DefaultAssistantContentWithTools = "\u200B"
 
 	// DefaultAssistantContent is the fallback content for assistant messages
 	// that have no content at all. Kiro API requires non-empty content.
-	// IMPORTANT: Use a minimal neutral string that the model won't mimic in responses.
-	// Previously "I understand." which could leak into model behavior.
-	DefaultAssistantContent = "."
+	// IMPORTANT: Use an invisible character so the model won't mimic it in responses.
+	// Previously "." which the model would echo back as a standalone line in output.
+	DefaultAssistantContent = "\u200B"
 
 	// DefaultUserContentWithToolResults is the fallback content for user messages
 	// that have only tool_result (no text). Kiro API requires non-empty content.
