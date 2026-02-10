@@ -104,16 +104,15 @@ const (
 	// Minimum input tokens to trigger cache simulation.
 	// Below this threshold, treat as first-turn / simple request (no cache).
 	cacheSimulationMinInputTokens = 1024
-	// Cache read ratio range: simulate between 60%-85% cache hit rate.
-	// Real Claude multi-turn conversations typically see 50-88% cache hits
-	// depending on conversation length and new content size.
-	cacheSimulationReadRatioMin = 0.60
-	cacheSimulationReadRatioMax = 0.85
-	// Cache creation ratio range: simulate between 3%-8% new content per turn.
-	// Each turn adds user message + assistant reply to cache, which is a small
-	// fraction of the total context.
-	cacheSimulationCreationRatioMin = 0.03
-	cacheSimulationCreationRatioMax = 0.08
+	// Cache read ratio range: simulate between 80%-95% cache hit rate.
+	// Real Claude Code / long conversation scenarios typically see 85-97% cache hits.
+	cacheSimulationReadRatioMin = 0.80
+	cacheSimulationReadRatioMax = 0.95
+	// Cache creation ratio range: simulate between 0.5%-1.5% new content per turn.
+	// In long conversations, each turn adds very little new content relative to
+	// the total accumulated context.
+	cacheSimulationCreationRatioMin = 0.005
+	cacheSimulationCreationRatioMax = 0.015
 )
 
 // cacheSimulationRatio returns a random cache read ratio in [min, max] range.
@@ -124,8 +123,8 @@ func cacheSimulationRatio(inputTokens int64) float64 {
 	// Slightly higher cache hit for larger contexts (more accumulated history = more cache)
 	if inputTokens > 50000 {
 		ratio += 0.03
-		if ratio > 0.90 {
-			ratio = 0.90
+		if ratio > 0.97 {
+			ratio = 0.97
 		}
 	}
 	return ratio
