@@ -1963,6 +1963,10 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		case "messageMetadataEvent", "metadataEvent":
 			// Handle message metadata events which contain token counts
 			// Official format: { tokenUsage: { outputTokens, totalTokens, uncachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens, contextUsagePercentage } }
+
+			// [DIAG] Log raw messageMetadataEvent payload for cache token debugging
+			log.Infof("kiro: [CACHE-DIAG] parseEventStream received %s, raw payload: %s", eventType, string(payload))
+
 			var metadata map[string]interface{}
 			if m, ok := event["messageMetadataEvent"].(map[string]interface{}); ok {
 				metadata = m
@@ -1974,6 +1978,14 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 			// Check for nested tokenUsage object (official format)
 			if tokenUsage, ok := metadata["tokenUsage"].(map[string]interface{}); ok {
+				// [DIAG] Log all keys in tokenUsage for cache token debugging
+				tokenUsageKeys := make([]string, 0, len(tokenUsage))
+				for k := range tokenUsage {
+					tokenUsageKeys = append(tokenUsageKeys, k)
+				}
+				tokenUsageJSON, _ := json.Marshal(tokenUsage)
+				log.Infof("kiro: [CACHE-DIAG] parseEventStream tokenUsage keys=%v, full=%s", tokenUsageKeys, string(tokenUsageJSON))
+
 				// outputTokens - precise output token count
 				if outputTokens, ok := tokenUsage["outputTokens"].(float64); ok {
 					usageInfo.OutputTokens = int64(outputTokens)
@@ -1998,20 +2010,26 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 					} else {
 						usageInfo.InputTokens = int64(cacheReadTokens)
 					}
-					log.Debugf("kiro: parseEventStream found cacheReadInputTokens in tokenUsage: %d", int64(cacheReadTokens))
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream SET CachedTokens=%d from cacheReadInputTokens", usageInfo.CachedTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheReadInputTokens NOT FOUND in tokenUsage")
 				}
 				// cacheWriteInputTokens - tokens written to cache (first request)
 				if cacheWriteTokens, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
 					if usageInfo.CachedTokens == 0 {
 						usageInfo.CachedTokens = int64(cacheWriteTokens)
 					}
-					log.Debugf("kiro: parseEventStream found cacheWriteInputTokens in tokenUsage: %d", int64(cacheWriteTokens))
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheWriteInputTokens=%d, CachedTokens=%d", int64(cacheWriteTokens), usageInfo.CachedTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheWriteInputTokens NOT FOUND in tokenUsage")
 				}
 				// contextUsagePercentage - can be used as fallback for input token estimation
 				if ctxPct, ok := tokenUsage["contextUsagePercentage"].(float64); ok {
 					upstreamContextPercentage = ctxPct
 					log.Debugf("kiro: parseEventStream found contextUsagePercentage in tokenUsage: %.2f%%", ctxPct)
 				}
+			} else {
+				log.Infof("kiro: [CACHE-DIAG] parseEventStream tokenUsage object NOT FOUND in metadata")
 			}
 
 			// Fallback: check for direct fields in metadata (legacy format)
@@ -2268,6 +2286,10 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 				upstreamContextPercentage, calculatedInputTokens, localEstimate)
 		}
 	}
+
+	// [DIAG] Log final usage for cache token debugging
+	log.Infof("kiro: [CACHE-DIAG] parseEventStream FINAL usage: input=%d, output=%d, cached=%d, total=%d, stop=%s",
+		usageInfo.InputTokens, usageInfo.OutputTokens, usageInfo.CachedTokens, usageInfo.TotalTokens, stopReason)
 
 	return cleanedContent, toolUses, usageInfo, stopReason, nil
 }
@@ -3389,6 +3411,10 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		case "messageMetadataEvent", "metadataEvent":
 			// Handle message metadata events which contain token counts
 			// Official format: { tokenUsage: { outputTokens, totalTokens, uncachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens, contextUsagePercentage } }
+
+			// [DIAG] Log raw messageMetadataEvent payload for cache token debugging
+			log.Infof("kiro: [CACHE-DIAG] streamToChannel received %s, raw payload: %s", eventType, string(payload))
+
 			var metadata map[string]interface{}
 			if m, ok := event["messageMetadataEvent"].(map[string]interface{}); ok {
 				metadata = m
@@ -3400,6 +3426,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 			// Check for nested tokenUsage object (official format)
 			if tokenUsage, ok := metadata["tokenUsage"].(map[string]interface{}); ok {
+				// [DIAG] Log all keys in tokenUsage for cache token debugging
+				tokenUsageKeys := make([]string, 0, len(tokenUsage))
+				for k := range tokenUsage {
+					tokenUsageKeys = append(tokenUsageKeys, k)
+				}
+				tokenUsageJSON, _ := json.Marshal(tokenUsage)
+				log.Infof("kiro: [CACHE-DIAG] streamToChannel tokenUsage keys=%v, full=%s", tokenUsageKeys, string(tokenUsageJSON))
+
 				// outputTokens - precise output token count
 				if outputTokens, ok := tokenUsage["outputTokens"].(float64); ok {
 					totalUsage.OutputTokens = int64(outputTokens)
@@ -3427,7 +3461,9 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 						totalUsage.InputTokens = int64(cacheReadTokens)
 					}
 					hasUpstreamUsage = true
-					log.Debugf("kiro: streamToChannel found cacheReadInputTokens in tokenUsage: %d", int64(cacheReadTokens))
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel SET CachedTokens=%d from cacheReadInputTokens", totalUsage.CachedTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheReadInputTokens NOT FOUND in tokenUsage")
 				}
 				// cacheWriteInputTokens - tokens written to cache (first request)
 				if cacheWriteTokens, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
@@ -3435,13 +3471,17 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 						totalUsage.CachedTokens = int64(cacheWriteTokens)
 					}
 					hasUpstreamUsage = true
-					log.Debugf("kiro: streamToChannel found cacheWriteInputTokens in tokenUsage: %d", int64(cacheWriteTokens))
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheWriteInputTokens=%d, CachedTokens=%d", int64(cacheWriteTokens), totalUsage.CachedTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheWriteInputTokens NOT FOUND in tokenUsage")
 				}
 				// contextUsagePercentage - can be used as fallback for input token estimation
 				if ctxPct, ok := tokenUsage["contextUsagePercentage"].(float64); ok {
 					upstreamContextPercentage = ctxPct
 					log.Debugf("kiro: streamToChannel found contextUsagePercentage in tokenUsage: %.2f%%", ctxPct)
 				}
+			} else {
+				log.Infof("kiro: [CACHE-DIAG] streamToChannel tokenUsage object NOT FOUND in metadata")
 			}
 
 			// Fallback: check for direct fields in metadata (legacy format)
@@ -3659,7 +3699,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	}
 
 	// Send message_delta event
+	// [DIAG] Log final usage before sending to client
+	log.Infof("kiro: [CACHE-DIAG] streamToChannel FINAL usage before message_delta: input=%d, output=%d, cached=%d, total=%d, stop=%s",
+		totalUsage.InputTokens, totalUsage.OutputTokens, totalUsage.CachedTokens, totalUsage.TotalTokens, stopReason)
 	msgDelta := kiroclaude.BuildClaudeMessageDeltaEvent(stopReason, totalUsage)
+	// [DIAG] Log the raw message_delta SSE event to verify cache fields in output
+	log.Infof("kiro: [CACHE-DIAG] streamToChannel message_delta raw SSE: %s", string(msgDelta))
 	sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, msgDelta, &translatorParam)
 	for _, chunk := range sseData {
 		if chunk != "" {
