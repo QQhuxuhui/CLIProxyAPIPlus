@@ -1,6 +1,10 @@
 package executor
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+)
 
 func TestExtractKiroCacheTokens(t *testing.T) {
 	tests := []struct {
@@ -121,5 +125,53 @@ func TestShouldSimulateKiroCacheReadTokens(t *testing.T) {
 				t.Fatalf("shouldSimulate = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplyKiroCacheTokens_DoesNotInflateUncachedInputTokens(t *testing.T) {
+	detail := usage.Detail{InputTokens: 2500}
+	tokenUsage := map[string]interface{}{
+		"cacheReadInputTokens":  float64(7000),
+		"cacheWriteInputTokens": float64(500),
+	}
+
+	hasRead, hasCreation := applyKiroCacheTokens(&detail, tokenUsage)
+
+	if !hasRead {
+		t.Fatalf("hasRead = false, want true")
+	}
+	if !hasCreation {
+		t.Fatalf("hasCreation = false, want true")
+	}
+	if detail.InputTokens != 2500 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 2500)
+	}
+	if detail.CachedTokens != 7000 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7000)
+	}
+	if detail.CacheCreationTokens != 500 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 500)
+	}
+}
+
+func TestApplyKiroCacheTokens_WithReadOnly_DoesNotSetInputTokensFromCache(t *testing.T) {
+	detail := usage.Detail{InputTokens: 0}
+	tokenUsage := map[string]interface{}{
+		"cacheReadInputTokens": float64(7000),
+	}
+
+	hasRead, hasCreation := applyKiroCacheTokens(&detail, tokenUsage)
+
+	if !hasRead {
+		t.Fatalf("hasRead = false, want true")
+	}
+	if hasCreation {
+		t.Fatalf("hasCreation = true, want false")
+	}
+	if detail.InputTokens != 0 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 0)
+	}
+	if detail.CachedTokens != 7000 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7000)
 	}
 }
