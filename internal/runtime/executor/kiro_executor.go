@@ -90,6 +90,16 @@ var (
 // Cache token simulation configuration
 // When Kiro upstream doesn't provide cache token data, simulate realistic values
 // to match Claude API caching behavior for downstream consumers (e.g., new-api).
+//
+// Real Claude caching pattern per conversation turn:
+//   Turn 1: creation=5000, read=0        (first request, create cache)
+//   Turn 2: creation=200,  read=5000     (new content cached, old content hit)
+//   Turn 3: creation=0,    read=5200     (all cached)
+//   Turn 4: creation=300,  read=5200     (new content again)
+//
+// Since we can't track session state, we simulate a "mid-conversation" pattern:
+//   cache_read = 60%-85% of input (bulk of context is cached)
+//   cache_creation = 3%-8% of input (small amount of new content per turn)
 const (
 	// Minimum input tokens to trigger cache simulation.
 	// Below this threshold, treat as first-turn / simple request (no cache).
@@ -99,6 +109,11 @@ const (
 	// depending on conversation length and new content size.
 	cacheSimulationReadRatioMin = 0.60
 	cacheSimulationReadRatioMax = 0.85
+	// Cache creation ratio range: simulate between 3%-8% new content per turn.
+	// Each turn adds user message + assistant reply to cache, which is a small
+	// fraction of the total context.
+	cacheSimulationCreationRatioMin = 0.03
+	cacheSimulationCreationRatioMax = 0.08
 )
 
 // cacheSimulationRatio returns a random cache read ratio in [min, max] range.
@@ -114,6 +129,13 @@ func cacheSimulationRatio(inputTokens int64) float64 {
 		}
 	}
 	return ratio
+}
+
+// cacheSimulationCreationRatio returns a random cache creation ratio in [min, max] range.
+// Simulates the small amount of new content written to cache each turn.
+func cacheSimulationCreationRatio() float64 {
+	jitter := rand.Float64() // [0.0, 1.0)
+	return cacheSimulationCreationRatioMin + jitter*(cacheSimulationCreationRatioMax-cacheSimulationCreationRatioMin)
 }
 
 // extractKiroCacheTokens extracts cache read/write token counts from tokenUsage.
@@ -2366,12 +2388,14 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		}
 	}
 
-	// Simulate cache read tokens only when upstream omitted cache fields entirely.
+	// Simulate cache tokens only when upstream omitted cache fields entirely.
 	if shouldSimulateKiroCacheReadTokens(usageInfo.InputTokens, usageInfo.CachedTokens, usageInfo.CacheCreationTokens, hasUpstreamCacheFields) {
-		ratio := cacheSimulationRatio(usageInfo.InputTokens)
-		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * ratio)
-		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.1f%% of input=%d)",
-			usageInfo.CachedTokens, ratio*100, usageInfo.InputTokens)
+		readRatio := cacheSimulationRatio(usageInfo.InputTokens)
+		creationRatio := cacheSimulationCreationRatio()
+		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * readRatio)
+		usageInfo.CacheCreationTokens = int64(float64(usageInfo.InputTokens) * creationRatio)
+		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), input=%d",
+			usageInfo.CachedTokens, readRatio*100, usageInfo.CacheCreationTokens, creationRatio*100, usageInfo.InputTokens)
 	}
 
 	// [DIAG] Log final usage for cache token debugging
@@ -3770,12 +3794,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.OutputTokens
 
-	// Simulate cache read tokens only when upstream omitted cache fields entirely.
+	// Simulate cache tokens only when upstream omitted cache fields entirely.
 	if shouldSimulateKiroCacheReadTokens(totalUsage.InputTokens, totalUsage.CachedTokens, totalUsage.CacheCreationTokens, hasUpstreamCacheFields) {
-		ratio := cacheSimulationRatio(totalUsage.InputTokens)
-		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * ratio)
-		log.Debugf("kiro: simulated cache_read_input_tokens=%d (%.1f%% of input=%d)",
-			totalUsage.CachedTokens, ratio*100, totalUsage.InputTokens)
+		readRatio := cacheSimulationRatio(totalUsage.InputTokens)
+		creationRatio := cacheSimulationCreationRatio()
+		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * readRatio)
+		totalUsage.CacheCreationTokens = int64(float64(totalUsage.InputTokens) * creationRatio)
+		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), input=%d",
+			totalUsage.CachedTokens, readRatio*100, totalUsage.CacheCreationTokens, creationRatio*100, totalUsage.InputTokens)
 	}
 
 	// Log upstream usage information if received
