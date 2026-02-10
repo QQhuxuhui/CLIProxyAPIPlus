@@ -1872,7 +1872,13 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		case "assistantResponseEvent":
 			if assistantResp, ok := event["assistantResponseEvent"].(map[string]interface{}); ok {
 				if contentText, ok := assistantResp["content"].(string); ok {
-					content.WriteString(contentText)
+					// Filter out placeholder echo before accumulating
+					if contentText != kirocommon.DefaultAssistantContentWithTools &&
+						contentText != kirocommon.DefaultAssistantContent {
+						content.WriteString(contentText)
+					} else {
+						log.Debugf("kiro: parseEventStream filtered placeholder echo: %q", contentText)
+					}
 				}
 				// Extract stop_reason from assistantResponseEvent
 				if sr := kirocommon.GetString(assistantResp, "stop_reason"); sr != "" {
@@ -1909,7 +1915,12 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 			}
 			// Also try direct format
 			if contentText, ok := event["content"].(string); ok {
-				content.WriteString(contentText)
+				if contentText != kirocommon.DefaultAssistantContentWithTools &&
+					contentText != kirocommon.DefaultAssistantContent {
+					content.WriteString(contentText)
+				} else {
+					log.Debugf("kiro: parseEventStream filtered direct placeholder echo: %q", contentText)
+				}
 			}
 			// Direct tool uses
 			if toolUsesRaw, ok := event["toolUses"].([]interface{}); ok {
@@ -2912,6 +2923,16 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			}
 
 			// Handle text content with thinking mode support
+			if contentDelta != "" {
+				// Filter out placeholder echo: Kiro API requires non-empty assistant content,
+				// so we use a placeholder (e.g. "\u200B") for tool_use-only messages.
+				// The model sometimes echoes this placeholder back - suppress it.
+				if contentDelta == kirocommon.DefaultAssistantContentWithTools ||
+					contentDelta == kirocommon.DefaultAssistantContent {
+					log.Debugf("kiro: streamToChannel filtered placeholder echo: %q", contentDelta)
+					contentDelta = ""
+				}
+			}
 			if contentDelta != "" {
 				// NOTE: Duplicate content filtering was removed because it incorrectly
 				// filtered out legitimate repeated content (like consecutive newlines "\n\n").
