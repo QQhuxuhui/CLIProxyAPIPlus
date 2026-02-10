@@ -22,7 +22,7 @@ func BuildClaudeMessageStartEvent(model string, inputTokens int64) []byte {
 			"model":         model,
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]interface{}{"input_tokens": inputTokens, "output_tokens": 0},
+			"usage":         map[string]interface{}{"input_tokens": inputTokens, "output_tokens": 0, "cache_read_input_tokens": int64(0), "cache_creation_input_tokens": int64(0)},
 		},
 	}
 	result, _ := json.Marshal(event)
@@ -118,8 +118,10 @@ func BuildClaudeMessageDeltaEvent(stopReason string, usageInfo usage.Detail) []b
 			"stop_sequence": nil,
 		},
 		"usage": map[string]interface{}{
-			"input_tokens":  usageInfo.InputTokens,
-			"output_tokens": usageInfo.OutputTokens,
+			"input_tokens":                usageInfo.InputTokens,
+			"output_tokens":               usageInfo.OutputTokens,
+			"cache_read_input_tokens":     usageInfo.CachedTokens,
+			"cache_creation_input_tokens": int64(0),
 		},
 	}
 	deltaResult, _ := json.Marshal(deltaEvent)
@@ -141,10 +143,12 @@ func BuildClaudePingEventWithUsage(inputTokens, outputTokens int64) []byte {
 	event := map[string]interface{}{
 		"type": "ping",
 		"usage": map[string]interface{}{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-			"total_tokens":  inputTokens + outputTokens,
-			"estimated":     true,
+			"input_tokens":                inputTokens,
+			"output_tokens":               outputTokens,
+			"cache_read_input_tokens":     int64(0),
+			"cache_creation_input_tokens": int64(0),
+			"total_tokens":                inputTokens + outputTokens,
+			"estimated":                   true,
 		},
 	}
 	result, _ := json.Marshal(event)

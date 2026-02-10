@@ -121,8 +121,10 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 		"content":     contentBlocks,
 		"stop_reason": stopReason,
 		"usage": map[string]interface{}{
-			"input_tokens":  usageInfo.InputTokens,
-			"output_tokens": usageInfo.OutputTokens,
+			"input_tokens":                usageInfo.InputTokens,
+			"output_tokens":               usageInfo.OutputTokens,
+			"cache_read_input_tokens":     usageInfo.CachedTokens,
+			"cache_creation_input_tokens": int64(0),
 		},
 	}
 	result, _ := json.Marshal(response)

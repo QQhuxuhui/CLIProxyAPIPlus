@@ -1991,6 +1991,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 				}
 				// cacheReadInputTokens - tokens read from cache
 				if cacheReadTokens, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+					usageInfo.CachedTokens = int64(cacheReadTokens)
 					// Add to input tokens if we have uncached tokens, otherwise use as input
 					if usageInfo.InputTokens > 0 {
 						usageInfo.InputTokens += int64(cacheReadTokens)
@@ -1998,6 +1999,13 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 						usageInfo.InputTokens = int64(cacheReadTokens)
 					}
 					log.Debugf("kiro: parseEventStream found cacheReadInputTokens in tokenUsage: %d", int64(cacheReadTokens))
+				}
+				// cacheWriteInputTokens - tokens written to cache (first request)
+				if cacheWriteTokens, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+					if usageInfo.CachedTokens == 0 {
+						usageInfo.CachedTokens = int64(cacheWriteTokens)
+					}
+					log.Debugf("kiro: parseEventStream found cacheWriteInputTokens in tokenUsage: %d", int64(cacheWriteTokens))
 				}
 				// contextUsagePercentage - can be used as fallback for input token estimation
 				if ctxPct, ok := tokenUsage["contextUsagePercentage"].(float64); ok {
@@ -3411,6 +3419,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 				// cacheReadInputTokens - tokens read from cache
 				if cacheReadTokens, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+					totalUsage.CachedTokens = int64(cacheReadTokens)
 					// Add to input tokens if we have uncached tokens, otherwise use as input
 					if totalUsage.InputTokens > 0 {
 						totalUsage.InputTokens += int64(cacheReadTokens)
@@ -3419,6 +3428,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					}
 					hasUpstreamUsage = true
 					log.Debugf("kiro: streamToChannel found cacheReadInputTokens in tokenUsage: %d", int64(cacheReadTokens))
+				}
+				// cacheWriteInputTokens - tokens written to cache (first request)
+				if cacheWriteTokens, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+					if totalUsage.CachedTokens == 0 {
+						totalUsage.CachedTokens = int64(cacheWriteTokens)
+					}
+					hasUpstreamUsage = true
+					log.Debugf("kiro: streamToChannel found cacheWriteInputTokens in tokenUsage: %d", int64(cacheWriteTokens))
 				}
 				// contextUsagePercentage - can be used as fallback for input token estimation
 				if ctxPct, ok := tokenUsage["contextUsagePercentage"].(float64); ok {
