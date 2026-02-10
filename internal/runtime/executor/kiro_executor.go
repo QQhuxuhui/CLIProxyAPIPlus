@@ -2390,12 +2390,17 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 	// Simulate cache tokens only when upstream omitted cache fields entirely.
 	if shouldSimulateKiroCacheReadTokens(usageInfo.InputTokens, usageInfo.CachedTokens, usageInfo.CacheCreationTokens, hasUpstreamCacheFields) {
-		readRatio := cacheSimulationRatio(usageInfo.InputTokens)
+		totalInput := usageInfo.InputTokens
+		readRatio := cacheSimulationRatio(totalInput)
 		creationRatio := cacheSimulationCreationRatio()
-		usageInfo.CachedTokens = int64(float64(usageInfo.InputTokens) * readRatio)
-		usageInfo.CacheCreationTokens = int64(float64(usageInfo.InputTokens) * creationRatio)
-		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), input=%d",
-			usageInfo.CachedTokens, readRatio*100, usageInfo.CacheCreationTokens, creationRatio*100, usageInfo.InputTokens)
+		usageInfo.CachedTokens = int64(float64(totalInput) * readRatio)
+		usageInfo.CacheCreationTokens = int64(float64(totalInput) * creationRatio)
+		// input_tokens should only contain uncached tokens (Claude API convention)
+		// total input = input_tokens + cache_read + cache_creation
+		usageInfo.InputTokens = totalInput - usageInfo.CachedTokens - usageInfo.CacheCreationTokens
+		usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.CachedTokens + usageInfo.CacheCreationTokens + usageInfo.OutputTokens
+		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), uncached_input=%d, total_input=%d",
+			usageInfo.CachedTokens, readRatio*100, usageInfo.CacheCreationTokens, creationRatio*100, usageInfo.InputTokens, totalInput)
 	}
 
 	// [DIAG] Log final usage for cache token debugging
@@ -3796,12 +3801,17 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 	// Simulate cache tokens only when upstream omitted cache fields entirely.
 	if shouldSimulateKiroCacheReadTokens(totalUsage.InputTokens, totalUsage.CachedTokens, totalUsage.CacheCreationTokens, hasUpstreamCacheFields) {
-		readRatio := cacheSimulationRatio(totalUsage.InputTokens)
+		totalInput := totalUsage.InputTokens
+		readRatio := cacheSimulationRatio(totalInput)
 		creationRatio := cacheSimulationCreationRatio()
-		totalUsage.CachedTokens = int64(float64(totalUsage.InputTokens) * readRatio)
-		totalUsage.CacheCreationTokens = int64(float64(totalUsage.InputTokens) * creationRatio)
-		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), input=%d",
-			totalUsage.CachedTokens, readRatio*100, totalUsage.CacheCreationTokens, creationRatio*100, totalUsage.InputTokens)
+		totalUsage.CachedTokens = int64(float64(totalInput) * readRatio)
+		totalUsage.CacheCreationTokens = int64(float64(totalInput) * creationRatio)
+		// input_tokens should only contain uncached tokens (Claude API convention)
+		// total input = input_tokens + cache_read + cache_creation
+		totalUsage.InputTokens = totalInput - totalUsage.CachedTokens - totalUsage.CacheCreationTokens
+		totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.CachedTokens + totalUsage.CacheCreationTokens + totalUsage.OutputTokens
+		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), uncached_input=%d, total_input=%d",
+			totalUsage.CachedTokens, readRatio*100, totalUsage.CacheCreationTokens, creationRatio*100, totalUsage.InputTokens, totalInput)
 	}
 
 	// Log upstream usage information if received
