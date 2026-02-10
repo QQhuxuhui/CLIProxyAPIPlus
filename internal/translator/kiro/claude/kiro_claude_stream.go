@@ -22,7 +22,17 @@ func BuildClaudeMessageStartEvent(model string, inputTokens int64) []byte {
 			"model":         model,
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]interface{}{"input_tokens": inputTokens, "output_tokens": 0, "cache_read_input_tokens": int64(0), "cache_creation_input_tokens": int64(0)},
+			"usage": map[string]interface{}{
+				"input_tokens":                inputTokens,
+				"output_tokens":               0,
+				"cache_read_input_tokens":     int64(0),
+				"cache_creation_input_tokens": int64(0),
+				"service_tier":                "standard",
+				"cache_creation": map[string]interface{}{
+					"ephemeral_5m_input_tokens": int64(0),
+					"ephemeral_1h_input_tokens": int64(0),
+				},
+			},
 		},
 	}
 	result, _ := json.Marshal(event)
@@ -122,6 +132,11 @@ func BuildClaudeMessageDeltaEvent(stopReason string, usageInfo usage.Detail) []b
 			"output_tokens":               usageInfo.OutputTokens,
 			"cache_read_input_tokens":     usageInfo.CachedTokens,
 			"cache_creation_input_tokens": usageInfo.CacheCreationTokens,
+			"service_tier":                "standard",
+			"cache_creation": map[string]interface{}{
+				"ephemeral_5m_input_tokens": int64(0),
+				"ephemeral_1h_input_tokens": int64(0),
+			},
 		},
 	}
 	deltaResult, _ := json.Marshal(deltaEvent)

@@ -4,9 +4,11 @@
 package claude
 
 import (
-	"crypto/sha256"
+	"crypto/hmac"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -18,14 +20,24 @@ import (
 
 // generateThinkingSignature generates a signature for thinking content.
 // This is required by Claude API for thinking blocks in non-streaming responses.
-// The signature is a base64-encoded hash of the thinking content.
+// Uses HMAC-SHA512 with a derived key to produce a signature length (128+ chars)
+// that matches Claude's official signature format.
 func generateThinkingSignature(thinkingContent string) string {
 	if thinkingContent == "" {
 		return ""
 	}
-	// Generate a deterministic signature based on content hash
-	hash := sha256.Sum256([]byte(thinkingContent))
-	return base64.StdEncoding.EncodeToString(hash[:])
+	// Use HMAC-SHA512 with content-derived key to produce longer signature
+	// Claude official signatures are typically 120-140 characters in base64
+	key := fmt.Sprintf("erased_canary_%x", sha512.Sum512([]byte("thinking_signature_key")))
+	mac := hmac.New(sha512.New, []byte(key))
+	mac.Write([]byte(thinkingContent))
+	sig := mac.Sum(nil)
+	// Concatenate two rounds to ensure length > 100 characters
+	mac2 := hmac.New(sha512.New, sig)
+	mac2.Write([]byte(thinkingContent))
+	sig2 := mac2.Sum(nil)
+	combined := append(sig[:48], sig2[:48]...)
+	return base64.StdEncoding.EncodeToString(combined)
 }
 
 // Local references to kirocommon constants for thinking block parsing
@@ -125,6 +137,11 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 			"output_tokens":               usageInfo.OutputTokens,
 			"cache_read_input_tokens":     usageInfo.CachedTokens,
 			"cache_creation_input_tokens": usageInfo.CacheCreationTokens,
+			"service_tier":                "standard",
+			"cache_creation": map[string]interface{}{
+				"ephemeral_5m_input_tokens": int64(0),
+				"ephemeral_1h_input_tokens": int64(0),
+			},
 		},
 	}
 	result, _ := json.Marshal(response)
