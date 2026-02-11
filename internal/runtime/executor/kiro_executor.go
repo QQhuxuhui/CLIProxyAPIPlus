@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -87,56 +86,17 @@ var (
 	usageUpdateTimeInterval  = 15 * time.Second // Or every 15 seconds, whichever comes first
 )
 
-// Cache token simulation configuration
-// When Kiro upstream doesn't provide cache token data, simulate realistic values
-// to match Claude API caching behavior for downstream consumers (e.g., new-api).
-//
-// Real Claude caching pattern per conversation turn:
-//
-//	Turn 1: creation=5000, read=0        (first request, create cache)
-//	Turn 2: creation=200,  read=5000     (new content cached, old content hit)
-//	Turn 3: creation=0,    read=5200     (all cached)
-//	Turn 4: creation=300,  read=5200     (new content again)
-//
-// Since we can't track session state, we simulate a "mid-conversation" pattern:
-//
-//	cache_read = 60%-85% of input (bulk of context is cached)
-//	cache_creation = 3%-8% of input (small amount of new content per turn)
-const (
-	// Minimum input tokens to trigger cache simulation.
-	// Below this threshold, treat as first-turn / simple request (no cache).
-	cacheSimulationMinInputTokens = 1024
-	// Cache read ratio range: simulate between 80%-95% cache hit rate.
-	// Real Claude Code / long conversation scenarios typically see 85-97% cache hits.
-	cacheSimulationReadRatioMin = 0.80
-	cacheSimulationReadRatioMax = 0.95
-	// Cache creation ratio range: simulate between 0.5%-1.5% new content per turn.
-	// In long conversations, each turn adds very little new content relative to
-	// the total accumulated context.
-	cacheSimulationCreationRatioMin = 0.005
-	cacheSimulationCreationRatioMax = 0.015
-)
+// Cache simulation uses global config from config.CacheSimulation (hot-reloadable).
+// See config/cache_simulation.go for defaults and runtime access.
 
-// cacheSimulationRatio returns a random cache read ratio in [min, max] range.
-// Uses input token count as additional entropy to vary ratio per request naturally.
+// cacheSimulationRatio returns a random cache read ratio from global config.
 func cacheSimulationRatio(inputTokens int64) float64 {
-	jitter := rand.Float64() // [0.0, 1.0)
-	ratio := cacheSimulationReadRatioMin + jitter*(cacheSimulationReadRatioMax-cacheSimulationReadRatioMin)
-	// Slightly higher cache hit for larger contexts (more accumulated history = more cache)
-	if inputTokens > 50000 {
-		ratio += 0.03
-		if ratio > 0.97 {
-			ratio = 0.97
-		}
-	}
-	return ratio
+	return config.CacheSimReadRatio(inputTokens)
 }
 
-// cacheSimulationCreationRatio returns a random cache creation ratio in [min, max] range.
-// Simulates the small amount of new content written to cache each turn.
+// cacheSimulationCreationRatio returns a random cache creation ratio from global config.
 func cacheSimulationCreationRatio() float64 {
-	jitter := rand.Float64() // [0.0, 1.0)
-	return cacheSimulationCreationRatioMin + jitter*(cacheSimulationCreationRatioMax-cacheSimulationCreationRatioMin)
+	return config.CacheSimCreationRatio()
 }
 
 // extractKiroCacheTokens extracts cache read/write token counts from tokenUsage.
@@ -182,7 +142,11 @@ func applyKiroCacheTokens(detail *usage.Detail, tokenUsage map[string]interface{
 // shouldSimulateKiroCacheReadTokens decides whether cache_read_input_tokens should be simulated.
 // Only simulate when upstream provided no cache fields at all.
 func shouldSimulateKiroCacheReadTokens(inputTokens, cacheReadTokens, cacheCreationTokens int64, hasUpstreamCacheField bool) bool {
-	if inputTokens <= cacheSimulationMinInputTokens {
+	sim := config.GetCacheSimulation()
+	if !sim.Enabled {
+		return false
+	}
+	if inputTokens <= sim.MinInputTokens {
 		return false
 	}
 	if hasUpstreamCacheField {

@@ -40,6 +40,17 @@ api-keys:
 # Enable debug logging
 debug: false
 
+# Cache simulation for Claude API compatibility (Kiro & Antigravity channels).
+# Simulates cache_read_input_tokens and cache_creation_input_tokens in responses.
+# All values hot-reload when config.yaml is saved via the management panel.
+# cache-simulation:
+#   enabled: true                # default: true. Set false to disable simulation entirely.
+#   read-ratio-min: 0.80         # minimum cache read ratio (default: 0.80)
+#   read-ratio-max: 0.95         # maximum cache read ratio (default: 0.95)
+#   creation-ratio-min: 0.005    # minimum cache creation ratio (default: 0.005)
+#   creation-ratio-max: 0.015    # maximum cache creation ratio (default: 0.015)
+#   min-input-tokens: 1024       # skip simulation when input tokens below this (default: 1024)
+
 # Enable pprof HTTP debug server (host:port). Keep it bound to localhost for safety.
 pprof:
   enable: false

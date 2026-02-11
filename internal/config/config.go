@@ -122,6 +122,11 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// CacheSimulation controls simulated cache token data for downstream consumers.
+	// When upstream providers don't return cache token data, these parameters control
+	// the simulated cache_read and cache_creation ratios sent to downstream (e.g., new-api).
+	CacheSimulation CacheSimulationConfig `yaml:"cache-simulation,omitempty" json:"cache-simulation,omitempty"`
+
 	// IncognitoBrowser enables opening OAuth URLs in incognito/private browsing mode.
 	// This is useful when you want to login with a different account without logging out
 	// from your current session. Default: false.
@@ -151,6 +156,24 @@ type TLSConfig struct {
 	Cert string `yaml:"cert" json:"cert"`
 	// Key is the path to the TLS private key file.
 	Key string `yaml:"key" json:"key"`
+}
+
+// CacheSimulationConfig controls simulated cache token ratios.
+// All ratio values are between 0.0 and 1.0 (e.g., 0.85 = 85%).
+// When all values are 0, built-in defaults are used.
+type CacheSimulationConfig struct {
+	// Enabled controls whether cache simulation is active. Default: true.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// ReadRatioMin is the minimum cache read ratio. Default: 0.80
+	ReadRatioMin float64 `yaml:"read-ratio-min,omitempty" json:"read-ratio-min,omitempty"`
+	// ReadRatioMax is the maximum cache read ratio. Default: 0.95
+	ReadRatioMax float64 `yaml:"read-ratio-max,omitempty" json:"read-ratio-max,omitempty"`
+	// CreationRatioMin is the minimum cache creation ratio. Default: 0.005
+	CreationRatioMin float64 `yaml:"creation-ratio-min,omitempty" json:"creation-ratio-min,omitempty"`
+	// CreationRatioMax is the maximum cache creation ratio. Default: 0.015
+	CreationRatioMax float64 `yaml:"creation-ratio-max,omitempty" json:"creation-ratio-max,omitempty"`
+	// MinInputTokens is the minimum input tokens to trigger simulation. Default: 1024
+	MinInputTokens int64 `yaml:"min-input-tokens,omitempty" json:"min-input-tokens,omitempty"`
 }
 
 // PprofConfig holds pprof HTTP server settings.
@@ -699,6 +722,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// 		fmt.Println("Legacy configuration normalized in memory; persistence skipped.")
 	// 	}
 	// }
+
+	// Update global cache simulation config (hot-reload safe via atomic.Value).
+	UpdateCacheSimulation(cfg.CacheSimulation)
 
 	// Return the populated configuration struct.
 	return &cfg, nil

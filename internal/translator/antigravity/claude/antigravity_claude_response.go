@@ -10,46 +10,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-// Cache simulation constants for antigravity channel.
-// Matches Kiro channel parameters for consistent behavior across channels.
-const (
-	agCacheSimMinInputTokens    = 1024
-	agCacheSimReadRatioMin      = 0.80
-	agCacheSimReadRatioMax      = 0.95
-	agCacheSimCreationRatioMin  = 0.005
-	agCacheSimCreationRatioMax  = 0.015
-)
-
-// agCacheSimReadRatio returns a random cache read ratio in [min, max] range.
-func agCacheSimReadRatio(inputTokens int64) float64 {
-	jitter := rand.Float64()
-	ratio := agCacheSimReadRatioMin + jitter*(agCacheSimReadRatioMax-agCacheSimReadRatioMin)
-	if inputTokens > 50000 {
-		ratio += 0.03
-		if ratio > 0.97 {
-			ratio = 0.97
-		}
-	}
-	return ratio
-}
-
-// agCacheSimCreationRatio returns a random cache creation ratio in [min, max] range.
-func agCacheSimCreationRatio() float64 {
-	jitter := rand.Float64()
-	return agCacheSimCreationRatioMin + jitter*(agCacheSimCreationRatioMax-agCacheSimCreationRatioMin)
-}
 
 // Params holds parameters for response conversion and maintains state across streaming chunks.
 // This structure tracks the current state of the response translation process to ensure
@@ -364,10 +335,11 @@ func appendFinalEvents(params *Params, output *string, force bool) {
 	promptTokens := params.PromptTokenCount
 	totalInput := promptTokens + cacheReadTokens // reconstruct total input
 
-	if cacheReadTokens == 0 && totalInput > agCacheSimMinInputTokens {
+	sim := config.GetCacheSimulation()
+	if cacheReadTokens == 0 && sim.Enabled && totalInput > sim.MinInputTokens {
 		// No upstream cache data, simulate
-		readRatio := agCacheSimReadRatio(totalInput)
-		creationRatio := agCacheSimCreationRatio()
+		readRatio := config.CacheSimReadRatio(totalInput)
+		creationRatio := config.CacheSimCreationRatio()
 		cacheReadTokens = int64(float64(totalInput) * readRatio)
 		cacheCreationTokens = int64(float64(totalInput) * creationRatio)
 		// input_tokens should only contain uncached portion (Claude API convention)
@@ -437,14 +409,17 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	var cacheCreationTokens int64
 	totalInput := promptTokens + cachedTokens // reconstruct total input
 
-	if cacheReadTokens == 0 && totalInput > agCacheSimMinInputTokens {
-		readRatio := agCacheSimReadRatio(totalInput)
-		creationRatio := agCacheSimCreationRatio()
-		cacheReadTokens = int64(float64(totalInput) * readRatio)
-		cacheCreationTokens = int64(float64(totalInput) * creationRatio)
-		promptTokens = totalInput - cacheReadTokens - cacheCreationTokens
-		log.Debugf("antigravity: non-stream simulated cache: read=%d, creation=%d, uncached=%d, total_input=%d",
-			cacheReadTokens, cacheCreationTokens, promptTokens, totalInput)
+	if cacheReadTokens == 0 {
+		simNS := config.GetCacheSimulation()
+		if simNS.Enabled && totalInput > simNS.MinInputTokens {
+			readRatio := config.CacheSimReadRatio(totalInput)
+			creationRatio := config.CacheSimCreationRatio()
+			cacheReadTokens = int64(float64(totalInput) * readRatio)
+			cacheCreationTokens = int64(float64(totalInput) * creationRatio)
+			promptTokens = totalInput - cacheReadTokens - cacheCreationTokens
+			log.Debugf("antigravity: non-stream simulated cache: read=%d, creation=%d, uncached=%d, total_input=%d",
+				cacheReadTokens, cacheCreationTokens, promptTokens, totalInput)
+		}
 	}
 
 	responseJSON, _ = sjson.Set(responseJSON, "usage.input_tokens", promptTokens)
