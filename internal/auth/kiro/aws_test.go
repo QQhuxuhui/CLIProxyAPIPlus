@@ -3,6 +3,7 @@ package kiro
 import (
 	"encoding/base64"
 	"encoding/json"
+	"regexp"
 	"testing"
 )
 
@@ -215,9 +216,10 @@ func TestExtractIDCIdentifier(t *testing.T) {
 
 func TestGenerateTokenFileName(t *testing.T) {
 	tests := []struct {
-		name      string
-		tokenData *KiroTokenData
-		expected  string
+		name            string
+		tokenData       *KiroTokenData
+		expected        string
+		expectedPattern string
 	}{
 		{
 			name: "IDC with email",
@@ -235,7 +237,7 @@ func TestGenerateTokenFileName(t *testing.T) {
 				Email:      "",
 				StartURL:   "https://d-1234567890.awsapps.com/start",
 			},
-			expected: "kiro-idc-d-1234567890.json",
+			expectedPattern: `^kiro-idc-d-1234567890-[0-9]{5}\.json$`,
 		},
 		{
 			name: "IDC with company name in startUrl",
@@ -244,7 +246,7 @@ func TestGenerateTokenFileName(t *testing.T) {
 				Email:      "",
 				StartURL:   "https://my-company.awsapps.com/start",
 			},
-			expected: "kiro-idc-my-company.json",
+			expectedPattern: `^kiro-idc-my-company-[0-9]{5}\.json$`,
 		},
 		{
 			name: "IDC without email and without startUrl",
@@ -253,7 +255,7 @@ func TestGenerateTokenFileName(t *testing.T) {
 				Email:      "",
 				StartURL:   "",
 			},
-			expected: "kiro-idc.json",
+			expectedPattern: `^kiro-idc-[0-9]{5}\.json$`,
 		},
 		{
 			name: "Builder ID with email",
@@ -271,7 +273,7 @@ func TestGenerateTokenFileName(t *testing.T) {
 				Email:      "",
 				StartURL:   "https://view.awsapps.com/start",
 			},
-			expected: "kiro-builder-id.json",
+			expectedPattern: `^kiro-builder-id-[0-9]{5}\.json$`,
 		},
 		{
 			name: "Social auth with email",
@@ -287,7 +289,7 @@ func TestGenerateTokenFileName(t *testing.T) {
 				AuthMethod: "",
 				Email:      "",
 			},
-			expected: "kiro-unknown.json",
+			expectedPattern: `^kiro-unknown-[0-9]{5}\.json$`,
 		},
 		{
 			name: "Email with special characters",
@@ -303,6 +305,13 @@ func TestGenerateTokenFileName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := GenerateTokenFileName(tt.tokenData)
+			if tt.expectedPattern != "" {
+				if !regexp.MustCompile(tt.expectedPattern).MatchString(result) {
+					t.Errorf("GenerateTokenFileName() = %q, want pattern %q", result, tt.expectedPattern)
+				}
+				return
+			}
+
 			if result != tt.expected {
 				t.Errorf("GenerateTokenFileName() = %q, want %q", result, tt.expected)
 			}

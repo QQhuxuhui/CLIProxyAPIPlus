@@ -1945,12 +1945,19 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		case "assistantResponseEvent":
 			if assistantResp, ok := event["assistantResponseEvent"].(map[string]interface{}); ok {
 				if contentText, ok := assistantResp["content"].(string); ok {
-					// Filter out placeholder echo before accumulating
-					if contentText != kirocommon.DefaultAssistantContentWithTools &&
-						contentText != kirocommon.DefaultAssistantContent {
+					// Strip placeholder characters before accumulating
+					originalText := contentText
+					contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContentWithTools, "")
+					if kirocommon.DefaultAssistantContent != kirocommon.DefaultAssistantContentWithTools {
+						contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContent, "")
+					}
+					if contentText != originalText {
+						contentText = strings.TrimSpace(contentText)
+					}
+					if contentText != "" {
 						content.WriteString(contentText)
 					} else {
-						log.Debugf("kiro: parseEventStream filtered placeholder echo: %q", contentText)
+						log.Debugf("kiro: parseEventStream filtered placeholder echo")
 					}
 				}
 				// Extract stop_reason from assistantResponseEvent
@@ -1988,11 +1995,19 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 			}
 			// Also try direct format
 			if contentText, ok := event["content"].(string); ok {
-				if contentText != kirocommon.DefaultAssistantContentWithTools &&
-					contentText != kirocommon.DefaultAssistantContent {
+				// Strip placeholder characters before accumulating
+				originalText := contentText
+				contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContentWithTools, "")
+				if kirocommon.DefaultAssistantContent != kirocommon.DefaultAssistantContentWithTools {
+					contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContent, "")
+				}
+				if contentText != originalText {
+					contentText = strings.TrimSpace(contentText)
+				}
+				if contentText != "" {
 					content.WriteString(contentText)
 				} else {
-					log.Debugf("kiro: parseEventStream filtered direct placeholder echo: %q", contentText)
+					log.Debugf("kiro: parseEventStream filtered direct placeholder echo")
 				}
 			}
 			// Direct tool uses
@@ -3017,12 +3032,20 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			// Handle text content with thinking mode support
 			if contentDelta != "" {
 				// Filter out placeholder echo: Kiro API requires non-empty assistant content,
-				// so we use a placeholder (e.g. "\u200B") for tool_use-only messages.
-				// The model sometimes echoes this placeholder back - suppress it.
-				if contentDelta == kirocommon.DefaultAssistantContentWithTools ||
-					contentDelta == kirocommon.DefaultAssistantContent {
-					log.Debugf("kiro: streamToChannel filtered placeholder echo: %q", contentDelta)
-					contentDelta = ""
+				// so we use a placeholder ("\u200B") for tool_use-only messages.
+				// The model sometimes echoes this back — strip ALL occurrences, not just exact match,
+				// because the echo may contain multiple \u200B or mix with whitespace.
+				originalDelta := contentDelta
+				contentDelta = strings.ReplaceAll(contentDelta, kirocommon.DefaultAssistantContentWithTools, "")
+				if kirocommon.DefaultAssistantContent != kirocommon.DefaultAssistantContentWithTools {
+					contentDelta = strings.ReplaceAll(contentDelta, kirocommon.DefaultAssistantContent, "")
+				}
+				if contentDelta != originalDelta {
+					// Placeholder was stripped — residual whitespace is also echo artifact, trim it.
+					contentDelta = strings.TrimSpace(contentDelta)
+				}
+				if contentDelta == "" {
+					log.Debugf("kiro: streamToChannel filtered placeholder echo")
 				}
 			}
 			if contentDelta != "" {
