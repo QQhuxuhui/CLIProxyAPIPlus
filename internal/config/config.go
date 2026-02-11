@@ -574,13 +574,23 @@ func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 //   - *Config: The loaded configuration
 //   - error: An error if the configuration could not be loaded
 func LoadConfig(configFile string) (*Config, error) {
-	return LoadConfigOptional(configFile, false)
+	return loadConfigOptional(configFile, false, true)
 }
 
 // LoadConfigOptional reads YAML from configFile.
 // If optional is true and the file is missing, it returns an empty Config.
 // If optional is true and the file is empty or invalid, it returns an empty Config.
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
+	return loadConfigOptional(configFile, optional, true)
+}
+
+// LoadConfigOptionalForValidation reads YAML for syntax/structure validation only.
+// It performs parsing and sanitization but does NOT apply runtime global side effects.
+func LoadConfigOptionalForValidation(configFile string, optional bool) (*Config, error) {
+	return loadConfigOptional(configFile, optional, false)
+}
+
+func loadConfigOptional(configFile string, optional bool, applyRuntimeSideEffects bool) (*Config, error) {
 	// NOTE: Startup oauth-model-alias migration is intentionally disabled.
 	// Reason: avoid mutating config.yaml during server startup.
 	// Re-enable the block below if automatic startup migration is needed again.
@@ -723,8 +733,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// 	}
 	// }
 
-	// Update global cache simulation config (hot-reload safe via atomic.Value).
-	UpdateCacheSimulation(cfg.CacheSimulation)
+	if applyRuntimeSideEffects {
+		// Update global cache simulation config (hot-reload safe via atomic.Value).
+		UpdateCacheSimulation(cfg.CacheSimulation)
+	}
 
 	// Return the populated configuration struct.
 	return &cfg, nil
