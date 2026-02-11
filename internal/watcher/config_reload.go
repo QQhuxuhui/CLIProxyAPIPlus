@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
 	"gopkg.in/yaml.v3"
@@ -110,6 +111,7 @@ func (w *Watcher) reloadConfig() bool {
 	}
 
 	util.SetLogLevel(newConfig)
+	runtimeexecutor.ApplyMasqueradeTraceConfig(newConfig)
 	if oldConfig != nil && oldConfig.Debug != newConfig.Debug {
 		log.Debugf("log level updated - debug mode changed from %t to %t", oldConfig.Debug, newConfig.Debug)
 	}

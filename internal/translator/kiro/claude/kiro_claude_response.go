@@ -4,9 +4,11 @@
 package claude
 
 import (
-	"crypto/sha256"
+	"crypto/hmac"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -18,14 +20,24 @@ import (
 
 // generateThinkingSignature generates a signature for thinking content.
 // This is required by Claude API for thinking blocks in non-streaming responses.
-// The signature is a base64-encoded hash of the thinking content.
+// Uses HMAC-SHA512 with a derived key to produce a signature length (128+ chars)
+// that matches Claude's official signature format.
 func generateThinkingSignature(thinkingContent string) string {
 	if thinkingContent == "" {
 		return ""
 	}
-	// Generate a deterministic signature based on content hash
-	hash := sha256.Sum256([]byte(thinkingContent))
-	return base64.StdEncoding.EncodeToString(hash[:])
+	// Use HMAC-SHA512 with content-derived key to produce longer signature
+	// Claude official signatures are typically 120-140 characters in base64
+	key := fmt.Sprintf("erased_canary_%x", sha512.Sum512([]byte("thinking_signature_key")))
+	mac := hmac.New(sha512.New, []byte(key))
+	mac.Write([]byte(thinkingContent))
+	sig := mac.Sum(nil)
+	// Concatenate two rounds to ensure length > 100 characters
+	mac2 := hmac.New(sha512.New, sig)
+	mac2.Write([]byte(thinkingContent))
+	sig2 := mac2.Sum(nil)
+	combined := append(sig[:48], sig2[:48]...)
+	return base64.StdEncoding.EncodeToString(combined)
 }
 
 // Local references to kirocommon constants for thinking block parsing
@@ -55,14 +67,39 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 		}
 	}
 
-	// Add tool_use blocks
+	// Add tool_use blocks - emit truncated tools with SOFT_LIMIT_REACHED marker
+	hasTruncatedTools := false
 	for _, toolUse := range toolUses {
-		contentBlocks = append(contentBlocks, map[string]interface{}{
-			"type":  "tool_use",
-			"id":    toolUse.ToolUseID,
-			"name":  toolUse.Name,
-			"input": toolUse.Input,
-		})
+		if toolUse.IsTruncated && toolUse.TruncationInfo != nil {
+			// Emit tool_use with SOFT_LIMIT_REACHED marker input
+			hasTruncatedTools = true
+			log.Infof("kiro: buildClaudeResponse emitting truncated tool with SOFT_LIMIT_REACHED: %s (ID: %s)", toolUse.Name, toolUse.ToolUseID)
+
+			markerInput := map[string]interface{}{
+				"_status":  "SOFT_LIMIT_REACHED",
+				"_message": "Tool output was truncated. Split content into smaller chunks (max 300 lines). Due to potential model hallucination, you MUST re-fetch the current working directory and generate the correct file_path.",
+			}
+
+			contentBlocks = append(contentBlocks, map[string]interface{}{
+				"type":  "tool_use",
+				"id":    toolUse.ToolUseID,
+				"name":  toolUse.Name,
+				"input": markerInput,
+			})
+		} else {
+			// Normal tool use
+			contentBlocks = append(contentBlocks, map[string]interface{}{
+				"type":  "tool_use",
+				"id":    toolUse.ToolUseID,
+				"name":  toolUse.Name,
+				"input": toolUse.Input,
+			})
+		}
+	}
+
+	// Log if we used SOFT_LIMIT_REACHED
+	if hasTruncatedTools {
+		log.Infof("kiro: buildClaudeResponse using SOFT_LIMIT_REACHED - keeping stop_reason=tool_use")
 	}
 
 	// Ensure at least one content block (Claude API requires non-empty content)
@@ -74,6 +111,7 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 	}
 
 	// Use upstream stopReason; apply fallback logic if not provided
+	// SOFT_LIMIT_REACHED: Keep stop_reason = "tool_use" so Claude continues the loop
 	if stopReason == "" {
 		stopReason = "end_turn"
 		if len(toolUses) > 0 {
@@ -95,8 +133,15 @@ func BuildClaudeResponse(content string, toolUses []KiroToolUse, model string, u
 		"content":     contentBlocks,
 		"stop_reason": stopReason,
 		"usage": map[string]interface{}{
-			"input_tokens":  usageInfo.InputTokens,
-			"output_tokens": usageInfo.OutputTokens,
+			"input_tokens":                usageInfo.InputTokens,
+			"output_tokens":               usageInfo.OutputTokens,
+			"cache_read_input_tokens":     usageInfo.CachedTokens,
+			"cache_creation_input_tokens": usageInfo.CacheCreationTokens,
+			"service_tier":                "standard",
+			"cache_creation": map[string]interface{}{
+				"ephemeral_5m_input_tokens": int64(0),
+				"ephemeral_1h_input_tokens": int64(0),
+			},
 		},
 	}
 	result, _ := json.Marshal(response)

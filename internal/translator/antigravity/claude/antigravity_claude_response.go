@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tidwall/gjson"
@@ -96,7 +97,7 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 
 		// Create the initial message structure with default values according to Claude Code API specification
 		// This follows the Claude Code API specification for streaming message initialization
-		messageStartTemplate := `{"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`
+		messageStartTemplate := `{"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "service_tier": "standard", "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}}}}`
 
 		// Use cpaUsageMetadata within the message_start event for Claude.
 		if promptTokenCount := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata.promptTokenCount"); promptTokenCount.Exists() {
@@ -328,17 +329,29 @@ func appendFinalEvents(params *Params, output *string, force bool) {
 		}
 	}
 
+	// Cache simulation: if upstream didn't provide cache data, simulate it
+	cacheReadTokens := params.CachedTokenCount
+	var cacheCreationTokens int64
+	promptTokens := params.PromptTokenCount
+	totalInput := promptTokens + cacheReadTokens // reconstruct total input
+
+	sim := config.GetCacheSimulation()
+	if cacheReadTokens == 0 && sim.Enabled && totalInput > sim.MinInputTokens {
+		// No upstream cache data, simulate
+		readRatio := config.CacheSimReadRatio(totalInput)
+		creationRatio := config.CacheSimCreationRatio()
+		cacheReadTokens = int64(float64(totalInput) * readRatio)
+		cacheCreationTokens = int64(float64(totalInput) * creationRatio)
+		// input_tokens should only contain uncached portion (Claude API convention)
+		promptTokens = totalInput - cacheReadTokens - cacheCreationTokens
+		log.Debugf("antigravity: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), uncached=%d, total_input=%d",
+			cacheReadTokens, readRatio*100, cacheCreationTokens, creationRatio*100, promptTokens, totalInput)
+	}
+
 	*output = *output + "event: message_delta\n"
 	*output = *output + "data: "
-	delta := fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"input_tokens":%d,"output_tokens":%d}}`, stopReason, params.PromptTokenCount, usageOutputTokens)
-	// Add cache_read_input_tokens if cached tokens are present (indicates prompt caching is working)
-	if params.CachedTokenCount > 0 {
-		var err error
-		delta, err = sjson.Set(delta, "usage.cache_read_input_tokens", params.CachedTokenCount)
-		if err != nil {
-			log.Warnf("antigravity claude response: failed to set cache_read_input_tokens: %v", err)
-		}
-	}
+	delta := fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":%d,"service_tier":"standard","cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}`,
+		stopReason, promptTokens, usageOutputTokens, cacheReadTokens, cacheCreationTokens)
 	*output = *output + delta + "\n\n\n"
 
 	params.HasSentFinalEvents = true
@@ -387,19 +400,32 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		}
 	}
 
-	responseJSON := `{"id":"","type":"message","role":"assistant","model":"","content":null,"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`
+	responseJSON := `{"id":"","type":"message","role":"assistant","model":"","content":null,"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"service_tier":"standard","cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}`
 	responseJSON, _ = sjson.Set(responseJSON, "id", root.Get("response.responseId").String())
 	responseJSON, _ = sjson.Set(responseJSON, "model", root.Get("response.modelVersion").String())
-	responseJSON, _ = sjson.Set(responseJSON, "usage.input_tokens", promptTokens)
-	responseJSON, _ = sjson.Set(responseJSON, "usage.output_tokens", outputTokens)
-	// Add cache_read_input_tokens if cached tokens are present (indicates prompt caching is working)
-	if cachedTokens > 0 {
-		var err error
-		responseJSON, err = sjson.Set(responseJSON, "usage.cache_read_input_tokens", cachedTokens)
-		if err != nil {
-			log.Warnf("antigravity claude response: failed to set cache_read_input_tokens: %v", err)
+
+	// Cache simulation for non-streaming response
+	cacheReadTokens := cachedTokens
+	var cacheCreationTokens int64
+	totalInput := promptTokens + cachedTokens // reconstruct total input
+
+	if cacheReadTokens == 0 {
+		simNS := config.GetCacheSimulation()
+		if simNS.Enabled && totalInput > simNS.MinInputTokens {
+			readRatio := config.CacheSimReadRatio(totalInput)
+			creationRatio := config.CacheSimCreationRatio()
+			cacheReadTokens = int64(float64(totalInput) * readRatio)
+			cacheCreationTokens = int64(float64(totalInput) * creationRatio)
+			promptTokens = totalInput - cacheReadTokens - cacheCreationTokens
+			log.Debugf("antigravity: non-stream simulated cache: read=%d, creation=%d, uncached=%d, total_input=%d",
+				cacheReadTokens, cacheCreationTokens, promptTokens, totalInput)
 		}
 	}
+
+	responseJSON, _ = sjson.Set(responseJSON, "usage.input_tokens", promptTokens)
+	responseJSON, _ = sjson.Set(responseJSON, "usage.output_tokens", outputTokens)
+	responseJSON, _ = sjson.Set(responseJSON, "usage.cache_read_input_tokens", cacheReadTokens)
+	responseJSON, _ = sjson.Set(responseJSON, "usage.cache_creation_input_tokens", cacheCreationTokens)
 
 	contentArrayInitialized := false
 	ensureContentArray := func() {

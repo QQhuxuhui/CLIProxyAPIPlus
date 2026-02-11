@@ -1,0 +1,439 @@
+@use '../styles/mixins' as *;
+
+.container {
+  width: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+
+  @include mobile {
+    min-height: auto;
+    overflow: visible;
+  }
+}
+
+.pageTitle {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 $spacing-lg 0;
+
+  @include mobile {
+    font-size: 24px;
+    margin-bottom: $spacing-md;
+  }
+}
+
+.traceCard {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+
+  @include mobile {
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
+  }
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: $spacing-md;
+  flex-wrap: wrap;
+  margin-bottom: $spacing-md;
+
+  @include mobile {
+    gap: $spacing-sm;
+    margin-bottom: $spacing-sm;
+  }
+}
+
+.searchWrapper {
+  flex: 1;
+  min-width: 220px;
+  max-width: 420px;
+}
+
+.searchInput {
+  padding-right: 44px !important;
+}
+
+.searchIcon {
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.searchClear {
+  @include button-reset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: $radius-full;
+  color: var(--text-secondary);
+
+  &:hover {
+    background: var(--bg-secondary);
+  }
+}
+
+.statusBadge {
+  display: flex;
+  align-items: center;
+}
+
+.statusEnabled {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: $radius-full;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success-badge-text);
+  background: var(--success-badge-bg);
+  border: 1px solid var(--success-badge-border);
+}
+
+.statusDisabled {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: $radius-full;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  flex-wrap: wrap;
+  margin-left: auto;
+
+  @include mobile {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+.actionButton {
+  white-space: nowrap;
+}
+
+.buttonContent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  svg {
+    flex: 0 0 auto;
+  }
+}
+
+.traceList {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  background: var(--bg-secondary);
+}
+
+.traceHeader {
+  display: grid;
+  grid-template-columns: 160px 1fr 180px 200px;
+  gap: $spacing-md;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+
+  @include tablet {
+    grid-template-columns: 140px 1fr 150px 160px;
+    gap: $spacing-sm;
+    padding: 10px 12px;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+    gap: $spacing-xs;
+    padding: 10px;
+
+    > span:not(:first-child) {
+      display: none;
+    }
+  }
+}
+
+.traceRow {
+  display: grid;
+  grid-template-columns: 160px 1fr 180px 200px;
+  gap: $spacing-md;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: rgba(59, 130, 246, 0.06);
+  }
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  @include tablet {
+    grid-template-columns: 140px 1fr 150px 160px;
+    gap: $spacing-sm;
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+    gap: $spacing-xs;
+    padding: 10px;
+    font-size: 12px;
+  }
+}
+
+.rowChanged {
+  border-left: 3px solid var(--warning-color);
+}
+
+.colTime {
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.colModel {
+  font-weight: 500;
+  @include text-ellipsis;
+}
+
+.colAuth {
+  color: var(--text-secondary);
+  @include text-ellipsis;
+}
+
+.colChanges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+
+  @include mobile {
+    justify-content: flex-start;
+  }
+}
+
+.changeBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: $radius-full;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--info-color);
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  white-space: nowrap;
+}
+
+.userIdBadge {
+  color: var(--warning-color);
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+// Detail Modal
+
+.detailContent {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-lg;
+}
+
+.detailMeta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: $spacing-sm;
+  padding: $spacing-md;
+  background: var(--bg-secondary);
+  border-radius: $radius-md;
+  border: 1px solid var(--border-color);
+}
+
+.metaItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metaLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.metaValue {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.sectionTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding-bottom: $spacing-xs;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.userIdComparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $spacing-md;
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.userIdBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: $spacing-md;
+  background: var(--bg-secondary);
+  border-radius: $radius-md;
+  border: 1px solid var(--border-color);
+}
+
+.userIdLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.userIdValue {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  word-break: break-all;
+}
+
+.sessionValue {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  word-break: break-all;
+  margin-top: 4px;
+}
+
+.valueChanged {
+  color: var(--warning-color);
+  font-weight: 600;
+}
+
+// Header Comparison Grid
+
+.comparisonGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $spacing-md;
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.comparisonColumn {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  overflow: hidden;
+}
+
+.comparisonHeader {
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.headerList {
+  display: flex;
+  flex-direction: column;
+  max-height: 400px;
+  overflow: auto;
+  background: var(--bg-secondary);
+}
+
+.headerItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.headerChanged {
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid var(--warning-color);
+}
+
+.headerKey {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.headerValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  color: var(--text-primary);
+  word-break: break-all;
+
+  em {
+    color: var(--text-tertiary);
+    font-style: italic;
+  }
+}

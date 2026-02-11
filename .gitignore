@@ -13,6 +13,7 @@ logs/*
 conv/*
 temp/*
 refs/*
+tmp/*
 
 # Storage backends
 pgstore/*
@@ -35,6 +36,8 @@ GEMINI.md
 .vscode/*
 .codex/*
 .claude/*
+.gocache/*
+.gomodcache/*
 .gemini/*
 .serena/*
 .agent/*

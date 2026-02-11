@@ -35,7 +35,7 @@ import (
 
 const (
 	// Kiro API common constants
-	kiroContentType  = "application/x-amz-json-1.0"
+	kiroContentType  = "application/json"
 	kiroAcceptStream = "*/*"
 
 	// Event Stream frame size constants for boundary protection
@@ -47,17 +47,18 @@ const (
 	// Event Stream error type constants
 	ErrStreamFatal     = "fatal"     // Connection/authentication errors, not recoverable
 	ErrStreamMalformed = "malformed" // Format errors, data cannot be parsed
-	// kiroUserAgent matches amq2api format for User-Agent header (Amazon Q CLI style)
+
+	// kiroUserAgent matches Amazon Q CLI style for User-Agent header
 	kiroUserAgent = "aws-sdk-rust/1.3.9 os/macos lang/rust/1.87.0"
-	// kiroFullUserAgent is the complete x-amz-user-agent header matching amq2api (Amazon Q CLI style)
+	// kiroFullUserAgent is the complete x-amz-user-agent header (Amazon Q CLI style)
 	kiroFullUserAgent = "aws-sdk-rust/1.3.9 ua/2.1 api/ssooidc/1.88.0 os/macos lang/rust/1.87.0 m/E app/AmazonQ-For-CLI"
 
-	// Kiro IDE style headers (from kiro2api - for IDC auth)
-	kiroIDEUserAgent     = "aws-sdk-js/1.0.18 ua/2.1 os/darwin#25.0.0 lang/js md/nodejs#20.16.0 api/codewhispererstreaming#1.0.18 m/E KiroIDE-0.2.13-66c23a8c5d15afabec89ef9954ef52a119f10d369df04d548fc6c1eac694b0d1"
-	kiroIDEAmzUserAgent  = "aws-sdk-js/1.0.18 KiroIDE-0.2.13-66c23a8c5d15afabec89ef9954ef52a119f10d369df04d548fc6c1eac694b0d1"
-	kiroIDEAgentModeSpec = "spec"
+	// Kiro IDE style headers for IDC auth
+	kiroIDEUserAgent     = "aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E"
+	kiroIDEAmzUserAgent  = "aws-sdk-js/1.0.27"
+	kiroIDEAgentModeVibe = "vibe"
 
-	// Socket retry configuration constants (based on kiro2Api reference implementation)
+	// Socket retry configuration constants
 	// Maximum number of retry attempts for socket/network errors
 	kiroSocketMaxRetries = 3
 	// Base delay between retry attempts (uses exponential backoff: delay * 2^attempt)
@@ -85,6 +86,78 @@ var (
 	usageUpdateTimeInterval  = 15 * time.Second // Or every 15 seconds, whichever comes first
 )
 
+// Cache simulation uses global config from config.CacheSimulation (hot-reloadable).
+// See config/cache_simulation.go for defaults and runtime access.
+
+// cacheSimulationRatio returns a random cache read ratio from global config.
+func cacheSimulationRatio(inputTokens int64) float64 {
+	return config.CacheSimReadRatio(inputTokens)
+}
+
+// cacheSimulationCreationRatio returns a random cache creation ratio from global config.
+func cacheSimulationCreationRatio() float64 {
+	return config.CacheSimCreationRatio()
+}
+
+// extractKiroCacheTokens extracts cache read/write token counts from tokenUsage.
+// Returns read tokens, creation tokens, and whether upstream explicitly provided cache fields.
+func extractKiroCacheTokens(tokenUsage map[string]interface{}) (int64, int64, bool) {
+	var cacheReadTokens int64
+	var cacheCreationTokens int64
+	hasUpstreamCacheField := false
+
+	if cacheReadRaw, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+		cacheReadTokens = int64(cacheReadRaw)
+		hasUpstreamCacheField = true
+	}
+	if cacheWriteRaw, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+		cacheCreationTokens = int64(cacheWriteRaw)
+		hasUpstreamCacheField = true
+	}
+
+	return cacheReadTokens, cacheCreationTokens, hasUpstreamCacheField
+}
+
+// applyKiroCacheTokens copies upstream cache token fields into usage detail.
+// It intentionally keeps InputTokens unchanged because input_tokens should
+// represent uncached input tokens only (Claude API semantics).
+func applyKiroCacheTokens(detail *usage.Detail, tokenUsage map[string]interface{}) (hasRead, hasCreation bool) {
+	if detail == nil || tokenUsage == nil {
+		return false, false
+	}
+
+	cacheReadTokens, cacheCreationTokens, _ := extractKiroCacheTokens(tokenUsage)
+	if _, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
+		detail.CachedTokens = cacheReadTokens
+		hasRead = true
+	}
+	if _, ok := tokenUsage["cacheWriteInputTokens"].(float64); ok {
+		detail.CacheCreationTokens = cacheCreationTokens
+		hasCreation = true
+	}
+
+	return hasRead, hasCreation
+}
+
+// shouldSimulateKiroCacheReadTokens decides whether cache_read_input_tokens should be simulated.
+// Only simulate when upstream provided no cache fields at all.
+func shouldSimulateKiroCacheReadTokens(inputTokens, cacheReadTokens, cacheCreationTokens int64, hasUpstreamCacheField bool) bool {
+	sim := config.GetCacheSimulation()
+	if !sim.Enabled {
+		return false
+	}
+	if inputTokens <= sim.MinInputTokens {
+		return false
+	}
+	if hasUpstreamCacheField {
+		return false
+	}
+	if cacheReadTokens > 0 || cacheCreationTokens > 0 {
+		return false
+	}
+	return true
+}
+
 // Global FingerprintManager for dynamic User-Agent generation per token
 // Each token gets a unique fingerprint on first use, which is cached for subsequent requests
 var (
@@ -104,13 +177,13 @@ func getGlobalFingerprintManager() *kiroauth.FingerprintManager {
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
 type retryConfig struct {
-	MaxRetries       int           // Maximum number of retry attempts
-	BaseDelay        time.Duration // Base delay between retries (exponential backoff)
-	MaxDelay         time.Duration // Maximum delay cap
-	RetryableErrors  []string      // List of retryable error patterns
-	RetryableStatus  map[int]bool  // HTTP status codes to retry
-	FirstTokenTmout  time.Duration // Timeout for first token in streaming
-	StreamReadTmout  time.Duration // Timeout between stream chunks
+	MaxRetries      int           // Maximum number of retry attempts
+	BaseDelay       time.Duration // Base delay between retries (exponential backoff)
+	MaxDelay        time.Duration // Maximum delay cap
+	RetryableErrors []string      // List of retryable error patterns
+	RetryableStatus map[int]bool  // HTTP status codes to retry
+	FirstTokenTmout time.Duration // Timeout for first token in streaming
+	StreamReadTmout time.Duration // Timeout between stream chunks
 }
 
 // defaultRetryConfig returns the default retry configuration for Kiro socket operations.
@@ -334,52 +407,111 @@ type kiroEndpointConfig struct {
 	Name      string // Endpoint name for logging
 }
 
-// kiroEndpointConfigs defines the available Kiro API endpoints with their compatible configurations.
-// The order determines fallback priority: primary endpoint first, then fallbacks.
-//
-// CRITICAL: Each endpoint MUST use its compatible Origin and AmzTarget values:
-// - CodeWhisperer endpoint (codewhisperer.us-east-1.amazonaws.com): Uses AI_EDITOR origin and AmazonCodeWhispererStreamingService target
-// - Amazon Q endpoint (q.us-east-1.amazonaws.com): Uses CLI origin and AmazonQDeveloperStreamingService target
-//
-// Mismatched combinations will result in 403 Forbidden errors.
-//
-// NOTE: CodeWhisperer is set as the default endpoint because:
-// 1. Most tokens come from Kiro IDE / VSCode extensions (AWS Builder ID auth)
-// 2. These tokens use AI_EDITOR origin which is only compatible with CodeWhisperer endpoint
-// 3. Amazon Q endpoint requires CLI origin which is for Amazon Q CLI tokens
-// This matches the AIClient-2-API-main project's configuration.
-var kiroEndpointConfigs = []kiroEndpointConfig{
-	{
-		URL:       "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
-		Origin:    "AI_EDITOR",
-		AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		Name:      "CodeWhisperer",
-	},
-	{
-		URL:       "https://q.us-east-1.amazonaws.com/",
-		Origin:    "CLI",
-		AmzTarget: "AmazonQDeveloperStreamingService.SendMessage",
-		Name:      "AmazonQ",
-	},
+// kiroDefaultRegion is the default AWS region for Kiro API endpoints.
+// Used when no region is specified in auth metadata.
+const kiroDefaultRegion = "us-east-1"
+
+// extractRegionFromProfileARN extracts the AWS region from a ProfileARN.
+// ARN format: arn:aws:codewhisperer:REGION:ACCOUNT:profile/PROFILE_ID
+// Returns empty string if region cannot be extracted.
+func extractRegionFromProfileARN(profileArn string) string {
+	if profileArn == "" {
+		return ""
+	}
+	parts := strings.Split(profileArn, ":")
+	if len(parts) >= 4 && parts[3] != "" {
+		return parts[3]
+	}
+	return ""
 }
 
+// buildKiroEndpointConfigs creates endpoint configurations for the specified region.
+// This enables dynamic region support for Enterprise/IdC users in non-us-east-1 regions.
+//
+// Uses Q endpoint (q.{region}.amazonaws.com) as primary for ALL auth types:
+// - Works universally across all AWS regions (CodeWhisperer endpoint only exists in us-east-1)
+// - Uses /generateAssistantResponse path with AI_EDITOR origin
+// - Does NOT require X-Amz-Target header
+//
+// The AmzTarget field is kept for backward compatibility but should be empty
+// to indicate that the header should NOT be set.
+func buildKiroEndpointConfigs(region string) []kiroEndpointConfig {
+	if region == "" {
+		region = kiroDefaultRegion
+	}
+	return []kiroEndpointConfig{
+		{
+			// Primary: Q endpoint - works for all regions and auth types
+			URL:       fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", region),
+			Origin:    "AI_EDITOR",
+			AmzTarget: "", // Empty = don't set X-Amz-Target header
+			Name:      "AmazonQ",
+		},
+		{
+			// Fallback: CodeWhisperer endpoint (legacy, only works in us-east-1)
+			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
+			Origin:    "AI_EDITOR",
+			AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+			Name:      "CodeWhisperer",
+		},
+	}
+}
+
+// kiroEndpointConfigs is kept for backward compatibility with default us-east-1 region.
+// Prefer using buildKiroEndpointConfigs(region) for dynamic region support.
+var kiroEndpointConfigs = buildKiroEndpointConfigs(kiroDefaultRegion)
+
 // getKiroEndpointConfigs returns the list of Kiro API endpoint configurations to try in order.
+// Supports dynamic region based on auth metadata "api_region", "profile_arn", or "region" field.
 // Supports reordering based on "preferred_endpoint" in auth metadata/attributes.
-// For IDC auth method, automatically uses CodeWhisperer endpoint with CLI origin.
+//
+// Region priority:
+// 1. auth.Metadata["api_region"] - explicit API region override
+// 2. ProfileARN region - extracted from arn:aws:service:REGION:account:resource
+// 3. kiroDefaultRegion (us-east-1) - fallback
+// Note: OIDC "region" is NOT used - it's for token refresh, not API calls
 func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	if auth == nil {
 		return kiroEndpointConfigs
 	}
 
-	// For IDC auth, use CodeWhisperer endpoint with AI_EDITOR origin (same as Social auth)
-	// Based on kiro2api analysis: IDC tokens work with CodeWhisperer endpoint using Bearer auth
+	// Determine API region with priority: api_region > profile_arn > region > default
+	region := kiroDefaultRegion
+	regionSource := "default"
+
+	if auth.Metadata != nil {
+		// Priority 1: Explicit api_region override
+		if r, ok := auth.Metadata["api_region"].(string); ok && r != "" {
+			region = r
+			regionSource = "api_region"
+		} else {
+			// Priority 2: Extract from ProfileARN
+			if profileArn, ok := auth.Metadata["profile_arn"].(string); ok && profileArn != "" {
+				if arnRegion := extractRegionFromProfileARN(profileArn); arnRegion != "" {
+					region = arnRegion
+					regionSource = "profile_arn"
+				}
+			}
+			// Note: OIDC "region" field is NOT used for API endpoint
+			// Kiro API only exists in us-east-1, while OIDC region can vary (e.g., ap-northeast-2)
+			// Using OIDC region for API calls causes DNS failures
+		}
+	}
+
+	log.Debugf("kiro: using region %s (source: %s)", region, regionSource)
+
+	// Build endpoint configs for the specified region
+	endpointConfigs := buildKiroEndpointConfigs(region)
+
+	// For IDC auth, use Q endpoint with AI_EDITOR origin
+	// IDC tokens work with Q endpoint using Bearer auth
 	// The difference is only in how tokens are refreshed (OIDC with clientId/clientSecret for IDC)
 	// NOT in how API calls are made - both Social and IDC use the same endpoint/origin
 	if auth.Metadata != nil {
 		authMethod, _ := auth.Metadata["auth_method"].(string)
-		if authMethod == "idc" {
-			log.Debugf("kiro: IDC auth, using CodeWhisperer endpoint")
-			return kiroEndpointConfigs
+		if strings.ToLower(authMethod) == "idc" {
+			log.Debugf("kiro: IDC auth, using Q endpoint (region: %s)", region)
+			return endpointConfigs
 		}
 	}
 
@@ -396,7 +528,7 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	}
 
 	if preference == "" {
-		return kiroEndpointConfigs
+		return endpointConfigs
 	}
 
 	preference = strings.ToLower(strings.TrimSpace(preference))
@@ -405,7 +537,7 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 	var sorted []kiroEndpointConfig
 	var remaining []kiroEndpointConfig
 
-	for _, cfg := range kiroEndpointConfigs {
+	for _, cfg := range endpointConfigs {
 		name := strings.ToLower(cfg.Name)
 		// Check for matches
 		// CodeWhisperer aliases: codewhisperer, ide
@@ -426,7 +558,7 @@ func getKiroEndpointConfigs(auth *cliproxyauth.Auth) []kiroEndpointConfig {
 
 	// If preference didn't match anything, return default
 	if len(sorted) == 0 {
-		return kiroEndpointConfigs
+		return endpointConfigs
 	}
 
 	// Combine: preferred first, then others
@@ -445,7 +577,7 @@ func isIDCAuth(auth *cliproxyauth.Auth) bool {
 		return false
 	}
 	authMethod, _ := auth.Metadata["auth_method"].(string)
-	return authMethod == "idc"
+	return strings.ToLower(authMethod) == "idc"
 }
 
 // buildKiroPayloadForFormat builds the Kiro API payload based on the source format.
@@ -482,12 +614,12 @@ func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
 		// Get token-specific fingerprint for dynamic UA generation
 		tokenKey := getTokenKey(auth)
 		fp := getGlobalFingerprintManager().GetFingerprint(tokenKey)
-		
+
 		// Use fingerprint-generated dynamic User-Agent
 		req.Header.Set("User-Agent", fp.BuildUserAgent())
 		req.Header.Set("X-Amz-User-Agent", fp.BuildAmzUserAgent())
-		req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentModeSpec)
-		
+		req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentModeVibe)
+
 		log.Debugf("kiro: using dynamic fingerprint for token %s (SDK:%s, OS:%s/%s, Kiro:%s)",
 			tokenKey[:8]+"...", fp.SDKVersion, fp.OSType, fp.OSVersion, fp.KiroVersion)
 	} else {
@@ -506,10 +638,10 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	if strings.TrimSpace(accessToken) == "" {
 		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
-	
+
 	// Apply dynamic fingerprint-based headers
 	applyDynamicFingerprint(req, auth)
-	
+
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -665,12 +797,17 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 			httpReq.Header.Set("Content-Type", kiroContentType)
 			httpReq.Header.Set("Accept", kiroAcceptStream)
-			// Use endpoint-specific X-Amz-Target (critical for avoiding 403 errors)
-			httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
+			// Only set X-Amz-Target if specified (Q endpoint doesn't require it)
+			if endpointConfig.AmzTarget != "" {
+				httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
+			}
+			// Kiro-specific headers
+			httpReq.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentModeVibe)
+			httpReq.Header.Set("x-amzn-codewhisperer-optout", "true")
 
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
-			
+
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
@@ -910,29 +1047,35 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			}
 
 			// Fallback for usage if missing from upstream
-			if usageInfo.TotalTokens == 0 {
+
+			// 1. Estimate InputTokens if missing
+			if usageInfo.InputTokens == 0 {
 				if enc, encErr := getTokenizer(req.Model); encErr == nil {
 					if inp, countErr := countOpenAIChatTokens(enc, opts.OriginalRequest); countErr == nil {
 						usageInfo.InputTokens = inp
 					}
 				}
-				if len(content) > 0 {
-					// Use tiktoken for more accurate output token calculation
-					if enc, encErr := getTokenizer(req.Model); encErr == nil {
-						if tokenCount, countErr := enc.Count(content); countErr == nil {
-							usageInfo.OutputTokens = int64(tokenCount)
-						}
-					}
-					// Fallback to character count estimation if tiktoken fails
-					if usageInfo.OutputTokens == 0 {
-						usageInfo.OutputTokens = int64(len(content) / 4)
-						if usageInfo.OutputTokens == 0 {
-							usageInfo.OutputTokens = 1
-						}
+			}
+
+			// 2. Estimate OutputTokens if missing and content is available
+			if usageInfo.OutputTokens == 0 && len(content) > 0 {
+				// Use tiktoken for more accurate output token calculation
+				if enc, encErr := getTokenizer(req.Model); encErr == nil {
+					if tokenCount, countErr := enc.Count(content); countErr == nil {
+						usageInfo.OutputTokens = int64(tokenCount)
 					}
 				}
-				usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
+				// Fallback to character count estimation if tiktoken fails
+				if usageInfo.OutputTokens == 0 {
+					usageInfo.OutputTokens = int64(len(content) / 4)
+					if usageInfo.OutputTokens == 0 {
+						usageInfo.OutputTokens = 1
+					}
+				}
 			}
+
+			// 3. Update TotalTokens
+			usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
 
 			appendAPIResponseChunk(ctx, e.cfg, []byte(content))
 			reporter.publish(ctx, usageInfo)
@@ -1074,12 +1217,17 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 
 			httpReq.Header.Set("Content-Type", kiroContentType)
 			httpReq.Header.Set("Accept", kiroAcceptStream)
-			// Use endpoint-specific X-Amz-Target (critical for avoiding 403 errors)
-			httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
+			// Only set X-Amz-Target if specified (Q endpoint doesn't require it)
+			if endpointConfig.AmzTarget != "" {
+				httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
+			}
+			// Kiro-specific headers
+			httpReq.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentModeVibe)
+			httpReq.Header.Set("x-amzn-codewhisperer-optout", "true")
 
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
-			
+
 			httpReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 			httpReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
@@ -1537,11 +1685,27 @@ func determineAgenticMode(model string) (isAgentic, isChatOnly bool) {
 }
 
 // getEffectiveProfileArn determines if profileArn should be included based on auth method.
-// profileArn is only needed for social auth (Google OAuth), not for builder-id (AWS SSO).
+// profileArn is only needed for social auth (Google OAuth), not for AWS SSO OIDC (Builder ID/IDC).
+//
+// Detection logic (matching kiro-openai-gateway):
+// 1. Check auth_method field: "builder-id" or "idc"
+// 2. Check auth_type field: "aws_sso_oidc" (from kiro-cli tokens)
+// 3. Check for client_id + client_secret presence (AWS SSO OIDC signature)
 func getEffectiveProfileArn(auth *cliproxyauth.Auth, profileArn string) string {
 	if auth != nil && auth.Metadata != nil {
-		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && authMethod == "builder-id" {
-			return "" // Don't include profileArn for builder-id auth
+		// Check 1: auth_method field (from CLIProxyAPI tokens)
+		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && (authMethod == "builder-id" || authMethod == "idc") {
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 2: auth_type field (from kiro-cli tokens)
+		if authType, ok := auth.Metadata["auth_type"].(string); ok && authType == "aws_sso_oidc" {
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 3: client_id + client_secret presence (AWS SSO OIDC signature)
+		_, hasClientID := auth.Metadata["client_id"].(string)
+		_, hasClientSecret := auth.Metadata["client_secret"].(string)
+		if hasClientID && hasClientSecret {
+			return "" // AWS SSO OIDC - don't include profileArn
 		}
 	}
 	return profileArn
@@ -1550,14 +1714,32 @@ func getEffectiveProfileArn(auth *cliproxyauth.Auth, profileArn string) string {
 // getEffectiveProfileArnWithWarning determines if profileArn should be included based on auth method,
 // and logs a warning if profileArn is missing for non-builder-id auth.
 // This consolidates the auth_method check that was previously done separately.
+//
+// AWS SSO OIDC (Builder ID/IDC) users don't need profileArn - sending it causes 403 errors.
+// Only Kiro Desktop (social auth like Google/GitHub) users need profileArn.
+//
+// Detection logic (matching kiro-openai-gateway):
+// 1. Check auth_method field: "builder-id" or "idc"
+// 2. Check auth_type field: "aws_sso_oidc" (from kiro-cli tokens)
+// 3. Check for client_id + client_secret presence (AWS SSO OIDC signature)
 func getEffectiveProfileArnWithWarning(auth *cliproxyauth.Auth, profileArn string) string {
 	if auth != nil && auth.Metadata != nil {
+		// Check 1: auth_method field (from CLIProxyAPI tokens)
 		if authMethod, ok := auth.Metadata["auth_method"].(string); ok && (authMethod == "builder-id" || authMethod == "idc") {
-			// builder-id and idc auth don't need profileArn
-			return ""
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 2: auth_type field (from kiro-cli tokens)
+		if authType, ok := auth.Metadata["auth_type"].(string); ok && authType == "aws_sso_oidc" {
+			return "" // AWS SSO OIDC - don't include profileArn
+		}
+		// Check 3: client_id + client_secret presence (AWS SSO OIDC signature, like kiro-openai-gateway)
+		_, hasClientID := auth.Metadata["client_id"].(string)
+		_, hasClientSecret := auth.Metadata["client_secret"].(string)
+		if hasClientID && hasClientSecret {
+			return "" // AWS SSO OIDC - don't include profileArn
 		}
 	}
-	// For non-builder-id/idc auth (social auth), profileArn is required
+	// For social auth (Kiro Desktop), profileArn is required
 	if profileArn == "" {
 		log.Warnf("kiro: profile ARN not found in auth, API calls may fail")
 	}
@@ -1571,6 +1753,7 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 	modelMap := map[string]string{
 		// Amazon Q format (amazonq- prefix) - same API as Kiro
 		"amazonq-auto":                       "auto",
+		"amazonq-claude-opus-4-6":            "claude-opus-4.6",
 		"amazonq-claude-opus-4-5":            "claude-opus-4.5",
 		"amazonq-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"amazonq-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
@@ -1578,6 +1761,7 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"amazonq-claude-sonnet-4-20250514":   "claude-sonnet-4",
 		"amazonq-claude-haiku-4-5":           "claude-haiku-4.5",
 		// Kiro format (kiro- prefix) - valid model names that should be preserved
+		"kiro-claude-opus-4-6":            "claude-opus-4.6",
 		"kiro-claude-opus-4-5":            "claude-opus-4.5",
 		"kiro-claude-sonnet-4-5":          "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
@@ -1586,6 +1770,8 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"kiro-claude-haiku-4-5":           "claude-haiku-4.5",
 		"kiro-auto":                       "auto",
 		// Native format (no prefix) - used by Kiro IDE directly
+		"claude-opus-4-6":            "claude-opus-4.6",
+		"claude-opus-4.6":            "claude-opus-4.6",
 		"claude-opus-4-5":            "claude-opus-4.5",
 		"claude-opus-4.5":            "claude-opus-4.5",
 		"claude-haiku-4-5":           "claude-haiku-4.5",
@@ -1597,10 +1783,12 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 		"claude-sonnet-4-20250514":   "claude-sonnet-4",
 		"auto":                       "auto",
 		// Agentic variants (same backend model IDs, but with special system prompt)
+		"claude-opus-4.6-agentic":        "claude-opus-4.6",
 		"claude-opus-4.5-agentic":        "claude-opus-4.5",
 		"claude-sonnet-4.5-agentic":      "claude-sonnet-4.5",
 		"claude-sonnet-4-agentic":        "claude-sonnet-4",
 		"claude-haiku-4.5-agentic":       "claude-haiku-4.5",
+		"kiro-claude-opus-4-6-agentic":   "claude-opus-4.6",
 		"kiro-claude-opus-4-5-agentic":   "claude-opus-4.5",
 		"kiro-claude-sonnet-4-5-agentic": "claude-sonnet-4.5",
 		"kiro-claude-sonnet-4-agentic":   "claude-sonnet-4",
@@ -1686,6 +1874,7 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 	// Upstream usage tracking - Kiro API returns credit usage and context percentage
 	var upstreamContextPercentage float64 // Context usage percentage from upstream (e.g., 78.56)
+	var hasUpstreamCacheFields bool       // Whether upstream explicitly returned cacheRead/cacheWrite fields
 
 	for {
 		msg, eventErr := e.readEventStreamMessage(reader)
@@ -1756,7 +1945,20 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		case "assistantResponseEvent":
 			if assistantResp, ok := event["assistantResponseEvent"].(map[string]interface{}); ok {
 				if contentText, ok := assistantResp["content"].(string); ok {
-					content.WriteString(contentText)
+					// Strip placeholder characters before accumulating
+					originalText := contentText
+					contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContentWithTools, "")
+					if kirocommon.DefaultAssistantContent != kirocommon.DefaultAssistantContentWithTools {
+						contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContent, "")
+					}
+					if contentText != originalText {
+						contentText = strings.TrimSpace(contentText)
+					}
+					if contentText != "" {
+						content.WriteString(contentText)
+					} else {
+						log.Debugf("kiro: parseEventStream filtered placeholder echo")
+					}
 				}
 				// Extract stop_reason from assistantResponseEvent
 				if sr := kirocommon.GetString(assistantResp, "stop_reason"); sr != "" {
@@ -1793,7 +1995,20 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 			}
 			// Also try direct format
 			if contentText, ok := event["content"].(string); ok {
-				content.WriteString(contentText)
+				// Strip placeholder characters before accumulating
+				originalText := contentText
+				contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContentWithTools, "")
+				if kirocommon.DefaultAssistantContent != kirocommon.DefaultAssistantContentWithTools {
+					contentText = strings.ReplaceAll(contentText, kirocommon.DefaultAssistantContent, "")
+				}
+				if contentText != originalText {
+					contentText = strings.TrimSpace(contentText)
+				}
+				if contentText != "" {
+					content.WriteString(contentText)
+				} else {
+					log.Debugf("kiro: parseEventStream filtered direct placeholder echo")
+				}
 			}
 			// Direct tool uses
 			if toolUsesRaw, ok := event["toolUses"].([]interface{}); ok {
@@ -1847,6 +2062,10 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		case "messageMetadataEvent", "metadataEvent":
 			// Handle message metadata events which contain token counts
 			// Official format: { tokenUsage: { outputTokens, totalTokens, uncachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens, contextUsagePercentage } }
+
+			// [DIAG] Log raw messageMetadataEvent payload for cache token debugging
+			log.Infof("kiro: [CACHE-DIAG] parseEventStream received %s, raw payload: %s", eventType, string(payload))
+
 			var metadata map[string]interface{}
 			if m, ok := event["messageMetadataEvent"].(map[string]interface{}); ok {
 				metadata = m
@@ -1858,6 +2077,14 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 
 			// Check for nested tokenUsage object (official format)
 			if tokenUsage, ok := metadata["tokenUsage"].(map[string]interface{}); ok {
+				// [DIAG] Log all keys in tokenUsage for cache token debugging
+				tokenUsageKeys := make([]string, 0, len(tokenUsage))
+				for k := range tokenUsage {
+					tokenUsageKeys = append(tokenUsageKeys, k)
+				}
+				tokenUsageJSON, _ := json.Marshal(tokenUsage)
+				log.Infof("kiro: [CACHE-DIAG] parseEventStream tokenUsage keys=%v, full=%s", tokenUsageKeys, string(tokenUsageJSON))
+
 				// outputTokens - precise output token count
 				if outputTokens, ok := tokenUsage["outputTokens"].(float64); ok {
 					usageInfo.OutputTokens = int64(outputTokens)
@@ -1873,21 +2100,30 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 					usageInfo.InputTokens = int64(uncachedInputTokens)
 					log.Infof("kiro: parseEventStream found uncachedInputTokens in tokenUsage: %d", usageInfo.InputTokens)
 				}
+				hasCacheRead, hasCacheCreation := applyKiroCacheTokens(&usageInfo, tokenUsage)
+				if hasCacheRead || hasCacheCreation {
+					hasUpstreamCacheFields = true
+				}
+
 				// cacheReadInputTokens - tokens read from cache
-				if cacheReadTokens, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
-					// Add to input tokens if we have uncached tokens, otherwise use as input
-					if usageInfo.InputTokens > 0 {
-						usageInfo.InputTokens += int64(cacheReadTokens)
-					} else {
-						usageInfo.InputTokens = int64(cacheReadTokens)
-					}
-					log.Debugf("kiro: parseEventStream found cacheReadInputTokens in tokenUsage: %d", int64(cacheReadTokens))
+				if hasCacheRead {
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream SET CachedTokens=%d from cacheReadInputTokens", usageInfo.CachedTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheReadInputTokens NOT FOUND in tokenUsage")
+				}
+				// cacheWriteInputTokens - tokens written to cache (first request)
+				if hasCacheCreation {
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream SET CacheCreationTokens=%d from cacheWriteInputTokens", usageInfo.CacheCreationTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] parseEventStream cacheWriteInputTokens NOT FOUND in tokenUsage")
 				}
 				// contextUsagePercentage - can be used as fallback for input token estimation
 				if ctxPct, ok := tokenUsage["contextUsagePercentage"].(float64); ok {
 					upstreamContextPercentage = ctxPct
 					log.Debugf("kiro: parseEventStream found contextUsagePercentage in tokenUsage: %.2f%%", ctxPct)
 				}
+			} else {
+				log.Infof("kiro: [CACHE-DIAG] parseEventStream tokenUsage object NOT FOUND in metadata")
 			}
 
 			// Fallback: check for direct fields in metadata (legacy format)
@@ -1983,6 +2219,22 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 				}
 				if unit != "" || usageVal > 0 {
 					log.Infof("kiro: parseEventStream received meteringEvent (direct): usage=%.2f %s", usageVal, unit)
+				}
+			}
+
+		case "contextUsageEvent":
+			// Handle context usage events from Kiro API
+			// Format: {"contextUsageEvent": {"contextUsagePercentage": 0.53}}
+			if ctxUsage, ok := event["contextUsageEvent"].(map[string]interface{}); ok {
+				if ctxPct, ok := ctxUsage["contextUsagePercentage"].(float64); ok {
+					upstreamContextPercentage = ctxPct
+					log.Debugf("kiro: parseEventStream received contextUsageEvent: %.2f%%", ctxPct*100)
+				}
+			} else {
+				// Try direct field (fallback)
+				if ctxPct, ok := event["contextUsagePercentage"].(float64); ok {
+					upstreamContextPercentage = ctxPct
+					log.Debugf("kiro: parseEventStream received contextUsagePercentage (direct): %.2f%%", ctxPct*100)
 				}
 			}
 
@@ -2123,11 +2375,38 @@ func (e *KiroExecutor) parseEventStream(body io.Reader) (string, []kiroclaude.Ki
 		if calculatedInputTokens > 0 {
 			localEstimate := usageInfo.InputTokens
 			usageInfo.InputTokens = calculatedInputTokens
-			usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
+			// If upstream provided real cache data, input_tokens from contextUsagePercentage
+			// represents total context. Subtract cache portions to avoid double-counting.
+			if usageInfo.CachedTokens > 0 || usageInfo.CacheCreationTokens > 0 {
+				usageInfo.InputTokens -= (usageInfo.CachedTokens + usageInfo.CacheCreationTokens)
+				if usageInfo.InputTokens < 0 {
+					usageInfo.InputTokens = 0
+				}
+			}
+			usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.CachedTokens + usageInfo.CacheCreationTokens + usageInfo.OutputTokens
 			log.Infof("kiro: parseEventStream using contextUsagePercentage (%.2f%%) to calculate input tokens: %d (local estimate was: %d)",
 				upstreamContextPercentage, calculatedInputTokens, localEstimate)
 		}
 	}
+
+	// Simulate cache tokens only when upstream omitted cache fields entirely.
+	if shouldSimulateKiroCacheReadTokens(usageInfo.InputTokens, usageInfo.CachedTokens, usageInfo.CacheCreationTokens, hasUpstreamCacheFields) {
+		totalInput := usageInfo.InputTokens
+		readRatio := cacheSimulationRatio(totalInput)
+		creationRatio := cacheSimulationCreationRatio()
+		usageInfo.CachedTokens = int64(float64(totalInput) * readRatio)
+		usageInfo.CacheCreationTokens = int64(float64(totalInput) * creationRatio)
+		// input_tokens should only contain uncached tokens (Claude API convention)
+		// total input = input_tokens + cache_read + cache_creation
+		usageInfo.InputTokens = totalInput - usageInfo.CachedTokens - usageInfo.CacheCreationTokens
+		usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.CachedTokens + usageInfo.CacheCreationTokens + usageInfo.OutputTokens
+		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), uncached_input=%d, total_input=%d",
+			usageInfo.CachedTokens, readRatio*100, usageInfo.CacheCreationTokens, creationRatio*100, usageInfo.InputTokens, totalInput)
+	}
+
+	// [DIAG] Log final usage for cache token debugging
+	log.Infof("kiro: [CACHE-DIAG] parseEventStream FINAL usage: input=%d, output=%d, cached=%d, total=%d, stop=%s",
+		usageInfo.InputTokens, usageInfo.OutputTokens, usageInfo.CachedTokens, usageInfo.TotalTokens, stopReason)
 
 	return cleanedContent, toolUses, usageInfo, stopReason, nil
 }
@@ -2333,6 +2612,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	reader := bufio.NewReaderSize(body, 20*1024*1024) // 20MB buffer to match other providers
 	var totalUsage usage.Detail
 	var hasToolUses bool          // Track if any tool uses were emitted
+	var hasTruncatedTools bool    // Track if any tool uses were truncated
 	var upstreamStopReason string // Track stop_reason from upstream events
 
 	// Tool use state tracking for input buffering and deduplication
@@ -2359,6 +2639,7 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	var upstreamCreditUsage float64       // Credit usage from upstream (e.g., 1.458)
 	var upstreamContextPercentage float64 // Context usage percentage from upstream (e.g., 78.56)
 	var hasUpstreamUsage bool             // Whether we received usage from upstream
+	var hasUpstreamCacheFields bool       // Whether upstream explicitly returned cacheRead/cacheWrite fields
 
 	// Translator param for maintaining tool call state across streaming events
 	// IMPORTANT: This must persist across all TranslateStream calls
@@ -2588,6 +2869,22 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 			}
 
+		case "contextUsageEvent":
+			// Handle context usage events from Kiro API
+			// Format: {"contextUsageEvent": {"contextUsagePercentage": 0.53}}
+			if ctxUsage, ok := event["contextUsageEvent"].(map[string]interface{}); ok {
+				if ctxPct, ok := ctxUsage["contextUsagePercentage"].(float64); ok {
+					upstreamContextPercentage = ctxPct
+					log.Debugf("kiro: streamToChannel received contextUsageEvent: %.2f%%", ctxPct*100)
+				}
+			} else {
+				// Try direct field (fallback)
+				if ctxPct, ok := event["contextUsagePercentage"].(float64); ok {
+					upstreamContextPercentage = ctxPct
+					log.Debugf("kiro: streamToChannel received contextUsagePercentage (direct): %.2f%%", ctxPct*100)
+				}
+			}
+
 		case "error", "exception", "internalServerException":
 			// Handle error events from Kiro API stream
 			errMsg := ""
@@ -2733,6 +3030,24 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			}
 
 			// Handle text content with thinking mode support
+			if contentDelta != "" {
+				// Filter out placeholder echo: Kiro API requires non-empty assistant content,
+				// so we use a placeholder ("\u200B") for tool_use-only messages.
+				// The model sometimes echoes this back — strip ALL occurrences, not just exact match,
+				// because the echo may contain multiple \u200B or mix with whitespace.
+				originalDelta := contentDelta
+				contentDelta = strings.ReplaceAll(contentDelta, kirocommon.DefaultAssistantContentWithTools, "")
+				if kirocommon.DefaultAssistantContent != kirocommon.DefaultAssistantContentWithTools {
+					contentDelta = strings.ReplaceAll(contentDelta, kirocommon.DefaultAssistantContent, "")
+				}
+				if contentDelta != originalDelta {
+					// Placeholder was stripped — residual whitespace is also echo artifact, trim it.
+					contentDelta = strings.TrimSpace(contentDelta)
+				}
+				if contentDelta == "" {
+					log.Debugf("kiro: streamToChannel filtered placeholder echo")
+				}
+			}
 			if contentDelta != "" {
 				// NOTE: Duplicate content filtering was removed because it incorrectly
 				// filtered out legitimate repeated content (like consecutive newlines "\n\n").
@@ -3117,6 +3432,62 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 			// Emit completed tool uses
 			for _, tu := range completedToolUses {
+				// Check if this tool was truncated - emit with SOFT_LIMIT_REACHED marker
+				if tu.IsTruncated {
+					hasTruncatedTools = true
+					log.Infof("kiro: streamToChannel emitting truncated tool with SOFT_LIMIT_REACHED: %s (ID: %s)", tu.Name, tu.ToolUseID)
+
+					// Close text block if open
+					if isTextBlockOpen && contentBlockIndex >= 0 {
+						blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
+						sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam)
+						for _, chunk := range sseData {
+							if chunk != "" {
+								out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+							}
+						}
+						isTextBlockOpen = false
+					}
+
+					contentBlockIndex++
+
+					// Emit tool_use with SOFT_LIMIT_REACHED marker input
+					blockStart := kiroclaude.BuildClaudeContentBlockStartEvent(contentBlockIndex, "tool_use", tu.ToolUseID, tu.Name)
+					sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStart, &translatorParam)
+					for _, chunk := range sseData {
+						if chunk != "" {
+							out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+						}
+					}
+
+					// Build SOFT_LIMIT_REACHED marker input
+					markerInput := map[string]interface{}{
+						"_status":  "SOFT_LIMIT_REACHED",
+						"_message": "Tool output was truncated. Split content into smaller chunks (max 300 lines). Due to potential model hallucination, you MUST re-fetch the current working directory and generate the correct file_path.",
+					}
+
+					markerJSON, _ := json.Marshal(markerInput)
+					inputDelta := kiroclaude.BuildClaudeInputJsonDeltaEvent(string(markerJSON), contentBlockIndex)
+					sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, inputDelta, &translatorParam)
+					for _, chunk := range sseData {
+						if chunk != "" {
+							out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+						}
+					}
+
+					// Close tool_use block
+					blockStop := kiroclaude.BuildClaudeContentBlockStopEvent(contentBlockIndex)
+					sseData = sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, blockStop, &translatorParam)
+					for _, chunk := range sseData {
+						if chunk != "" {
+							out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunk + "\n\n")}
+						}
+					}
+
+					hasToolUses = true // Keep this so stop_reason = tool_use
+					continue
+				}
+
 				hasToolUses = true
 
 				// Close text block if open
@@ -3176,6 +3547,10 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		case "messageMetadataEvent", "metadataEvent":
 			// Handle message metadata events which contain token counts
 			// Official format: { tokenUsage: { outputTokens, totalTokens, uncachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens, contextUsagePercentage } }
+
+			// [DIAG] Log raw messageMetadataEvent payload for cache token debugging
+			log.Infof("kiro: [CACHE-DIAG] streamToChannel received %s, raw payload: %s", eventType, string(payload))
+
 			var metadata map[string]interface{}
 			if m, ok := event["messageMetadataEvent"].(map[string]interface{}); ok {
 				metadata = m
@@ -3187,6 +3562,14 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 
 			// Check for nested tokenUsage object (official format)
 			if tokenUsage, ok := metadata["tokenUsage"].(map[string]interface{}); ok {
+				// [DIAG] Log all keys in tokenUsage for cache token debugging
+				tokenUsageKeys := make([]string, 0, len(tokenUsage))
+				for k := range tokenUsage {
+					tokenUsageKeys = append(tokenUsageKeys, k)
+				}
+				tokenUsageJSON, _ := json.Marshal(tokenUsage)
+				log.Infof("kiro: [CACHE-DIAG] streamToChannel tokenUsage keys=%v, full=%s", tokenUsageKeys, string(tokenUsageJSON))
+
 				// outputTokens - precise output token count
 				if outputTokens, ok := tokenUsage["outputTokens"].(float64); ok {
 					totalUsage.OutputTokens = int64(outputTokens)
@@ -3204,22 +3587,31 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 					hasUpstreamUsage = true
 					log.Infof("kiro: streamToChannel found uncachedInputTokens in tokenUsage: %d", totalUsage.InputTokens)
 				}
-				// cacheReadInputTokens - tokens read from cache
-				if cacheReadTokens, ok := tokenUsage["cacheReadInputTokens"].(float64); ok {
-					// Add to input tokens if we have uncached tokens, otherwise use as input
-					if totalUsage.InputTokens > 0 {
-						totalUsage.InputTokens += int64(cacheReadTokens)
-					} else {
-						totalUsage.InputTokens = int64(cacheReadTokens)
-					}
+				hasCacheRead, hasCacheCreation := applyKiroCacheTokens(&totalUsage, tokenUsage)
+				if hasCacheRead || hasCacheCreation {
+					hasUpstreamCacheFields = true
 					hasUpstreamUsage = true
-					log.Debugf("kiro: streamToChannel found cacheReadInputTokens in tokenUsage: %d", int64(cacheReadTokens))
+				}
+
+				// cacheReadInputTokens - tokens read from cache
+				if hasCacheRead {
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel SET CachedTokens=%d from cacheReadInputTokens", totalUsage.CachedTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheReadInputTokens NOT FOUND in tokenUsage")
+				}
+				// cacheWriteInputTokens - tokens written to cache (first request)
+				if hasCacheCreation {
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel SET CacheCreationTokens=%d from cacheWriteInputTokens", totalUsage.CacheCreationTokens)
+				} else {
+					log.Infof("kiro: [CACHE-DIAG] streamToChannel cacheWriteInputTokens NOT FOUND in tokenUsage")
 				}
 				// contextUsagePercentage - can be used as fallback for input token estimation
 				if ctxPct, ok := tokenUsage["contextUsagePercentage"].(float64); ok {
 					upstreamContextPercentage = ctxPct
 					log.Debugf("kiro: streamToChannel found contextUsagePercentage in tokenUsage: %.2f%%", ctxPct)
 				}
+			} else {
+				log.Infof("kiro: [CACHE-DIAG] streamToChannel tokenUsage object NOT FOUND in metadata")
 			}
 
 			// Fallback: check for direct fields in metadata (legacy format)
@@ -3400,12 +3792,35 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 		if calculatedInputTokens > 0 {
 			localEstimate := totalUsage.InputTokens
 			totalUsage.InputTokens = calculatedInputTokens
+			// If upstream provided real cache data, input_tokens from contextUsagePercentage
+			// represents total context. Subtract cache portions to avoid double-counting.
+			if totalUsage.CachedTokens > 0 || totalUsage.CacheCreationTokens > 0 {
+				totalUsage.InputTokens -= (totalUsage.CachedTokens + totalUsage.CacheCreationTokens)
+				if totalUsage.InputTokens < 0 {
+					totalUsage.InputTokens = 0
+				}
+			}
 			log.Debugf("kiro: using contextUsagePercentage (%.2f%%) to calculate input tokens: %d (local estimate was: %d)",
 				upstreamContextPercentage, calculatedInputTokens, localEstimate)
 		}
 	}
 
 	totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.OutputTokens
+
+	// Simulate cache tokens only when upstream omitted cache fields entirely.
+	if shouldSimulateKiroCacheReadTokens(totalUsage.InputTokens, totalUsage.CachedTokens, totalUsage.CacheCreationTokens, hasUpstreamCacheFields) {
+		totalInput := totalUsage.InputTokens
+		readRatio := cacheSimulationRatio(totalInput)
+		creationRatio := cacheSimulationCreationRatio()
+		totalUsage.CachedTokens = int64(float64(totalInput) * readRatio)
+		totalUsage.CacheCreationTokens = int64(float64(totalInput) * creationRatio)
+		// input_tokens should only contain uncached tokens (Claude API convention)
+		// total input = input_tokens + cache_read + cache_creation
+		totalUsage.InputTokens = totalInput - totalUsage.CachedTokens - totalUsage.CacheCreationTokens
+		totalUsage.TotalTokens = totalUsage.InputTokens + totalUsage.CachedTokens + totalUsage.CacheCreationTokens + totalUsage.OutputTokens
+		log.Debugf("kiro: simulated cache tokens: read=%d (%.1f%%), creation=%d (%.1f%%), uncached_input=%d, total_input=%d",
+			totalUsage.CachedTokens, readRatio*100, totalUsage.CacheCreationTokens, creationRatio*100, totalUsage.InputTokens, totalInput)
+	}
 
 	// Log upstream usage information if received
 	if hasUpstreamUsage {
@@ -3415,7 +3830,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	}
 
 	// Determine stop reason: prefer upstream, then detect tool_use, default to end_turn
+	// SOFT_LIMIT_REACHED: Keep stop_reason = "tool_use" so Claude continues the loop
 	stopReason := upstreamStopReason
+	if hasTruncatedTools {
+		// Log that we're using SOFT_LIMIT_REACHED approach
+		log.Infof("kiro: streamToChannel using SOFT_LIMIT_REACHED - keeping stop_reason=tool_use for truncated tools")
+	}
 	if stopReason == "" {
 		if hasToolUses {
 			stopReason = "tool_use"
@@ -3432,7 +3852,12 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 	}
 
 	// Send message_delta event
+	// [DIAG] Log final usage before sending to client
+	log.Infof("kiro: [CACHE-DIAG] streamToChannel FINAL usage before message_delta: input=%d, output=%d, cached=%d, total=%d, stop=%s",
+		totalUsage.InputTokens, totalUsage.OutputTokens, totalUsage.CachedTokens, totalUsage.TotalTokens, stopReason)
 	msgDelta := kiroclaude.BuildClaudeMessageDeltaEvent(stopReason, totalUsage)
+	// [DIAG] Log the raw message_delta SSE event to verify cache fields in output
+	log.Infof("kiro: [CACHE-DIAG] streamToChannel message_delta raw SSE: %s", string(msgDelta))
 	sseData := sdktranslator.TranslateStream(ctx, sdktranslator.FromString("kiro"), targetFormat, model, originalReq, claudeBody, msgDelta, &translatorParam)
 	for _, chunk := range sseData {
 		if chunk != "" {
