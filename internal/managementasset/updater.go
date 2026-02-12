@@ -174,6 +174,7 @@ func FilePath(configFilePath string) string {
 
 // EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
 // It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
+// If an embedded asset is available and no custom panel repository is configured, the embedded asset takes priority.
 func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	if ctx == nil {
 		ctx = context.Background()
@@ -186,6 +187,37 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	}
 	localPath := filepath.Join(staticDir, managementAssetName)
 
+	// If we have an embedded asset and no custom panel repo is configured, use embedded asset exclusively.
+	// This ensures that the compiled-in frontend (from web/ build) is never overwritten by a remote download.
+	embeddedData := GetEmbeddedManagementHTML()
+	hasEmbedded := len(embeddedData) > 0
+	trimmedRepo := strings.TrimSpace(panelRepository)
+	hasCustomRepo := trimmedRepo != "" && trimmedRepo != config.DefaultPanelGitHubRepository
+
+	if hasEmbedded && !hasCustomRepo {
+		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
+			log.WithError(errMkdirAll).Warn("failed to prepare static directory for embedded management asset")
+			return false
+		}
+
+		localHash, _ := fileSHA256(localPath)
+		embeddedSum := sha256.Sum256(embeddedData)
+		embeddedHash := hex.EncodeToString(embeddedSum[:])
+
+		if strings.EqualFold(localHash, embeddedHash) {
+			log.Debug("management asset matches embedded asset, skipping update")
+			return true
+		}
+
+		if errWrite := atomicWriteFile(localPath, embeddedData); errWrite != nil {
+			log.WithError(errWrite).Warn("failed to write embedded management asset")
+			return false
+		}
+		log.Infof("management asset updated from embedded asset (hash=%s...)", embeddedHash[0:12])
+		return true
+	}
+
+	// No embedded asset or custom repo configured — fall through to remote update logic.
 	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {
 		lastUpdateCheckMu.Lock()
 		now := time.Now()
