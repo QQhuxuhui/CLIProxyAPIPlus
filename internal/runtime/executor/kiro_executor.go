@@ -4426,8 +4426,8 @@ func (e *KiroExecutor) handleWebSearchStream(
 		currentToolUseId := fmt.Sprintf("srvtoolu_%s", kiroclaude.GenerateToolUseID())
 
 		for iteration := 0; iteration < maxWebSearchIterations; iteration++ {
-			log.Infof("kiro/websearch: search iteration %d/%d — query: %s",
-				iteration+1, maxWebSearchIterations, currentQuery)
+			log.Infof("kiro/websearch: search iteration %d/%d",
+				iteration+1, maxWebSearchIterations)
 
 			// MCP search
 			_, mcpRequest := kiroclaude.CreateMcpRequest(currentQuery)
@@ -4486,8 +4486,8 @@ func (e *KiroExecutor) handleWebSearchStream(
 
 			// Analyze response
 			analysis := kiroclaude.AnalyzeBufferedStream(kiroChunks)
-			log.Infof("kiro/websearch: iteration %d — stop_reason: %s, has_tool_use: %v, query: %s, toolUseId: %s",
-				iteration+1, analysis.StopReason, analysis.HasWebSearchToolUse, analysis.WebSearchQuery, analysis.WebSearchToolUseId)
+			log.Infof("kiro/websearch: iteration %d — stop_reason: %s, has_tool_use: %v",
+				iteration+1, analysis.StopReason, analysis.HasWebSearchToolUse)
 
 			if analysis.HasWebSearchToolUse && analysis.WebSearchQuery != "" && iteration+1 < maxWebSearchIterations {
 				// Model wants another search
