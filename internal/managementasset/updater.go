@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -41,6 +42,7 @@ var (
 	currentConfigPtr    atomic.Pointer[config.Config]
 	schedulerOnce       sync.Once
 	schedulerConfigPath atomic.Value
+	sfGroup             singleflight.Group
 )
 
 // SetCurrentConfig stores the latest configuration snapshot for management asset decisions.
@@ -171,10 +173,8 @@ func FilePath(configFilePath string) string {
 }
 
 // EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
-// The function is designed to run in a background goroutine and will never panic.
-// It enforces a 3-hour rate limit to avoid frequent checks on config/auth file changes.
-// If an embedded asset is available and no custom panel repository is configured, the embedded asset takes priority.
-func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) {
+// It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
+func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -182,163 +182,100 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	staticDir = strings.TrimSpace(staticDir)
 	if staticDir == "" {
 		log.Debug("management asset sync skipped: empty static directory")
-		return
+		return false
 	}
-
-	lastUpdateCheckMu.Lock()
-	now := time.Now()
-	timeSinceLastAttempt := now.Sub(lastUpdateCheckTime)
-	if !lastUpdateCheckTime.IsZero() && timeSinceLastAttempt < managementSyncMinInterval {
-		lastUpdateCheckMu.Unlock()
-		log.Debugf(
-			"management asset sync skipped by throttle: last attempt %v ago (interval %v)",
-			timeSinceLastAttempt.Round(time.Second),
-			managementSyncMinInterval,
-		)
-		return
-	}
-	lastUpdateCheckTime = now
-	lastUpdateCheckMu.Unlock()
-
 	localPath := filepath.Join(staticDir, managementAssetName)
-	embeddedData := GetEmbeddedManagementHTML()
-	hasEmbedded := len(embeddedData) > 0
-	// Treat default repository as "no custom repo" - embedded asset takes priority
-	trimmedRepo := strings.TrimSpace(panelRepository)
-	hasCustomRepo := trimmedRepo != "" && trimmedRepo != config.DefaultPanelGitHubRepository
 
-	// If we have embedded asset and no custom repo is configured, use embedded asset exclusively
-	if hasEmbedded && !hasCustomRepo {
+	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {
+		lastUpdateCheckMu.Lock()
+		now := time.Now()
+		timeSinceLastAttempt := now.Sub(lastUpdateCheckTime)
+		if !lastUpdateCheckTime.IsZero() && timeSinceLastAttempt < managementSyncMinInterval {
+			lastUpdateCheckMu.Unlock()
+			log.Debugf(
+				"management asset sync skipped by throttle: last attempt %v ago (interval %v)",
+				timeSinceLastAttempt.Round(time.Second),
+				managementSyncMinInterval,
+			)
+			return nil, nil
+		}
+		lastUpdateCheckTime = now
+		lastUpdateCheckMu.Unlock()
+
+		localFileMissing := false
 		if _, errStat := os.Stat(localPath); errStat != nil {
 			if errors.Is(errStat, os.ErrNotExist) {
-				if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll == nil {
-					if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
-						sum := sha256.Sum256(embeddedData)
-						embeddedHash := hex.EncodeToString(sum[:])[0:12]
-						log.Infof("management asset initialized from embedded asset (hash=%s...)", embeddedHash)
-					}
-				}
+				localFileMissing = true
+			} else {
+				log.WithError(errStat).Debug("failed to stat local management asset")
 			}
-			return
 		}
 
-		// Local file exists, check if it matches embedded asset
+		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
+			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
+			return nil, nil
+		}
+
+		releaseURL := resolveReleaseURL(panelRepository)
+		client := newHTTPClient(proxyURL)
+
 		localHash, err := fileSHA256(localPath)
 		if err != nil {
-			log.WithError(err).Debug("failed to read local management asset hash")
-			return
+			if !errors.Is(err, os.ErrNotExist) {
+				log.WithError(err).Debug("failed to read local management asset hash")
+			}
+			localHash = ""
 		}
 
-		embeddedSum := sha256.Sum256(embeddedData)
-		embeddedHash := hex.EncodeToString(embeddedSum[:])
-		if strings.EqualFold(localHash, embeddedHash) {
-			log.Debug("management asset matches embedded asset, skipping update")
-			return
-		}
-
-		// Local file differs from embedded, update it
-		if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
-			log.Infof("management asset updated from embedded asset (hash=%s...)", embeddedHash[0:12])
-		} else {
-			log.WithError(errWrite).Warn("failed to update management asset from embedded asset")
-		}
-		return
-	}
-
-	// No embedded asset or custom repo configured, use remote update logic
-	localFileMissing := false
-	if _, errStat := os.Stat(localPath); errStat != nil {
-		if errors.Is(errStat, os.ErrNotExist) {
-			localFileMissing = true
-			// Try to use embedded asset immediately if local file is missing
-			if hasEmbedded {
-				if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll == nil {
-					if errWrite := atomicWriteFile(localPath, embeddedData); errWrite == nil {
-						sum := sha256.Sum256(embeddedData)
-						embeddedHash := hex.EncodeToString(sum[:])
-						log.Infof("management asset initialized from embedded asset (hash=%s)", embeddedHash)
-						localFileMissing = false
-					}
+		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		if err != nil {
+			if localFileMissing {
+				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
+				if ensureFallbackManagementHTML(ctx, client, localPath) {
+					return nil, nil
 				}
+				return nil, nil
 			}
-		} else {
-			log.WithError(errStat).Debug("failed to stat local management asset")
+			log.WithError(err).Warn("failed to fetch latest management release information")
+			return nil, nil
 		}
-	}
 
-	if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
-		log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
-		return
-	}
-
-	releaseURL := resolveReleaseURL(panelRepository)
-	client := newHTTPClient(proxyURL)
-
-	localHash, err := fileSHA256(localPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.WithError(err).Debug("failed to read local management asset hash")
+		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
+			log.Debug("management asset is already up to date")
+			return nil, nil
 		}
-		localHash = ""
-	}
 
-	asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
-	if err != nil {
-		if localFileMissing {
-			log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-			if ensureFallbackManagementHTML(ctx, client, localPath) {
-				return
+		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+		if err != nil {
+			if localFileMissing {
+				log.WithError(err).Warn("failed to download management asset, trying fallback page")
+				if ensureFallbackManagementHTML(ctx, client, localPath) {
+					return nil, nil
+				}
+				return nil, nil
 			}
-			return
+			log.WithError(err).Warn("failed to download management asset")
+			return nil, nil
 		}
-		log.WithError(err).Warn("failed to fetch latest management release information")
-		return
-	}
 
-	if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
-		log.Debug("management asset is already up to date")
-		return
-	}
-
-	data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
-	if err != nil {
-		if localFileMissing {
-			log.WithError(err).Warn("failed to download management asset, trying fallback page")
-			if ensureFallbackManagementHTML(ctx, client, localPath) {
-				return
-			}
-			return
+		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+			log.Warnf("remote digest mismatch for management asset: expected %s got %s", remoteHash, downloadedHash)
 		}
-		log.WithError(err).Warn("failed to download management asset")
-		return
-	}
 
-	if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
-		log.Warnf("remote digest mismatch for management asset: expected %s got %s", remoteHash, downloadedHash)
-	}
+		if err = atomicWriteFile(localPath, data); err != nil {
+			log.WithError(err).Warn("failed to update management asset on disk")
+			return nil, nil
+		}
 
-	if err = atomicWriteFile(localPath, data); err != nil {
-		log.WithError(err).Warn("failed to update management asset on disk")
-		return
-	}
+		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
+		return nil, nil
+	})
 
-	log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
+	_, err := os.Stat(localPath)
+	return err == nil
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
-	// Try embedded asset first (local development/customization)
-	if embeddedData := GetEmbeddedManagementHTML(); len(embeddedData) > 0 {
-		if err := atomicWriteFile(localPath, embeddedData); err != nil {
-			log.WithError(err).Warn("failed to persist embedded management control panel page")
-		} else {
-			sum := sha256.Sum256(embeddedData)
-			embeddedHash := hex.EncodeToString(sum[:])
-			log.Infof("management asset updated from embedded asset successfully (hash=%s)", embeddedHash)
-			return true
-		}
-	}
-
-	// Fallback to remote URL
 	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
