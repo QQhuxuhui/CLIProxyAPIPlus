@@ -2,10 +2,17 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -205,4 +212,161 @@ func DoKiroImport(cfg *config.Config, options *LoginOptions) {
 		fmt.Printf("Imported as %s\n", record.Label)
 	}
 	fmt.Println("Kiro token import successful!")
+}
+
+// DoKiroJsonImport imports Kiro credentials from a JSON file containing an array of accounts.
+// Each account is validated, refreshed, and saved as an individual auth file.
+//
+// JSON format (Social): [{"refreshToken": "aorxxx", "provider": "Google"}]
+// JSON format (IdC):    [{"refreshToken": "aorxxx", "clientId": "xxx", "clientSecret": "xxx", "provider": "BuilderId"}]
+//
+// Parameters:
+//   - cfg: The application configuration
+//   - jsonFilePath: Path to the JSON file containing account credentials
+func DoKiroJsonImport(cfg *config.Config, jsonFilePath string) {
+	data, err := os.ReadFile(jsonFilePath)
+	if err != nil {
+		log.Errorf("Failed to read JSON file: %v", err)
+		fmt.Printf("\nCannot read file: %s\n", jsonFilePath)
+		return
+	}
+
+	var items []kiroauth.KiroJSONImportItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		log.Errorf("Failed to parse JSON: %v", err)
+		fmt.Println("\nJSON format should be an array of objects:")
+		fmt.Println(`  Social: [{"refreshToken": "aorxxx", "provider": "Google"}]`)
+		fmt.Println(`  IdC:    [{"refreshToken": "aorxxx", "clientId": "xxx", "clientSecret": "xxx", "provider": "BuilderId"}]`)
+		return
+	}
+
+	if len(items) == 0 {
+		fmt.Println("No accounts found in JSON file.")
+		return
+	}
+
+	fmt.Printf("Found %d account(s) in %s\n\n", len(items), filepath.Base(jsonFilePath))
+
+	manager := newAuthManager()
+	ctx := context.Background()
+	successCount := 0
+
+	for i, item := range items {
+		fmt.Printf("[%d/%d] Processing account...\n", i+1, len(items))
+
+		validation, errValidate := kiroauth.ValidateKiroJSONImportItem(item, i)
+		if errValidate != nil {
+			fmt.Printf("  ✗ Skipped: %v\n", errValidate)
+			continue
+		}
+		item = validation.Item
+		accountType := validation.AccountType
+		provider := validation.Provider
+
+		// Refresh token to validate and get access_token/email
+		ssoClient := kiroauth.NewSSOOIDCClient(cfg)
+		var tokenData *kiroauth.KiroTokenData
+
+		if accountType == "idc" {
+			region := item.Region
+			if region == "" {
+				region = "us-east-1"
+			}
+			tokenData, err = ssoClient.RefreshTokenWithRegion(ctx, item.ClientID, item.ClientSecret, item.RefreshToken, region, "")
+			if err != nil {
+				tokenData, err = ssoClient.RefreshToken(ctx, item.ClientID, item.ClientSecret, item.RefreshToken)
+			}
+		} else {
+			oauth := kiroauth.NewKiroOAuth(cfg)
+			tokenData, err = oauth.RefreshToken(ctx, item.RefreshToken)
+		}
+
+		if err != nil {
+			fmt.Printf("  ✗ Failed: token refresh error: %v\n", err)
+			continue
+		}
+
+		email := tokenData.Email
+		if email == "" {
+			email = kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
+		}
+
+		// Build auth record
+		expiresAt, errParse := time.Parse(time.RFC3339, tokenData.ExpiresAt)
+		if errParse != nil {
+			expiresAt = time.Now().Add(1 * time.Hour)
+		}
+
+		idPart := kiroauth.SanitizeEmailForFilename(email)
+		if idPart == "" {
+			idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+		}
+
+		now := time.Now()
+		var authMethod, label string
+		if accountType == "idc" {
+			authMethod = "builder-id"
+			if strings.EqualFold(provider, "Enterprise") {
+				authMethod = "idc"
+			}
+			label = "kiro-idc"
+		} else {
+			authMethod = "social"
+			label = fmt.Sprintf("kiro-%s", strings.ToLower(provider))
+		}
+
+		fileName := fmt.Sprintf("%s-%s.json", label, idPart)
+
+		metadata := map[string]any{
+			"type":          "kiro",
+			"access_token":  tokenData.AccessToken,
+			"refresh_token": tokenData.RefreshToken,
+			"profile_arn":   tokenData.ProfileArn,
+			"expires_at":    tokenData.ExpiresAt,
+			"auth_method":   authMethod,
+			"provider":      provider,
+			"email":         email,
+			"last_refresh":  now.Format(time.RFC3339),
+		}
+
+		if accountType == "idc" {
+			metadata["client_id"] = item.ClientID
+			metadata["client_secret"] = item.ClientSecret
+			if item.Region != "" {
+				metadata["region"] = item.Region
+			}
+		}
+
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    label,
+			Status:   coreauth.StatusActive,
+			Metadata: metadata,
+			Attributes: map[string]string{
+				"profile_arn": tokenData.ProfileArn,
+				"source":      "json-import",
+				"email":       email,
+			},
+			CreatedAt:        now,
+			UpdatedAt:        now,
+			NextRefreshAfter: expiresAt.Add(-20 * time.Minute),
+		}
+
+		savedPath, errSave := manager.SaveAuth(record, cfg)
+		if errSave != nil {
+			fmt.Printf("  ✗ Failed to save: %v\n", errSave)
+			continue
+		}
+
+		successCount++
+		if email != "" {
+			fmt.Printf("  ✓ Saved: %s (Account: %s)\n", filepath.Base(savedPath), email)
+		} else {
+			fmt.Printf("  ✓ Saved: %s\n", filepath.Base(savedPath))
+		}
+	}
+
+	fmt.Printf("\nImport complete: %d/%d accounts imported successfully.\n", successCount, len(items))
 }
