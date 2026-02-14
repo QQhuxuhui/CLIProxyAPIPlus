@@ -269,7 +269,8 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", "cli-proxy-api/1.0.0")
+	// Use KiroIDE-style User-Agent to avoid 401 rejection from server-side validation
+	httpReq.Header.Set("User-Agent", buildKiroUserAgent(""))
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
