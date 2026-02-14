@@ -395,6 +395,11 @@ export function OAuthPage() {
       return;
     }
 
+    // 兼容单个对象：自动包装为数组
+    if (items && typeof items === 'object' && !Array.isArray(items)) {
+      items = [items];
+    }
+
     if (!Array.isArray(items) || items.length === 0) {
       const message = t('auth_login.kiro_json_import_parse_error');
       setKiroJsonImport((prev) => ({ ...prev, error: message }));
@@ -402,9 +407,20 @@ export function OAuthPage() {
       return;
     }
 
+    // 只提取后端需要的字段，忽略多余字段
+    const cleanedItems = (items as Record<string, unknown>[]).map((item) => {
+      const cleaned: Record<string, unknown> = {};
+      if (item.refreshToken) cleaned.refreshToken = item.refreshToken;
+      if (item.provider) cleaned.provider = item.provider;
+      if (item.clientId) cleaned.clientId = item.clientId;
+      if (item.clientSecret) cleaned.clientSecret = item.clientSecret;
+      if (item.region) cleaned.region = item.region;
+      return cleaned;
+    });
+
     setKiroJsonImport((prev) => ({ ...prev, loading: true, error: undefined, result: undefined }));
     try {
-      const res = await kiroApi.importJson(items);
+      const res = await kiroApi.importJson(cleanedItems as any);
       setKiroJsonImport((prev) => ({ ...prev, loading: false, result: res }));
       if (res.failed === 0) {
         showNotification(
