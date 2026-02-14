@@ -1,9 +1,9 @@
 /**
- * Kiro 配额相关 API
+ * Kiro 相关 A​PI
  */
 
 import { apiClient } from './client';
-import type { KiroUsageResponse } from '@/types';
+import type { KiroUsageResponse, KiroJsonImportItem, KiroJsonImportResponse } from '@/types';
 
 export const kiroApi = {
   /**
@@ -12,4 +12,11 @@ export const kiroApi = {
    */
   getUsage: (authIndex: string) =>
     apiClient.get<KiroUsageResponse>(`/kiro-usage?auth_index=${encodeURIComponent(authIndex)}`),
+
+  /**
+   * 批量导入 Kiro JSON 凭据
+   * @param items 账户凭据数组
+   */
+  importJson: (items: KiroJsonImportItem[]) =>
+    apiClient.post<KiroJsonImportResponse>('/kiro/import-json', items),
 };
