@@ -143,3 +143,72 @@
 .fileNamePlaceholder {
   color: var(--text-secondary);
 }
+
+.jsonImportTextarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+
+  &::placeholder {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.jsonImportFileRow {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  margin-top: $spacing-sm;
+}
+
+.importResultSummary {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: $spacing-sm;
+}
+
+.importResultList {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.importResultItem {
+  display: flex;
+  align-items: baseline;
+  gap: $spacing-sm;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: $spacing-xs 0;
+  border-bottom: 1px solid var(--border-color);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.importResultIndex {
+  color: var(--text-secondary);
+  min-width: 32px;
+}
+
+.importResultDetail {
+  flex: 1;
+  color: var(--text-primary);
+  word-break: break-all;
+}
