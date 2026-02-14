@@ -269,12 +269,30 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	// Use KiroIDE-style User-Agent to avoid 401 rejection from server-side validation
-	httpReq.Header.Set("User-Agent", buildKiroUserAgent(""))
+	httpReq.Header.Set("Accept", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("refresh request failed: %w", err)
+	// Retry up to 3 times (matching reference implementation)
+	var resp *http.Response
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+			// Recreate request body for retry
+			httpReq, err = http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(body)))
+			if err != nil {
+				return nil, fmt.Errorf("failed to create refresh request: %w", err)
+			}
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("Accept", "application/json")
+		}
+		resp, lastErr = c.httpClient.Do(httpReq)
+		if lastErr == nil {
+			break
+		}
+		log.Debugf("refresh request attempt %d failed: %v", attempt+1, lastErr)
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("refresh request failed after 3 attempts: %w", lastErr)
 	}
 	defer resp.Body.Close()
 
@@ -284,8 +302,8 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d)", resp.StatusCode)
+		log.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	var tokenResp SocialTokenResponse
