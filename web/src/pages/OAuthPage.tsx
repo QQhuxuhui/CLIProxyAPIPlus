@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/Input';
 import { useNotificationStore, useThemeStore } from '@/stores';
 import { oauthApi, type OAuthProvider, type IFlowCookieAuthResponse } from '@/services/api/oauth';
 import { vertexApi, type VertexImportResponse } from '@/services/api/vertex';
+import { kiroApi } from '@/services/api/kiro';
+import type { KiroJsonImportResponse } from '@/types';
 import styles from './OAuthPage.module.scss';
 import iconOpenaiLight from '@/assets/icons/openai-light.svg';
 import iconOpenaiDark from '@/assets/icons/openai-dark.svg';
@@ -86,6 +88,17 @@ export function OAuthPage() {
   });
   const timers = useRef<Record<string, number>>({});
   const vertexFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Kiro JSON Import
+  const [kiroJsonImport, setKiroJsonImport] = useState<{
+    jsonText: string;
+    file?: File;
+    fileName: string;
+    loading: boolean;
+    error?: string;
+    result?: KiroJsonImportResponse;
+  }>({ jsonText: '', fileName: '', loading: false });
+  const kiroJsonFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -306,6 +319,98 @@ export function OAuthPage() {
     }
   };
 
+  const handleKiroJsonTextChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    setKiroJsonImport((prev) => ({
+      ...prev,
+      jsonText: e.target.value,
+      file: undefined,
+      fileName: '',
+      error: undefined,
+      result: undefined,
+    }));
+  };
+
+  const handleKiroJsonFilePick = () => {
+    kiroJsonFileInputRef.current?.click();
+  };
+
+  const handleKiroJsonFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.name.endsWith('.json')) {
+      showNotification(t('auth_login.kiro_json_import_file_required'), 'warning');
+      event.target.value = '';
+      return;
+    }
+    setKiroJsonImport((prev) => ({
+      ...prev,
+      file,
+      fileName: file.name,
+      jsonText: '',
+      error: undefined,
+      result: undefined,
+    }));
+    event.target.value = '';
+  };
+
+  const handleKiroJsonImport = async () => {
+    let jsonText = kiroJsonImport.jsonText.trim();
+
+    if (!jsonText && kiroJsonImport.file) {
+      try {
+        jsonText = await kiroJsonImport.file.text();
+      } catch {
+        setKiroJsonImport((prev) => ({ ...prev, error: t('auth_login.kiro_json_import_parse_error') }));
+        return;
+      }
+    }
+
+    if (!jsonText) {
+      const message = t('auth_login.kiro_json_import_empty');
+      setKiroJsonImport((prev) => ({ ...prev, error: message }));
+      showNotification(message, 'warning');
+      return;
+    }
+
+    let items: unknown;
+    try {
+      items = JSON.parse(jsonText);
+    } catch {
+      const message = t('auth_login.kiro_json_import_parse_error');
+      setKiroJsonImport((prev) => ({ ...prev, error: message }));
+      showNotification(message, 'error');
+      return;
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      const message = t('auth_login.kiro_json_import_parse_error');
+      setKiroJsonImport((prev) => ({ ...prev, error: message }));
+      showNotification(message, 'error');
+      return;
+    }
+
+    setKiroJsonImport((prev) => ({ ...prev, loading: true, error: undefined, result: undefined }));
+    try {
+      const res = await kiroApi.importJson(items);
+      setKiroJsonImport((prev) => ({ ...prev, loading: false, result: res }));
+      if (res.failed === 0) {
+        showNotification(
+          t('auth_login.kiro_json_import_result_summary', { total: res.total, success: res.success, failed: res.failed }),
+          'success'
+        );
+      } else {
+        showNotification(
+          t('auth_login.kiro_json_import_result_summary', { total: res.total, success: res.success, failed: res.failed }),
+          'warning'
+        );
+      }
+    } catch (err: any) {
+      const message = err?.message || '';
+      setKiroJsonImport((prev) => ({ ...prev, loading: false, error: message }));
+      showNotification(message || t('auth_login.kiro_json_import_parse_error'), 'error');
+    }
+  };
+
   return (
     <div className={styles.container}>
       <h1 className={styles.pageTitle}>{t('nav.oauth', { defaultValue: 'OAuth' })}</h1>
@@ -419,6 +524,101 @@ export function OAuthPage() {
             </div>
           );
         })}
+
+        {/* Kiro JSON 导入 */}
+        <Card
+          title={
+            <span className={styles.cardTitle}>
+              <img src={iconKiro} alt="" className={styles.cardTitleIcon} />
+              {t('auth_login.kiro_json_import_title')}
+            </span>
+          }
+          extra={
+            <Button onClick={handleKiroJsonImport} loading={kiroJsonImport.loading}>
+              {t('auth_login.kiro_json_import_button')}
+            </Button>
+          }
+        >
+          <div className="hint">{t('auth_login.kiro_json_import_hint')}</div>
+          <div className="form-group" style={{ marginTop: 12 }}>
+            <label>{t('auth_login.kiro_json_import_textarea_label')}</label>
+            <textarea
+              className={styles.jsonImportTextarea}
+              value={kiroJsonImport.jsonText}
+              onChange={handleKiroJsonTextChange}
+              placeholder={t('auth_login.kiro_json_import_placeholder')}
+              disabled={Boolean(kiroJsonImport.file)}
+            />
+          </div>
+          <div className="form-group">
+            <label>{t('auth_login.kiro_json_import_file_label')}</label>
+            <div className={styles.jsonImportFileRow}>
+              <Button variant="secondary" size="sm" onClick={handleKiroJsonFilePick}>
+                {t('auth_login.kiro_json_import_choose_file')}
+              </Button>
+              <div
+                className={`${styles.fileName} ${
+                  kiroJsonImport.fileName ? '' : styles.fileNamePlaceholder
+                }`.trim()}
+              >
+                {kiroJsonImport.fileName || t('auth_login.kiro_json_import_file_placeholder')}
+              </div>
+            </div>
+            <input
+              ref={kiroJsonFileInputRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: 'none' }}
+              onChange={handleKiroJsonFileChange}
+            />
+          </div>
+          {kiroJsonImport.error && (
+            <div className="status-badge error" style={{ marginTop: 8 }}>
+              {kiroJsonImport.error}
+            </div>
+          )}
+          {kiroJsonImport.result && (
+            <div className="connection-box" style={{ marginTop: 12 }}>
+              <div className={styles.importResultSummary}>
+                {t('auth_login.kiro_json_import_result_summary', {
+                  total: kiroJsonImport.result.total,
+                  success: kiroJsonImport.result.success,
+                  failed: kiroJsonImport.result.failed,
+                })}
+              </div>
+              <div className={styles.importResultList}>
+                {kiroJsonImport.result.results.map((item) => (
+                  <div key={item.index} className={styles.importResultItem}>
+                    <span className={styles.importResultIndex}>#{item.index}</span>
+                    <span
+                      className={`status-badge ${item.status === 'ok' ? 'success' : 'error'}`}
+                      style={{ fontSize: 12, padding: '2px 8px' }}
+                    >
+                      {item.status === 'ok'
+                        ? t('auth_login.kiro_json_import_status_ok')
+                        : t('auth_login.kiro_json_import_status_error')}
+                    </span>
+                    <span className={styles.importResultDetail}>
+                      {item.status === 'ok' ? (
+                        <>
+                          {item.email && (
+                            <span>{t('auth_login.kiro_json_import_result_email')}: {item.email}</span>
+                          )}
+                          {item.email && item.fileName && <span> · </span>}
+                          {item.fileName && (
+                            <span>{t('auth_login.kiro_json_import_result_file')}: {item.fileName}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span>{item.error}</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
 
         {/* Vertex JSON 登录 */}
         <Card
