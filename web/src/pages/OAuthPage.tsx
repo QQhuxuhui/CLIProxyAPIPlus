@@ -337,7 +337,7 @@ export function OAuthPage() {
   const handleKiroJsonFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (!file.name.endsWith('.json')) {
+    if (!/\.json$/i.test(file.name)) {
       showNotification(t('auth_login.kiro_json_import_file_required'), 'warning');
       event.target.value = '';
       return;
@@ -351,6 +351,19 @@ export function OAuthPage() {
       result: undefined,
     }));
     event.target.value = '';
+  };
+
+  const clearKiroJsonFileSelection = () => {
+    setKiroJsonImport((prev) => ({
+      ...prev,
+      file: undefined,
+      fileName: '',
+      error: undefined,
+      result: undefined,
+    }));
+    if (kiroJsonFileInputRef.current) {
+      kiroJsonFileInputRef.current.value = '';
+    }
   };
 
   const handleKiroJsonImport = async () => {
@@ -556,6 +569,11 @@ export function OAuthPage() {
               <Button variant="secondary" size="sm" onClick={handleKiroJsonFilePick}>
                 {t('auth_login.kiro_json_import_choose_file')}
               </Button>
+              {kiroJsonImport.file && (
+                <Button variant="secondary" size="sm" onClick={clearKiroJsonFileSelection}>
+                  {t('basic_settings.proxy_clear')}
+                </Button>
+              )}
               <div
                 className={`${styles.fileName} ${
                   kiroJsonImport.fileName ? '' : styles.fileNamePlaceholder

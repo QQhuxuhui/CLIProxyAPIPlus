@@ -1,5 +1,5 @@
 /**
- * Kiro 相关 A​PI
+ * Kiro 相关 API
  */
 
 import { apiClient } from './client';
