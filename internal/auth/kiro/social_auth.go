@@ -256,6 +256,7 @@ func (c *SocialAuthClient) CreateToken(ctx context.Context, req *CreateTokenRequ
 }
 
 // RefreshSocialToken refreshes an expired social auth token.
+// Uses a clean HTTP client (no proxy) to match reference implementation behavior.
 func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken string) (*KiroTokenData, error) {
 	body, err := json.Marshal(&RefreshTokenRequest{RefreshToken: refreshToken})
 	if err != nil {
@@ -263,13 +264,12 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 	}
 
 	refreshURL := kiroAuthServiceEndpoint + "/refreshToken"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create refresh request: %w", err)
-	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
+	// Use a clean HTTP client without proxy - matching reference project's refresh_token_desktop
+	cleanClient := &http.Client{Timeout: 30 * time.Second}
+
+	// Log request details for debugging
+	log.Debugf("RefreshSocialToken: POST %s, body=%s", refreshURL, string(body))
 
 	// Retry up to 3 times (matching reference implementation)
 	var resp *http.Response
@@ -277,15 +277,19 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Second)
-			// Recreate request body for retry
-			httpReq, err = http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(body)))
-			if err != nil {
-				return nil, fmt.Errorf("failed to create refresh request: %w", err)
-			}
-			httpReq.Header.Set("Content-Type", "application/json")
-			httpReq.Header.Set("Accept", "application/json")
 		}
-		resp, lastErr = c.httpClient.Do(httpReq)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(body)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create refresh request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/json")
+		httpReq.Header.Set("User-Agent", "KiroIDE-0.7.45-cli-proxy-api")
+
+		// Log exact headers for debugging
+		log.Debugf("RefreshSocialToken attempt %d headers: %v", attempt+1, httpReq.Header)
+
+		resp, lastErr = cleanClient.Do(httpReq)
 		if lastErr == nil {
 			break
 		}
