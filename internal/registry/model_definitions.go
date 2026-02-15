@@ -21,8 +21,8 @@ import (
 //   - iflow
 //   - kiro
 //   - github-copilot
-//   - kiro
 //   - amazonq
+//   - kimi
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -49,6 +49,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKiroModels()
 	case "amazonq":
 		return GetAmazonQModels()
+	case "kimi":
+		return GetKimiModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -96,6 +98,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetGitHubCopilotModels(),
 		GetKiroModels(),
 		GetAmazonQModels(),
+		GetKimiModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {
