@@ -750,17 +750,12 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 		return body
 	}
 
-	// Build a set of built-in tool names (tools with a "type" field)
-	builtinTools := make(map[string]bool)
-	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() {
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			if tool.Get("type").Exists() && tool.Get("type").String() != "" {
-				if name := tool.Get("name").String(); name != "" {
-					builtinTools[name] = true
-				}
-			}
-			return true
-		})
+	// Collect built-in tool names (those with a non-empty "type" field) so we can
+	// skip them consistently in both tools and message history.
+	builtinTools := map[string]bool{}
+	for _, name := range []string{"web_search", "code_execution", "text_editor", "computer"} {
+		builtinTools[name] = true
+	}
 	}
 
 	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() {
@@ -768,6 +763,9 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 			// Skip built-in tools (web_search, code_execution, etc.) which have
 			// a "type" field and require their name to remain unchanged.
 			if tool.Get("type").Exists() && tool.Get("type").String() != "" {
+				if n := tool.Get("name").String(); n != "" {
+					builtinTools[n] = true
+				}
 				return true
 			}
 			name := tool.Get("name").String()
@@ -782,7 +780,7 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 
 	if gjson.GetBytes(body, "tool_choice.type").String() == "tool" {
 		name := gjson.GetBytes(body, "tool_choice.name").String()
-		if name != "" && !strings.HasPrefix(name, prefix) {
+		if name != "" && !strings.HasPrefix(name, prefix) && !builtinTools[name] {
 			body, _ = sjson.SetBytes(body, "tool_choice.name", prefix+name)
 		}
 	}
@@ -826,6 +824,12 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 						})
 					}
 				}
+				name := part.Get("name").String()
+				if name == "" || strings.HasPrefix(name, prefix) || builtinTools[name] {
+					return true
+				}
+				path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())
+				body, _ = sjson.SetBytes(body, path, prefix+name)
 				return true
 			})
 			return true
