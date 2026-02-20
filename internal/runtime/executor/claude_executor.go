@@ -798,7 +798,6 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 	for _, name := range []string{"web_search", "code_execution", "text_editor", "computer"} {
 		builtinTools[name] = true
 	}
-	}
 
 	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() {
 		tools.ForEach(func(index, tool gjson.Result) bool {
@@ -838,7 +837,7 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 				switch partType {
 				case "tool_use":
 					name := part.Get("name").String()
-					if name == "" || strings.HasPrefix(name, prefix) {
+					if name == "" || strings.HasPrefix(name, prefix) || builtinTools[name] {
 						return true
 					}
 					path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())

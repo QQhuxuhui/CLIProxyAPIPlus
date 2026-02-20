@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -55,22 +57,15 @@ func TestGitHubCopilotNormalizeModel_StripsSuffix(t *testing.T) {
 
 func TestUseGitHubCopilotResponsesEndpoint_OpenAIResponseSource(t *testing.T) {
 	t.Parallel()
-	if !useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai-response"), "claude-3-5-sonnet") {
+	if !useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai-response")) {
 		t.Fatal("expected openai-response source to use /responses")
-	}
-}
-
-func TestUseGitHubCopilotResponsesEndpoint_CodexModel(t *testing.T) {
-	t.Parallel()
-	if !useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai"), "gpt-5-codex") {
-		t.Fatal("expected codex model to use /responses")
 	}
 }
 
 func TestUseGitHubCopilotResponsesEndpoint_DefaultChat(t *testing.T) {
 	t.Parallel()
-	if useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai"), "claude-3-5-sonnet") {
-		t.Fatal("expected default openai source with non-codex model to use /chat/completions")
+	if useGitHubCopilotResponsesEndpoint(sdktranslator.FromString("openai")) {
+		t.Fatal("expected default openai source to use /chat/completions")
 	}
 }
 
