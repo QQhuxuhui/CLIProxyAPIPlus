@@ -865,12 +865,6 @@ func applyClaudeToolPrefix(body []byte, prefix string) []byte {
 						})
 					}
 				}
-				name := part.Get("name").String()
-				if name == "" || strings.HasPrefix(name, prefix) || builtinTools[name] {
-					return true
-				}
-				path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())
-				body, _ = sjson.SetBytes(body, path, prefix+name)
 				return true
 			})
 			return true
