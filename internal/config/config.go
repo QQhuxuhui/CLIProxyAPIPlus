@@ -97,6 +97,10 @@ type Config struct {
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
 
+	// ClaudeHeaderDefaults configures default header values for Claude API requests.
+	// These are used as fallbacks when the client does not send its own headers.
+	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -146,6 +150,15 @@ type MasqueradeTraceConfig struct {
 	// MaxRecords limits the number of trace records kept in memory.
 	// Uses ring buffer, oldest records are overwritten. Default: 100
 	MaxRecords int `yaml:"max-records,omitempty" json:"max-records,omitempty"`
+}
+
+// ClaudeHeaderDefaults configures default header values injected into Claude API requests
+// when the client does not send them. Update these when Claude Code releases a new version.
+type ClaudeHeaderDefaults struct {
+	UserAgent      string `yaml:"user-agent" json:"user-agent"`
+	PackageVersion string `yaml:"package-version" json:"package-version"`
+	RuntimeVersion string `yaml:"runtime-version" json:"runtime-version"`
+	Timeout        string `yaml:"timeout" json:"timeout"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -688,9 +701,6 @@ func loadConfigOptional(configFile string, optional bool, applyRuntimeSideEffect
 		cfg.ErrorLogsMaxFiles = 10
 	}
 
-	// Sync request authentication providers with inline API keys for backwards compatibility.
-	syncInlineAccessProvider(&cfg)
-
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
 
@@ -800,14 +810,44 @@ func payloadRawString(value any) ([]byte, bool) {
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
 // allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
+// It also injects default aliases for channels that have built-in defaults (e.g., kiro)
+// when no user-configured aliases exist for those channels.
 func (cfg *Config) SanitizeOAuthModelAlias() {
-	if cfg == nil || len(cfg.OAuthModelAlias) == 0 {
+	if cfg == nil {
+		return
+	}
+
+	// Inject default Kiro aliases if no user-configured kiro aliases exist
+	if cfg.OAuthModelAlias == nil {
+		cfg.OAuthModelAlias = make(map[string][]OAuthModelAlias)
+	}
+	if _, hasKiro := cfg.OAuthModelAlias["kiro"]; !hasKiro {
+		// Check case-insensitive too
+		found := false
+		for k := range cfg.OAuthModelAlias {
+			if strings.EqualFold(strings.TrimSpace(k), "kiro") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.OAuthModelAlias["kiro"] = defaultKiroAliases()
+		}
+	}
+
+	if len(cfg.OAuthModelAlias) == 0 {
 		return
 	}
 	out := make(map[string][]OAuthModelAlias, len(cfg.OAuthModelAlias))
 	for rawChannel, aliases := range cfg.OAuthModelAlias {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
-		if channel == "" || len(aliases) == 0 {
+		if channel == "" {
+			continue
+		}
+		// Preserve channels that were explicitly set to empty/nil – they act
+		// as "disabled" markers so default injection won't re-add them (#222).
+		if len(aliases) == 0 {
+			out[channel] = nil
 			continue
 		}
 		seenAlias := make(map[string]struct{}, len(aliases))
@@ -949,18 +989,6 @@ func normalizeModelPrefix(prefix string) string {
 	return trimmed
 }
 
-func syncInlineAccessProvider(cfg *Config) {
-	if cfg == nil {
-		return
-	}
-	if len(cfg.APIKeys) == 0 {
-		if provider := cfg.ConfigAPIKeyProvider(); provider != nil && len(provider.APIKeys) > 0 {
-			cfg.APIKeys = append([]string(nil), provider.APIKeys...)
-		}
-	}
-	cfg.Access.Providers = nil
-}
-
 // looksLikeBcrypt returns true if the provided string appears to be a bcrypt hash.
 func looksLikeBcrypt(s string) bool {
 	return len(s) > 4 && (s[:4] == "$2a$" || s[:4] == "$2b$" || s[:4] == "$2y$")
@@ -1048,7 +1076,7 @@ func hashSecret(secret string) (string, error) {
 // SaveConfigPreserveComments writes the config back to YAML while preserving existing comments
 // and key ordering by loading the original file into a yaml.Node tree and updating values in-place.
 func SaveConfigPreserveComments(configFile string, cfg *Config) error {
-	persistCfg := sanitizeConfigForPersist(cfg)
+	persistCfg := cfg
 	// Load original YAML as a node tree to preserve comments and ordering.
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -1114,16 +1142,6 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	data = NormalizeCommentIndentation(buf.Bytes())
 	_, err = f.Write(data)
 	return err
-}
-
-func sanitizeConfigForPersist(cfg *Config) *Config {
-	if cfg == nil {
-		return nil
-	}
-	clone := *cfg
-	clone.SDKConfig = cfg.SDKConfig
-	clone.SDKConfig.Access = AccessConfig{}
-	return &clone
 }
 
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]

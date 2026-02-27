@@ -256,6 +256,7 @@ func (o *KiroOAuth) RefreshTokenWithFingerprint(ctx context.Context, refreshToke
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	// Use KiroIDE-style User-Agent to match official Kiro IDE behavior
 	// This helps avoid 403 errors from server-side User-Agent validation

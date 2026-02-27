@@ -47,14 +47,15 @@ import (
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
 
 const (
-	anthropicCallbackPort   = 54545
-	geminiCallbackPort      = 8085
-	codexCallbackPort       = 1455
-	geminiCLIEndpoint       = "https://cloudcode-pa.googleapis.com"
-	geminiCLIVersion        = "v1internal"
-	geminiCLIUserAgent      = "google-api-nodejs-client/9.15.1"
-	geminiCLIApiClient      = "gl-node/22.17.0"
-	geminiCLIClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+	anthropicCallbackPort      = 54545
+	geminiCallbackPort         = 8085
+	codexCallbackPort          = 1455
+	kiroJSONImportMaxBodyBytes = 2 << 20
+	geminiCLIEndpoint          = "https://cloudcode-pa.googleapis.com"
+	geminiCLIVersion           = "v1internal"
+	geminiCLIUserAgent         = "google-api-nodejs-client/9.15.1"
+	geminiCLIApiClient         = "gl-node/22.17.0"
+	geminiCLIClientMetadata    = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 )
 
 type callbackForwarder struct {
@@ -2680,4 +2681,196 @@ func generateKiroPKCE() (verifier, challenge string, err error) {
 	challenge = base64.RawURLEncoding.EncodeToString(h[:])
 
 	return verifier, challenge, nil
+}
+
+// kiroJsonImportItem represents a single account entry in the JSON batch import.
+type kiroJsonImportItem = kiroauth.KiroJSONImportItem
+
+// kiroJsonImportResult represents the result of importing a single account.
+type kiroJsonImportResult struct {
+	Index    int    `json:"index"`
+	Status   string `json:"status"`
+	Email    string `json:"email,omitempty"`
+	FileName string `json:"fileName,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// ValidateKiroImportItem validates a single import item and returns its type.
+// Returns (accountType, inferredProvider, error).
+func ValidateKiroImportItem(item kiroJsonImportItem, index int) (string, string, error) {
+	validation, err := kiroauth.ValidateKiroJSONImportItem(item, index)
+	if err != nil {
+		return "", "", err
+	}
+	return validation.AccountType, validation.Provider, nil
+}
+
+// ImportKiroJson handles batch import of Kiro credentials from JSON.
+// Accepts a JSON array of account objects, validates each, attempts token refresh,
+// and saves valid accounts as auth files.
+//
+// POST /v0/management/kiro/import-json
+// Body: JSON array of kiroJsonImportItem
+func (h *Handler) ImportKiroJson(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, kiroJSONImportMaxBodyBytes)
+	data, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		return
+	}
+
+	var items []kiroJsonImportItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid JSON format: %v", err)})
+		return
+	}
+
+	if len(items) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty import list"})
+		return
+	}
+
+	results := make([]kiroJsonImportResult, 0, len(items))
+	successCount := 0
+
+	for i, item := range items {
+		result := kiroJsonImportResult{Index: i + 1}
+
+		validation, errValidate := kiroauth.ValidateKiroJSONImportItem(item, i)
+		if errValidate != nil {
+			result.Status = "error"
+			result.Error = errValidate.Error()
+			results = append(results, result)
+			continue
+		}
+		item = validation.Item
+		accountType := validation.AccountType
+		provider := validation.Provider
+
+		// Attempt token refresh to validate the credential and get access_token/email
+		ssoClient := kiroauth.NewSSOOIDCClient(h.cfg)
+		var tokenData *kiroauth.KiroTokenData
+
+		if accountType == "idc" {
+			region := item.Region
+			if region == "" {
+				region = "us-east-1"
+			}
+			tokenData, err = ssoClient.RefreshTokenWithRegion(ctx, item.ClientID, item.ClientSecret, item.RefreshToken, region, "")
+			if err != nil {
+				// Fallback: try default endpoint
+				tokenData, err = ssoClient.RefreshToken(ctx, item.ClientID, item.ClientSecret, item.RefreshToken)
+			}
+		} else {
+			// Social auth: use Kiro's OAuth refresh endpoint
+			oauth := kiroauth.NewKiroOAuth(h.cfg)
+			tokenData, err = oauth.RefreshToken(ctx, item.RefreshToken)
+		}
+
+		if err != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("token refresh failed: %v", err)
+			results = append(results, result)
+			continue
+		}
+
+		// Extract email from refreshed token
+		email := tokenData.Email
+		if email == "" {
+			email = kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
+		}
+
+		// Build auth record
+		expiresAt, errParse := time.Parse(time.RFC3339, tokenData.ExpiresAt)
+		if errParse != nil {
+			expiresAt = time.Now().Add(1 * time.Hour)
+		}
+
+		idPart := kiroauth.SanitizeEmailForFilename(email)
+		if idPart == "" {
+			idPart = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+		}
+
+		now := time.Now()
+		var authMethod, label string
+		if accountType == "idc" {
+			authMethod = "builder-id"
+			if strings.EqualFold(provider, "Enterprise") {
+				authMethod = "idc"
+			}
+			label = "kiro-idc"
+		} else {
+			authMethod = "social"
+			label = fmt.Sprintf("kiro-%s", strings.ToLower(provider))
+		}
+
+		fileName := fmt.Sprintf("%s-%s.json", label, idPart)
+
+		metadata := map[string]any{
+			"type":          "kiro",
+			"access_token":  tokenData.AccessToken,
+			"refresh_token": tokenData.RefreshToken,
+			"profile_arn":   tokenData.ProfileArn,
+			"expires_at":    tokenData.ExpiresAt,
+			"auth_method":   authMethod,
+			"provider":      provider,
+			"email":         email,
+			"last_refresh":  now.Format(time.RFC3339),
+		}
+
+		if accountType == "idc" {
+			metadata["client_id"] = item.ClientID
+			metadata["client_secret"] = item.ClientSecret
+			if item.Region != "" {
+				metadata["region"] = item.Region
+			}
+		}
+
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "kiro",
+			FileName: fileName,
+			Label:    label,
+			Status:   coreauth.StatusActive,
+			Metadata: metadata,
+			Attributes: map[string]string{
+				"profile_arn": tokenData.ProfileArn,
+				"source":      "json-import",
+				"email":       email,
+			},
+			CreatedAt:        now,
+			UpdatedAt:        now,
+			NextRefreshAfter: expiresAt.Add(-20 * time.Minute),
+		}
+
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("failed to save: %v", errSave)
+			results = append(results, result)
+			continue
+		}
+
+		result.Status = "ok"
+		result.Email = email
+		result.FileName = filepath.Base(savedPath)
+		results = append(results, result)
+		successCount++
+
+		log.Infof("Kiro JSON import: saved %s (email: %s)", savedPath, email)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":   len(items),
+		"success": successCount,
+		"failed":  len(items) - successCount,
+		"results": results,
+	})
 }

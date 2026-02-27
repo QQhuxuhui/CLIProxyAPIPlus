@@ -21,8 +21,8 @@ import (
 //   - iflow
 //   - kiro
 //   - github-copilot
-//   - kiro
 //   - amazonq
+//   - kimi
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -49,6 +49,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKiroModels()
 	case "amazonq":
 		return GetAmazonQModels()
+	case "kimi":
+		return GetKimiModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -96,6 +98,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetGitHubCopilotModels(),
 		GetKiroModels(),
 		GetAmazonQModels(),
+		GetKimiModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {
@@ -180,6 +183,7 @@ func GetGitHubCopilotModels() []*ModelInfo {
 			ContextLength:       200000,
 			MaxCompletionTokens: 32768,
 			SupportedEndpoints:  []string{"/chat/completions", "/responses"},
+			Thinking:            &ThinkingSupport{Levels: []string{"none", "low", "medium", "high"}},
 		},
 		{
 			ID:                  "gpt-5.1-codex",
@@ -192,6 +196,7 @@ func GetGitHubCopilotModels() []*ModelInfo {
 			ContextLength:       200000,
 			MaxCompletionTokens: 32768,
 			SupportedEndpoints:  []string{"/responses"},
+			Thinking:            &ThinkingSupport{Levels: []string{"none", "low", "medium", "high"}},
 		},
 		{
 			ID:                  "gpt-5.1-codex-mini",
@@ -204,6 +209,7 @@ func GetGitHubCopilotModels() []*ModelInfo {
 			ContextLength:       128000,
 			MaxCompletionTokens: 16384,
 			SupportedEndpoints:  []string{"/responses"},
+			Thinking:            &ThinkingSupport{Levels: []string{"none", "low", "medium", "high"}},
 		},
 		{
 			ID:                  "gpt-5.1-codex-max",
@@ -240,6 +246,19 @@ func GetGitHubCopilotModels() []*ModelInfo {
 			ContextLength:       200000,
 			MaxCompletionTokens: 32768,
 			SupportedEndpoints:  []string{"/responses"},
+		},
+		{
+			ID:                  "gpt-5.3-codex",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "github-copilot",
+			Type:                "github-copilot",
+			DisplayName:         "GPT-5.3 Codex",
+			Description:         "OpenAI GPT-5.3 Codex via GitHub Copilot",
+			ContextLength:       200000,
+			MaxCompletionTokens: 32768,
+			SupportedEndpoints:  []string{"/responses"},
+			Thinking:            &ThinkingSupport{Levels: []string{"none", "low", "medium", "high", "xhigh"}},
 		},
 		{
 			ID:                  "claude-haiku-4.5",
@@ -309,6 +328,18 @@ func GetGitHubCopilotModels() []*ModelInfo {
 			Type:                "github-copilot",
 			DisplayName:         "Claude Sonnet 4.5",
 			Description:         "Anthropic Claude Sonnet 4.5 via GitHub Copilot",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			SupportedEndpoints:  []string{"/chat/completions"},
+		},
+		{
+			ID:                  "claude-sonnet-4.6",
+			Object:              "model",
+			Created:             now,
+			OwnedBy:             "github-copilot",
+			Type:                "github-copilot",
+			DisplayName:         "Claude Sonnet 4.6",
+			Description:         "Anthropic Claude Sonnet 4.6 via GitHub Copilot",
 			ContextLength:       200000,
 			MaxCompletionTokens: 64000,
 			SupportedEndpoints:  []string{"/chat/completions"},
@@ -401,6 +432,18 @@ func GetKiroModels() []*ModelInfo {
 			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
 		},
 		{
+			ID:                  "kiro-claude-sonnet-4-6",
+			Object:              "model",
+			Created:             1739836800, // 2025-02-18
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro Claude Sonnet 4.6",
+			Description:         "Claude Sonnet 4.6 via Kiro (1.3x credit)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
 			ID:                  "kiro-claude-opus-4-5",
 			Object:              "model",
 			Created:             1732752000,
@@ -448,6 +491,87 @@ func GetKiroModels() []*ModelInfo {
 			MaxCompletionTokens: 64000,
 			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
 		},
+		// --- 第三方模型 (通过 Kiro 接入) ---
+		{
+			ID:                  "kiro-deepseek-3-2",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro DeepSeek 3.2",
+			Description:         "DeepSeek 3.2 via Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 32768,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "kiro-minimax-m2-1",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro MiniMax M2.1",
+			Description:         "MiniMax M2.1 via Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "kiro-qwen3-coder-next",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro Qwen3 Coder Next",
+			Description:         "Qwen3 Coder Next via Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 32768,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "kiro-gpt-4o",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro GPT-4o",
+			Description:         "OpenAI GPT-4o via Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 16384,
+		},
+		{
+			ID:                  "kiro-gpt-4",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro GPT-4",
+			Description:         "OpenAI GPT-4 via Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 8192,
+		},
+		{
+			ID:                  "kiro-gpt-4-turbo",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro GPT-4 Turbo",
+			Description:         "OpenAI GPT-4 Turbo via Kiro",
+			ContextLength:       128000,
+			MaxCompletionTokens: 16384,
+		},
+		{
+			ID:                  "kiro-gpt-3-5-turbo",
+			Object:              "model",
+			Created:             1732752000,
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro GPT-3.5 Turbo",
+			Description:         "OpenAI GPT-3.5 Turbo via Kiro",
+			ContextLength:       16384,
+			MaxCompletionTokens: 4096,
+		},
 		// --- Agentic Variants (Optimized for coding agents with chunked writes) ---
 		{
 			ID:                  "kiro-claude-opus-4-6-agentic",
@@ -457,6 +581,18 @@ func GetKiroModels() []*ModelInfo {
 			Type:                "kiro",
 			DisplayName:         "Kiro Claude Opus 4.6 (Agentic)",
 			Description:         "Claude Opus 4.6 optimized for coding agents (chunked writes)",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
+		{
+			ID:                  "kiro-claude-sonnet-4-6-agentic",
+			Object:              "model",
+			Created:             1739836800, // 2025-02-18
+			OwnedBy:             "aws",
+			Type:                "kiro",
+			DisplayName:         "Kiro Claude Sonnet 4.6 (Agentic)",
+			Description:         "Claude Sonnet 4.6 optimized for coding agents (chunked writes)",
 			ContextLength:       200000,
 			MaxCompletionTokens: 64000,
 			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},

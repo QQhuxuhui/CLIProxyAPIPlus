@@ -44,3 +44,28 @@ export interface KiroUsageResponse {
   data?: KiroUsageResponseData;
   error?: string;
 }
+
+// ---- JSON 导入相关 ----
+
+export interface KiroJsonImportItem {
+  refreshToken: string;
+  provider?: string;
+  clientId?: string;
+  clientSecret?: string;
+  region?: string;
+}
+
+export interface KiroJsonImportResultItem {
+  index: number;
+  status: 'ok' | 'error';
+  email?: string;
+  fileName?: string;
+  error?: string;
+}
+
+export interface KiroJsonImportResponse {
+  total: number;
+  success: number;
+  failed: number;
+  results: KiroJsonImportResultItem[];
+}
