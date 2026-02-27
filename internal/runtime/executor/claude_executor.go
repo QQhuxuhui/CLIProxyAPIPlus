@@ -117,7 +117,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
-	body = applyCloaking(ctx, e.cfg, auth, body, baseModel)
+	body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
@@ -135,7 +135,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	extraBetas, body = extractAndRemoveBetas(body)
 	bodyForTranslation := body
 	bodyForUpstream := body
-	if isClaudeOAuthToken(apiKey) {
+	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		bodyForUpstream = applyClaudeToolPrefix(body, claudeToolPrefix)
 	}
 
@@ -209,7 +209,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	} else {
 		reporter.publish(ctx, parseClaudeUsage(data))
 	}
-	if isClaudeOAuthToken(apiKey) {
+	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		data = stripClaudeToolPrefixFromResponse(data, claudeToolPrefix)
 	}
 	var param any
@@ -223,11 +223,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		data,
 		&param,
 	)
-	resp = cliproxyexecutor.Response{Payload: []byte(out)}
+	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
 
-func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
@@ -258,7 +258,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
-	body = applyCloaking(ctx, e.cfg, auth, body, baseModel)
+	body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
@@ -276,7 +276,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	extraBetas, body = extractAndRemoveBetas(body)
 	bodyForTranslation := body
 	bodyForUpstream := body
-	if isClaudeOAuthToken(apiKey) {
+	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		bodyForUpstream = applyClaudeToolPrefix(body, claudeToolPrefix)
 	}
 
@@ -330,7 +330,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
 	go func() {
 		defer close(out)
 		defer func() {
@@ -349,7 +348,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				if detail, ok := parseClaudeStreamUsage(line); ok {
 					reporter.publish(ctx, detail)
 				}
-				if isClaudeOAuthToken(apiKey) {
+				if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 					line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
 				}
 				// Forward the line as-is to preserve SSE format
@@ -376,7 +375,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if detail, ok := parseClaudeStreamUsage(line); ok {
 				reporter.publish(ctx, detail)
 			}
-			if isClaudeOAuthToken(apiKey) {
+			if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 				line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
 			}
 			chunks := sdktranslator.TranslateStream(
@@ -399,7 +398,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()
-	return stream, nil
+	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -424,7 +423,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	// Extract betas from body and convert to header (for count_tokens too)
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
-	if isClaudeOAuthToken(apiKey) {
+	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		body = applyClaudeToolPrefix(body, claudeToolPrefix)
 	}
 
@@ -488,7 +487,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	appendAPIResponseChunk(ctx, e.cfg, data)
 	count := gjson.GetBytes(data, "input_tokens").Int()
 	out := sdktranslator.TranslateTokenCount(ctx, to, from, count, data)
-	return cliproxyexecutor.Response{Payload: []byte(out)}, nil
+	return cliproxyexecutor.Response{Payload: []byte(out), Headers: resp.Header.Clone()}, nil
 }
 
 func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -976,10 +975,10 @@ func getClientUserAgent(ctx context.Context) string {
 }
 
 // getCloakConfigFromAuth extracts cloak configuration from auth attributes.
-// Returns (cloakMode, strictMode, sensitiveWords).
-func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (string, bool, []string) {
+// Returns (cloakMode, strictMode, sensitiveWords, cacheUserID).
+func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (string, bool, []string, bool) {
 	if auth == nil || auth.Attributes == nil {
-		return "auto", false, nil
+		return "auto", false, nil, false
 	}
 
 	cloakMode := auth.Attributes["cloak_mode"]
@@ -997,7 +996,9 @@ func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (string, bool, []string) {
 		}
 	}
 
-	return cloakMode, strictMode, sensitiveWords
+	cacheUserID := strings.EqualFold(strings.TrimSpace(auth.Attributes["cloak_cache_user_id"]), "true")
+
+	return cloakMode, strictMode, sensitiveWords, cacheUserID
 }
 
 // resolveClaudeKeyCloakConfig finds the matching ClaudeKey config and returns its CloakConfig.
@@ -1030,38 +1031,25 @@ func resolveClaudeKeyCloakConfig(cfg *config.Config, auth *cliproxyauth.Auth) *c
 }
 
 // injectFakeUserID generates and injects a fake user ID into the request metadata.
-// Deprecated: Use injectPooledUserID for session pool support.
-func injectFakeUserID(payload []byte) []byte {
+// When useCache is false, a new user ID is generated for every call.
+func injectFakeUserID(payload []byte, apiKey string, useCache bool) []byte {
+	generateID := func() string {
+		if useCache {
+			return cachedUserID(apiKey)
+		}
+		return generateFakeUserID()
+	}
+
 	metadata := gjson.GetBytes(payload, "metadata")
 	if !metadata.Exists() {
-		payload, _ = sjson.SetBytes(payload, "metadata.user_id", generateFakeUserID())
+		payload, _ = sjson.SetBytes(payload, "metadata.user_id", generateID())
 		return payload
 	}
 
 	existingUserID := gjson.GetBytes(payload, "metadata.user_id").String()
 	if existingUserID == "" || !isValidUserID(existingUserID) {
-		payload, _ = sjson.SetBytes(payload, "metadata.user_id", generateFakeUserID())
+		payload, _ = sjson.SetBytes(payload, "metadata.user_id", generateID())
 	}
-	return payload
-}
-
-// injectPooledUserID injects a user ID from the session pool into the request metadata.
-// This ensures consistent session UUIDs across requests while the hash part is stable.
-func injectPooledUserID(payload []byte, authID, apiKey string, maxSessions int, rotationInterval time.Duration) []byte {
-	// Extract existing user_id from client request for hash inheritance
-	existingUserID := gjson.GetBytes(payload, "metadata.user_id").String()
-
-	// Get pooled user ID
-	pooledUserID := getPooledUserID(authID, apiKey, existingUserID, maxSessions, rotationInterval)
-
-	// Set the user_id in metadata
-	metadata := gjson.GetBytes(payload, "metadata")
-	if !metadata.Exists() {
-		payload, _ = sjson.SetBytes(payload, "metadata.user_id", pooledUserID)
-		return payload
-	}
-
-	payload, _ = sjson.SetBytes(payload, "metadata.user_id", pooledUserID)
 	return payload
 }
 
@@ -1096,8 +1084,8 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 }
 
 // applyCloaking applies cloaking transformations to the payload based on config and client.
-// Cloaking includes: system prompt injection, pooled user ID, and sensitive word obfuscation.
-func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, payload []byte, model string) []byte {
+// Cloaking includes: system prompt injection, fake user ID, and sensitive word obfuscation.
+func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, payload []byte, model string, apiKey string) []byte {
 	clientUserAgent := getClientUserAgent(ctx)
 
 	// Get cloak config from ClaudeKey configuration
@@ -1107,24 +1095,20 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	var cloakMode string
 	var strictMode bool
 	var sensitiveWords []string
-	var maxSessions int
-	var rotationInterval time.Duration
+	var cacheUserID bool
 
 	if cloakCfg != nil {
 		cloakMode = cloakCfg.Mode
 		strictMode = cloakCfg.StrictMode
 		sensitiveWords = cloakCfg.SensitiveWords
-		maxSessions = cloakCfg.MaxSessions
-		if cloakCfg.RotationInterval != "" {
-			if parsed, err := time.ParseDuration(cloakCfg.RotationInterval); err == nil {
-				rotationInterval = parsed
-			}
+		if cloakCfg.CacheUserID != nil {
+			cacheUserID = *cloakCfg.CacheUserID
 		}
 	}
 
 	// Fallback to auth attributes if no config found
 	if cloakMode == "" {
-		attrMode, attrStrict, attrWords := getCloakConfigFromAuth(auth)
+		attrMode, attrStrict, attrWords, attrCache := getCloakConfigFromAuth(auth)
 		cloakMode = attrMode
 		if !strictMode {
 			strictMode = attrStrict
@@ -1132,6 +1116,12 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		if len(sensitiveWords) == 0 {
 			sensitiveWords = attrWords
 		}
+		if cloakCfg == nil || cloakCfg.CacheUserID == nil {
+			cacheUserID = attrCache
+		}
+	} else if cloakCfg == nil || cloakCfg.CacheUserID == nil {
+		_, _, _, attrCache := getCloakConfigFromAuth(auth)
+		cacheUserID = attrCache
 	}
 
 	// Determine if cloaking should be applied
@@ -1144,19 +1134,8 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		payload = checkSystemInstructionsWithMode(payload, strictMode)
 	}
 
-	// Inject pooled user ID (uses session pool for consistent sessions)
-	var authID, apiKey string
-	if auth != nil {
-		authID = auth.ID
-		apiKey, _ = claudeCreds(auth)
-	}
-	if authID == "" {
-		authID = "default"
-	}
-	if apiKey == "" {
-		apiKey = authID // Fallback for hash generation
-	}
-	payload = injectPooledUserID(payload, authID, apiKey, maxSessions, rotationInterval)
+	// Inject fake user ID
+	payload = injectFakeUserID(payload, apiKey, cacheUserID)
 
 	// Apply sensitive word obfuscation
 	if len(sensitiveWords) > 0 {

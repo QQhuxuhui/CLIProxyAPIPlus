@@ -78,7 +78,7 @@ func (h *Handler) GetKiroUsage(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	usageResp, err := cwClient.GetUsageLimits(ctx, strings.TrimSpace(accessToken))
+	usageResp, err := cwClient.GetUsageLimits(ctx, strings.TrimSpace(accessToken), "", "", profileArn)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,

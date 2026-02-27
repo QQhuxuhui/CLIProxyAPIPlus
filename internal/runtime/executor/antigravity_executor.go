@@ -54,7 +54,77 @@ const (
 var (
 	randSource      = rand.New(rand.NewSource(time.Now().UnixNano()))
 	randSourceMutex sync.Mutex
+	// antigravityPrimaryModelsCache keeps the latest non-empty model list fetched
+	// from any antigravity auth. Empty fetches never overwrite this cache.
+	antigravityPrimaryModelsCache struct {
+		mu     sync.RWMutex
+		models []*registry.ModelInfo
+	}
 )
+
+func cloneAntigravityModels(models []*registry.ModelInfo) []*registry.ModelInfo {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]*registry.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		out = append(out, cloneAntigravityModelInfo(model))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneAntigravityModelInfo(model *registry.ModelInfo) *registry.ModelInfo {
+	if model == nil {
+		return nil
+	}
+	clone := *model
+	if len(model.SupportedGenerationMethods) > 0 {
+		clone.SupportedGenerationMethods = append([]string(nil), model.SupportedGenerationMethods...)
+	}
+	if len(model.SupportedParameters) > 0 {
+		clone.SupportedParameters = append([]string(nil), model.SupportedParameters...)
+	}
+	if model.Thinking != nil {
+		thinkingClone := *model.Thinking
+		if len(model.Thinking.Levels) > 0 {
+			thinkingClone.Levels = append([]string(nil), model.Thinking.Levels...)
+		}
+		clone.Thinking = &thinkingClone
+	}
+	return &clone
+}
+
+func storeAntigravityPrimaryModels(models []*registry.ModelInfo) bool {
+	cloned := cloneAntigravityModels(models)
+	if len(cloned) == 0 {
+		return false
+	}
+	antigravityPrimaryModelsCache.mu.Lock()
+	antigravityPrimaryModelsCache.models = cloned
+	antigravityPrimaryModelsCache.mu.Unlock()
+	return true
+}
+
+func loadAntigravityPrimaryModels() []*registry.ModelInfo {
+	antigravityPrimaryModelsCache.mu.RLock()
+	cloned := cloneAntigravityModels(antigravityPrimaryModelsCache.models)
+	antigravityPrimaryModelsCache.mu.RUnlock()
+	return cloned
+}
+
+func fallbackAntigravityPrimaryModels() []*registry.ModelInfo {
+	models := loadAntigravityPrimaryModels()
+	if len(models) > 0 {
+		log.Debugf("antigravity executor: using cached primary model list (%d models)", len(models))
+	}
+	return models
+}
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
@@ -232,7 +302,7 @@ attemptLoop:
 			reporter.publish(ctx, parseAntigravityUsage(bodyBytes))
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bodyBytes, &param)
-			resp = cliproxyexecutor.Response{Payload: []byte(converted)}
+			resp = cliproxyexecutor.Response{Payload: []byte(converted), Headers: httpResp.Header.Clone()}
 			reporter.ensurePublished(ctx)
 			return resp, nil
 		}
@@ -436,7 +506,7 @@ attemptLoop:
 			reporter.publish(ctx, parseAntigravityUsage(resp.Payload))
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, resp.Payload, &param)
-			resp = cliproxyexecutor.Response{Payload: []byte(converted)}
+			resp = cliproxyexecutor.Response{Payload: []byte(converted), Headers: httpResp.Header.Clone()}
 			reporter.ensurePublished(ctx)
 
 			return resp, nil
@@ -645,7 +715,7 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 }
 
 // ExecuteStream performs a streaming request to the Antigravity API.
-func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
@@ -775,7 +845,6 @@ attemptLoop:
 			}
 
 			out := make(chan cliproxyexecutor.StreamChunk)
-			stream = out
 			go func(resp *http.Response) {
 				defer close(out)
 				defer func() {
@@ -820,7 +889,7 @@ attemptLoop:
 					reporter.ensurePublished(ctx)
 				}
 			}(httpResp)
-			return stream, nil
+			return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 		}
 
 		switch {
@@ -968,7 +1037,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		if httpResp.StatusCode >= http.StatusOK && httpResp.StatusCode < http.StatusMultipleChoices {
 			count := gjson.GetBytes(bodyBytes, "totalTokens").Int()
 			translated := sdktranslator.TranslateTokenCount(respCtx, to, from, count, bodyBytes)
-			return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+			return cliproxyexecutor.Response{Payload: []byte(translated), Headers: httpResp.Header.Clone()}, nil
 		}
 
 		lastStatus = httpResp.StatusCode
@@ -1008,8 +1077,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 	exec := &AntigravityExecutor{cfg: cfg}
 	token, updatedAuth, errToken := exec.ensureAccessToken(ctx, auth)
 	if errToken != nil || token == "" {
-		log.Warnf("antigravity executor: fetch models failed for %s: token error: %v", auth.ID, errToken)
-		return nil
+		return fallbackAntigravityPrimaryModels()
 	}
 	if updatedAuth != nil {
 		auth = updatedAuth
@@ -1022,8 +1090,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		modelsURL := baseURL + antigravityModelsPath
 		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, modelsURL, bytes.NewReader([]byte(`{}`)))
 		if errReq != nil {
-			log.Warnf("antigravity executor: fetch models failed for %s: create request error: %v", auth.ID, errReq)
-			return nil
+			return fallbackAntigravityPrimaryModels()
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+token)
@@ -1035,15 +1102,13 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				log.Warnf("antigravity executor: fetch models failed for %s: context canceled: %v", auth.ID, errDo)
-				return nil
+				return fallbackAntigravityPrimaryModels()
 			}
 			if idx+1 < len(baseURLs) {
 				log.Debugf("antigravity executor: models request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			log.Warnf("antigravity executor: fetch models failed for %s: request error: %v", auth.ID, errDo)
-			return nil
+			return fallbackAntigravityPrimaryModels()
 		}
 
 		bodyBytes, errRead := io.ReadAll(httpResp.Body)
@@ -1055,22 +1120,27 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				log.Debugf("antigravity executor: models read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			log.Warnf("antigravity executor: fetch models failed for %s: read body error: %v", auth.ID, errRead)
-			return nil
+			return fallbackAntigravityPrimaryModels()
 		}
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
 				log.Debugf("antigravity executor: models request rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			log.Warnf("antigravity executor: fetch models failed for %s: unexpected status %d, body: %s", auth.ID, httpResp.StatusCode, string(bodyBytes))
-			return nil
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models request failed with status %d on base url %s, retrying with fallback base url: %s", httpResp.StatusCode, baseURL, baseURLs[idx+1])
+				continue
+			}
+			return fallbackAntigravityPrimaryModels()
 		}
 
 		result := gjson.GetBytes(bodyBytes, "models")
 		if !result.Exists() {
-			log.Warnf("antigravity executor: fetch models failed for %s: no models field in response, body: %s", auth.ID, string(bodyBytes))
-			return nil
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: models field missing on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			return fallbackAntigravityPrimaryModels()
 		}
 
 		now := time.Now().Unix()
@@ -1115,9 +1185,18 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 			}
 			models = append(models, modelInfo)
 		}
+		if len(models) == 0 {
+			if idx+1 < len(baseURLs) {
+				log.Debugf("antigravity executor: empty models list on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
+				continue
+			}
+			log.Debug("antigravity executor: fetched empty model list; retaining cached primary model list")
+			return fallbackAntigravityPrimaryModels()
+		}
+		storeAntigravityPrimaryModels(models)
 		return models
 	}
-	return nil
+	return fallbackAntigravityPrimaryModels()
 }
 
 func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, *cliproxyauth.Auth, error) {

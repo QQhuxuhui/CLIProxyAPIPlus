@@ -146,7 +146,7 @@ func (h *OAuthWebHandler) startSocialAuth(c *gin.Context, method string) {
 	}
 
 	socialClient := NewSocialAuthClient(h.cfg)
-	
+
 	var provider string
 	if method == "google" {
 		provider = string(ProviderGoogle)
@@ -383,22 +383,28 @@ func (h *OAuthWebHandler) pollForToken(ctx context.Context, session *webAuthSess
 			}
 
 			expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-			profileArn := session.ssoClient.fetchProfileArn(ctx, tokenResp.AccessToken)
-			email := FetchUserEmailWithFallback(ctx, h.cfg, tokenResp.AccessToken)
+
+			// Fetch profileArn for IDC
+			var profileArn string
+			if session.authMethod == "idc" {
+				profileArn = session.ssoClient.FetchProfileArn(ctx, tokenResp.AccessToken, session.clientID, tokenResp.RefreshToken)
+			}
+
+			email := FetchUserEmailWithFallback(ctx, h.cfg, tokenResp.AccessToken, session.clientID, tokenResp.RefreshToken)
 
 			tokenData := &KiroTokenData{
-					AccessToken:  tokenResp.AccessToken,
-					RefreshToken: tokenResp.RefreshToken,
-					ProfileArn:   profileArn,
-					ExpiresAt:    expiresAt.Format(time.RFC3339),
-					AuthMethod:   session.authMethod,
-					Provider:     "AWS",
-					ClientID:     session.clientID,
-					ClientSecret: session.clientSecret,
-					Email:        email,
-					Region:       session.region,
-					StartURL:     session.startURL,
-				}
+				AccessToken:  tokenResp.AccessToken,
+				RefreshToken: tokenResp.RefreshToken,
+				ProfileArn:   profileArn,
+				ExpiresAt:    expiresAt.Format(time.RFC3339),
+				AuthMethod:   session.authMethod,
+				Provider:     "AWS",
+				ClientID:     session.clientID,
+				ClientSecret: session.clientSecret,
+				Email:        email,
+				Region:       session.region,
+				StartURL:     session.startURL,
+			}
 
 			// Save token to file first, before marking session as success
 			if err := h.saveTokenToFile(tokenData); err != nil {
