@@ -607,6 +607,10 @@ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
 		if retryAfter, parseErr := helps.ParseRetryDelay(body); parseErr == nil && retryAfter != nil {
 			err.retryAfter = retryAfter
 		}
+		if detail, ok := helps.ParseAntigravityQuota(body); ok {
+			d := detail
+			err.quota = &d
+		}
 	}
 	return err
 }

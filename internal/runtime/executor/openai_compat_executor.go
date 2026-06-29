@@ -785,6 +785,7 @@ type statusErr struct {
 	code       int
 	msg        string
 	retryAfter *time.Duration
+	quota      *cliproxyexecutor.QuotaDetail
 }
 
 func (e statusErr) Error() string {
@@ -795,3 +796,9 @@ func (e statusErr) Error() string {
 }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) QuotaDetail() (cliproxyexecutor.QuotaDetail, bool) {
+	if e.quota == nil {
+		return cliproxyexecutor.QuotaDetail{}, false
+	}
+	return *e.quota, true
+}
