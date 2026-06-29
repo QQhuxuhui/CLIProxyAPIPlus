@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -144,4 +145,30 @@ type StreamResult struct {
 type StatusError interface {
 	error
 	StatusCode() int
+}
+
+// QuotaDetail carries structured upstream 429 quota information across the
+// executor -> conductor boundary. It is provider-neutral: any executor may
+// populate it from a structured rate-limit/quota response.
+type QuotaDetail struct {
+	// Model is the upstream-authoritative model identity (e.g. metadata.model).
+	Model string
+	// ResetAt is the upstream absolute recovery time (zero if not provided).
+	ResetAt time.Time
+	// ResetDelay is a relative recovery hint (retryDelay / quotaResetDelay), nil if absent.
+	ResetDelay *time.Duration
+	// ReasonCode is the structured reason (e.g. QUOTA_EXHAUSTED, RATE_LIMIT_EXCEEDED).
+	ReasonCode string
+}
+
+// RecoverAt resolves the effective recovery time: absolute ResetAt takes
+// priority over the relative ResetDelay; returns zero when neither is set.
+func (d QuotaDetail) RecoverAt(now time.Time) time.Time {
+	if !d.ResetAt.IsZero() {
+		return d.ResetAt
+	}
+	if d.ResetDelay != nil {
+		return now.Add(*d.ResetDelay)
+	}
+	return time.Time{}
 }

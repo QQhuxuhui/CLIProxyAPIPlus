@@ -9,6 +9,8 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 // DeleteJSONField removes a top-level or nested JSON field from a payload.
@@ -77,4 +79,54 @@ func ParseRetryDelay(errorBody []byte) (*time.Duration, error) {
 	}
 
 	return nil, fmt.Errorf("no RetryInfo found")
+}
+
+// ParseAntigravityQuota extracts structured per-model quota information from a
+// Google API 429 (cloudcode-pa) error body: metadata.model, the absolute
+// quotaResetTimeStamp, a relative reset delay (retryDelay preferred, else
+// quotaResetDelay), and the ErrorInfo reason code. Returns ok=false when no
+// recognizable ErrorInfo/RetryInfo detail is present.
+func ParseAntigravityQuota(errorBody []byte) (cliproxyexecutor.QuotaDetail, bool) {
+	var detail cliproxyexecutor.QuotaDetail
+	found := false
+	details := gjson.GetBytes(errorBody, "error.details")
+	if !details.Exists() || !details.IsArray() {
+		return detail, false
+	}
+	for _, d := range details.Array() {
+		switch d.Get("@type").String() {
+		case "type.googleapis.com/google.rpc.ErrorInfo":
+			if reason := strings.TrimSpace(d.Get("reason").String()); reason != "" {
+				detail.ReasonCode = reason
+				found = true
+			}
+			if model := strings.TrimSpace(d.Get("metadata.model").String()); model != "" {
+				detail.Model = model
+				found = true
+			}
+			if ts := strings.TrimSpace(d.Get("metadata.quotaResetTimeStamp").String()); ts != "" {
+				if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+					detail.ResetAt = parsed
+					found = true
+				}
+			}
+			if detail.ResetDelay == nil {
+				if qrd := strings.TrimSpace(d.Get("metadata.quotaResetDelay").String()); qrd != "" {
+					if dur, err := time.ParseDuration(qrd); err == nil {
+						detail.ResetDelay = &dur
+						found = true
+					}
+				}
+			}
+		case "type.googleapis.com/google.rpc.RetryInfo":
+			// retryDelay takes priority for the relative hint regardless of order.
+			if rd := strings.TrimSpace(d.Get("retryDelay").String()); rd != "" {
+				if dur, err := time.ParseDuration(rd); err == nil {
+					detail.ResetDelay = &dur
+					found = true
+				}
+			}
+		}
+	}
+	return detail, found
 }
