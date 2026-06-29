@@ -589,9 +589,13 @@ func buildModelStatesEntry(auth *coreauth.Auth) []gin.H {
 		}
 		item := gin.H{
 			"model":          model,
-			"status":         state.Status,
-			"unavailable":    state.Unavailable,
 			"quota_exceeded": state.Quota.Exceeded,
+		}
+		if state.Unavailable {
+			item["unavailable"] = true
+		}
+		if state.Status != "" {
+			item["status"] = state.Status
 		}
 		if rc := strings.TrimSpace(state.Quota.ReasonCode); rc != "" {
 			item["reason_code"] = rc

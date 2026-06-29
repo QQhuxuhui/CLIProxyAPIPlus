@@ -41,7 +41,13 @@ func TestBuildModelStatesEntry_ExposesQuota(t *testing.T) {
 	if e["reason_code"] != "QUOTA_EXHAUSTED" {
 		t.Errorf("reason_code = %v", e["reason_code"])
 	}
-	if e["reset_at"] != reset {
+	if got, ok := e["reset_at"].(time.Time); !ok || !got.Equal(reset) {
 		t.Errorf("reset_at = %v, want %v", e["reset_at"], reset)
+	}
+	if e["upstream_model"] != "gemini-pro-agent" {
+		t.Errorf("upstream_model = %v, want gemini-pro-agent", e["upstream_model"])
+	}
+	if got, ok := e["next_retry_after"].(time.Time); !ok || !got.Equal(reset) {
+		t.Errorf("next_retry_after = %v, want %v", e["next_retry_after"], reset)
 	}
 }
