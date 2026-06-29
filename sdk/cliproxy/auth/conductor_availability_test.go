@@ -140,7 +140,7 @@ func TestManager_ResetQuotaClearsRuntimeAndRegistryState(t *testing.T) {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 
-	reg.SetModelQuotaExceeded(authID, model)
+	reg.SetModelQuotaExceeded(authID, model, time.Time{})
 	reg.SuspendClientModel(authID, model, "quota")
 	if count := reg.GetModelCount(model); count != 0 {
 		t.Fatalf("registry model count before reset = %d, want 0", count)

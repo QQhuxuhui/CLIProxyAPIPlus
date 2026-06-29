@@ -3505,6 +3505,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	suspendReason := ""
 	clearModelQuota := false
 	setModelQuota := false
+	var setModelQuotaResetAt time.Time
 	var authSnapshot *Auth
 	cooldownStateChanged := false
 
@@ -3645,6 +3646,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								suspendReason = "quota"
 								shouldSuspendModel = true
 								setModelQuota = true
+								setModelQuotaResetAt = next
 							}
 						case 408, 500, 502, 503, 504:
 							if disableCooling {
@@ -3686,7 +3688,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
 	}
 	if setModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, result.Model)
+		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, result.Model, setModelQuotaResetAt)
 	}
 	if shouldResumeModel {
 		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, result.Model)
