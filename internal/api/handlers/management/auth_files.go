@@ -567,7 +567,50 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	if modelStates := buildModelStatesEntry(auth); len(modelStates) > 0 {
+		entry["model_states"] = modelStates
+	}
 	return entry
+}
+
+// buildModelStatesEntry serializes per-model quota/cooldown state for the
+// account card. Only models with an active quota or cooldown are included.
+func buildModelStatesEntry(auth *coreauth.Auth) []gin.H {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return nil
+	}
+	out := make([]gin.H, 0, len(auth.ModelStates))
+	for model, state := range auth.ModelStates {
+		if state == nil {
+			continue
+		}
+		if !state.Quota.Exceeded && !state.Unavailable && state.NextRetryAfter.IsZero() {
+			continue
+		}
+		item := gin.H{
+			"model":          model,
+			"status":         state.Status,
+			"unavailable":    state.Unavailable,
+			"quota_exceeded": state.Quota.Exceeded,
+		}
+		if rc := strings.TrimSpace(state.Quota.ReasonCode); rc != "" {
+			item["reason_code"] = rc
+		}
+		if um := strings.TrimSpace(state.Quota.UpstreamModel); um != "" {
+			item["upstream_model"] = um
+		}
+		if msg := strings.TrimSpace(state.StatusMessage); msg != "" {
+			item["status_message"] = msg
+		}
+		if !state.Quota.ResetAt.IsZero() {
+			item["reset_at"] = state.Quota.ResetAt
+		}
+		if !state.NextRetryAfter.IsZero() {
+			item["next_retry_after"] = state.NextRetryAfter
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {

@@ -67,3 +67,30 @@ func (h *Handler) ResetQuota(c *gin.Context) {
 		"models":     models,
 	})
 }
+
+// GetModelQuota returns per-account, per-model quota/cooldown state across all
+// auths (read-only counterpart to ResetQuota), for aggregated monitoring.
+func (h *Handler) GetModelQuota(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+	accounts := make([]gin.H, 0)
+	for _, auth := range h.authManager.List() {
+		if auth == nil {
+			continue
+		}
+		models := buildModelStatesEntry(auth)
+		if len(models) == 0 {
+			continue
+		}
+		auth.EnsureIndex()
+		accounts = append(accounts, gin.H{
+			"id":           auth.ID,
+			"auth_index":   auth.Index,
+			"provider":     strings.TrimSpace(auth.Provider),
+			"model_states": models,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": accounts})
+}
