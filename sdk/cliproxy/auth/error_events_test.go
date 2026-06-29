@@ -163,3 +163,28 @@ func requireErrorSubscriberPayload(t *testing.T, subscriber <-chan []byte) []byt
 		return nil
 	}
 }
+
+func TestErrorEventQuotaStatusFrom_CarriesNewFields(t *testing.T) {
+	reset := time.Date(2026, 7, 3, 13, 11, 31, 0, time.UTC)
+	q := QuotaState{
+		Exceeded:      true,
+		Reason:        "quota",
+		NextRecoverAt: reset,
+		ResetAt:       reset,
+		ReasonCode:    "QUOTA_EXHAUSTED",
+		UpstreamModel: "gemini-pro-agent",
+	}
+	got := errorEventQuotaStatusFrom(q)
+	if got == nil {
+		t.Fatal("expected non-nil status")
+	}
+	if got.ResetAt == nil || !got.ResetAt.Equal(reset) {
+		t.Errorf("ResetAt = %v, want %v", got.ResetAt, reset)
+	}
+	if got.ReasonCode != "QUOTA_EXHAUSTED" {
+		t.Errorf("ReasonCode = %q", got.ReasonCode)
+	}
+	if got.UpstreamModel != "gemini-pro-agent" {
+		t.Errorf("UpstreamModel = %q", got.UpstreamModel)
+	}
+}

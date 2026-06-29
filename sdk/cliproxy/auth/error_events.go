@@ -36,6 +36,9 @@ type errorEventQuotaStatus struct {
 	Reason        string     `json:"reason,omitempty"`
 	NextRecoverAt *time.Time `json:"next_recover_at,omitempty"`
 	BackoffLevel  int        `json:"backoff_level,omitempty"`
+	ResetAt       *time.Time `json:"reset_at,omitempty"`
+	ReasonCode    string     `json:"reason_code,omitempty"`
+	UpstreamModel string     `json:"upstream_model,omitempty"`
 }
 
 type errorEventModelStatus struct {
@@ -127,6 +130,9 @@ func errorEventQuotaStatusFrom(quota QuotaState) *errorEventQuotaStatus {
 		Reason:        strings.TrimSpace(quota.Reason),
 		NextRecoverAt: timePtrIfSet(quota.NextRecoverAt),
 		BackoffLevel:  quota.BackoffLevel,
+		ResetAt:       timePtrIfSet(quota.ResetAt),
+		ReasonCode:    strings.TrimSpace(quota.ReasonCode),
+		UpstreamModel: strings.TrimSpace(quota.UpstreamModel),
 	}
 }
 
