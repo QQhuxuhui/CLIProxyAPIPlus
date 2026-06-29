@@ -168,6 +168,8 @@ type Result struct {
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// QuotaDetail carries structured per-model upstream quota info (e.g. antigravity 429).
+	QuotaDetail *cliproxyexecutor.QuotaDetail
 	// Error describes the failure when Success is false.
 	Error *Error
 }
@@ -2542,9 +2544,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
 				}
-				if ra := retryAfterFromError(errExec); ra != nil {
-					result.RetryAfter = ra
-				}
+				fillQuotaHints(&result, errExec)
 				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
@@ -3603,15 +3603,30 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						case 429:
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
+							reasonCode := ""
+							upstreamModel := ""
+							var resetAt time.Time
+							if result.QuotaDetail != nil {
+								reasonCode = strings.TrimSpace(result.QuotaDetail.ReasonCode)
+								upstreamModel = strings.TrimSpace(result.QuotaDetail.Model)
+								resetAt = result.QuotaDetail.ResetAt
+							}
 							if !disableCooling {
-								if result.RetryAfter != nil {
-									next = now.Add(*result.RetryAfter)
-								} else {
-									cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
-									if cooldown > 0 {
-										next = now.Add(cooldown)
+								if result.QuotaDetail != nil {
+									if r := result.QuotaDetail.RecoverAt(now); !r.IsZero() {
+										next = r
 									}
-									backoffLevel = nextLevel
+								}
+								if next.IsZero() {
+									if result.RetryAfter != nil {
+										next = now.Add(*result.RetryAfter)
+									} else {
+										cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
+										if cooldown > 0 {
+											next = now.Add(cooldown)
+										}
+										backoffLevel = nextLevel
+									}
 								}
 							}
 							state.NextRetryAfter = next
@@ -3620,6 +3635,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								Reason:        "quota",
 								NextRecoverAt: next,
 								BackoffLevel:  backoffLevel,
+								ResetAt:       resetAt,
+								ReasonCode:    reasonCode,
+								UpstreamModel: upstreamModel,
 							}
 							if !disableCooling {
 								suspendReason = "quota"
@@ -3922,6 +3940,35 @@ func retryAfterFromError(err error) *time.Duration {
 	}
 	value := *retryAfter
 	return &value
+}
+
+func quotaDetailFromError(err error) (cliproxyexecutor.QuotaDetail, bool) {
+	if err == nil {
+		return cliproxyexecutor.QuotaDetail{}, false
+	}
+	type quotaDetailProvider interface {
+		QuotaDetail() (cliproxyexecutor.QuotaDetail, bool)
+	}
+	qdp, ok := err.(quotaDetailProvider)
+	if !ok || qdp == nil {
+		return cliproxyexecutor.QuotaDetail{}, false
+	}
+	return qdp.QuotaDetail()
+}
+
+// fillQuotaHints copies the retry-after and structured quota detail from an
+// executor error into a Result, mirroring the bootstrap/non-stream paths.
+func fillQuotaHints(result *Result, err error) {
+	if result == nil {
+		return
+	}
+	if ra := retryAfterFromError(err); ra != nil {
+		result.RetryAfter = ra
+	}
+	if qd, ok := quotaDetailFromError(err); ok {
+		detail := qd
+		result.QuotaDetail = &detail
+	}
 }
 
 func statusCodeFromResult(err *Error) int {
