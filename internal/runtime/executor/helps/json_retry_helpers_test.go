@@ -78,3 +78,42 @@ func TestParseAntigravityQuota_NonQuotaBody(t *testing.T) {
 		t.Error("expected ok=false for non-quota body")
 	}
 }
+
+// TestParseAntigravityQuota_RetryDelayBeatsQuotaResetDelay pins the priority
+// rule: RetryInfo.retryDelay must win over metadata.quotaResetDelay for
+// ResetDelay (ErrorInfo first, RetryInfo second).
+func TestParseAntigravityQuota_RetryDelayBeatsQuotaResetDelay(t *testing.T) {
+	body := `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[` +
+		`{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED",` +
+		`"metadata":{"model":"gemini-pro-agent","quotaResetDelay":"1h"}},` +
+		`{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7200s"}]}}`
+	detail, ok := ParseAntigravityQuota([]byte(body))
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if detail.ResetDelay == nil {
+		t.Fatal("ResetDelay = nil")
+	}
+	if *detail.ResetDelay != 2*time.Hour {
+		t.Errorf("ResetDelay = %v, want 2h (retryDelay must win over quotaResetDelay)", *detail.ResetDelay)
+	}
+}
+
+// TestParseAntigravityQuota_RetryDelayBeatsQuotaResetDelay_Reversed verifies
+// order-independence: same priority holds when RetryInfo appears before ErrorInfo.
+func TestParseAntigravityQuota_RetryDelayBeatsQuotaResetDelay_Reversed(t *testing.T) {
+	body := `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[` +
+		`{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7200s"},` +
+		`{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED",` +
+		`"metadata":{"model":"gemini-pro-agent","quotaResetDelay":"1h"}}]}}`
+	detail, ok := ParseAntigravityQuota([]byte(body))
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if detail.ResetDelay == nil {
+		t.Fatal("ResetDelay = nil")
+	}
+	if *detail.ResetDelay != 2*time.Hour {
+		t.Errorf("ResetDelay = %v, want 2h (retryDelay must win regardless of array order)", *detail.ResetDelay)
+	}
+}
