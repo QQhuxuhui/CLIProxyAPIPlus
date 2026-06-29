@@ -1757,7 +1757,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
-				m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr})
+				streamResult := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+				fillQuotaHints(&streamResult, chunk.Err)
+				m.MarkResult(ctx, streamResult)
 			}
 			if !forward {
 				return false
@@ -1842,7 +1844,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				rerr.HTTPStatus = se.StatusCode()
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-			result.RetryAfter = retryAfterFromError(errStream)
+			fillQuotaHints(&result, errStream)
 			m.MarkResult(ctx, result)
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
@@ -1863,7 +1865,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					rerr.HTTPStatus = se.StatusCode()
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-				result.RetryAfter = retryAfterFromError(bootstrapErr)
+				fillQuotaHints(&result, bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
@@ -1874,7 +1876,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					rerr.HTTPStatus = se.StatusCode()
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-				result.RetryAfter = retryAfterFromError(bootstrapErr)
+				fillQuotaHints(&result, bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
@@ -1885,7 +1887,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				rerr.HTTPStatus = se.StatusCode()
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-			result.RetryAfter = retryAfterFromError(bootstrapErr)
+			fillQuotaHints(&result, bootstrapErr)
 			m.MarkResult(ctx, result)
 			discardStreamChunks(streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
