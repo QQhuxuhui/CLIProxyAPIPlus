@@ -26,3 +26,17 @@ func TestQuotaMonitorHTML(t *testing.T) {
 		t.Error("QuotaMonitorHTML() did not return a copy")
 	}
 }
+
+func TestQuotaMonitorHTMLHasDashboard(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"/v0/management/quota-summary",
+		`id="dash-cards"`,
+		`id="dash-donut"`,
+		`id="dash-dist"`,
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing dashboard marker %q", marker)
+		}
+	}
+}

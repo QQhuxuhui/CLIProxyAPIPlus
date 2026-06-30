@@ -22,6 +22,24 @@
   .badge.q { background: #c0392b; color: #fff; }
   .muted { color: #888; }
   #empty { padding: 24px; text-align: center; color: #888; }
+  #dashboard { margin: 8px 0 18px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 8px 14px; min-width: 90px; }
+  .card .n { font-size: 22px; font-weight: 700; }
+  .card .l { font-size: 12px; color: #888; }
+  .charts { display: flex; flex-wrap: wrap; gap: 24px; margin: 10px 0; }
+  .chart { flex: 1 1 280px; }
+  .chart h2 { font-size: 13px; margin: 8px 0 6px; color: #888; }
+  .donut { width: 140px; height: 140px; border-radius: 50%; margin: 0 auto; display: grid; place-items: center; }
+  .donut::after { content: attr(data-total); width: 84px; height: 84px; background: Canvas; border-radius: 50%; display: grid; place-items: center; font-weight: 700; }
+  .legend { display: flex; gap: 12px; justify-content: center; font-size: 12px; margin-top: 6px; }
+  .legend span::before { content: "■ "; }
+  .bars { display: flex; flex-direction: column; gap: 5px; }
+  .bars .row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .bars .row .lab { width: 88px; flex: none; color: #888; }
+  .bars .row .track { flex: 1; background: rgba(127,127,127,.15); border-radius: 4px; height: 16px; overflow: hidden; display: flex; }
+  .bars .row .seg { height: 16px; }
+  .bars .row .val { width: 48px; flex: none; text-align: right; }
 </style>
 </head>
 <body>
@@ -36,6 +54,15 @@
   <span id="updated" class="muted"></span>
 </div>
 <div id="status"></div>
+<section id="dashboard" hidden>
+  <div id="dash-cards" class="cards"></div>
+  <div id="dash-soonest" class="muted"></div>
+  <div class="charts">
+    <div class="chart"><h2>可用 / 冷却 / 禁用</h2><div id="dash-donut" class="donut"></div><div id="dash-legend" class="legend"></div></div>
+    <div class="chart"><h2>冷却时间分布</h2><div id="dash-dist" class="bars"></div></div>
+  </div>
+  <div class="chart"><h2>各 provider</h2><div id="dash-prov" class="bars"></div></div>
+</section>
 <table id="table" hidden>
   <thead><tr>
     <th>provider</th><th>账号</th><th>model</th><th>quota</th><th>unavailable</th>
@@ -129,10 +156,70 @@
       if (!data) return;
       firstSuccess = true; els.auto.disabled = false;
       render(data.accounts || []);
+      fetchSummary(k);
       els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
       setStatus('', '');
     }).catch(function (e) { setStatus('网络错误：' + e, 'err'); });
   }
+
+  var COLORS = { available: '#2e7d32', cooling: '#c0392b', disabled: '#888' };
+
+  function fetchSummary(k) {
+    fetch('/v0/management/quota-summary', { headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) { if (data) renderSummary(data); })
+      .catch(function () {}); // 表格成功后才调用，错误这里不动防封禁状态
+  }
+
+  function card(n, label) { return '<div class="card"><div class="n">' + n + '</div><div class="l">' + label + '</div></div>'; }
+
+  function renderSummary(d) {
+    var p = d.pairs || {}, a = d.accounts || {};
+    document.getElementById('dash-cards').innerHTML =
+      card(p.total || 0, '总资源(账号×模型)') + card(p.available || 0, '可用') +
+      card(p.cooling || 0, '冷却中') + card(p.disabled || 0, '禁用') +
+      card(a.total || 0, '账号总数');
+    // donut
+    var tot = (p.available || 0) + (p.cooling || 0) + (p.disabled || 0);
+    var av = pctOf(p.available, tot), co = pctOf(p.cooling, tot);
+    var donut = document.getElementById('dash-donut');
+    donut.style.background = 'conic-gradient(' + COLORS.available + ' 0 ' + av + '%,' +
+      COLORS.cooling + ' ' + av + '% ' + (av + co) + '%,' + COLORS.disabled + ' ' + (av + co) + '% 100%)';
+    donut.setAttribute('data-total', tot);
+    document.getElementById('dash-legend').innerHTML =
+      '<span style="color:' + COLORS.available + '">可用 ' + (p.available || 0) + '</span>' +
+      '<span style="color:' + COLORS.cooling + '">冷却 ' + (p.cooling || 0) + '</span>' +
+      '<span style="color:' + COLORS.disabled + '">禁用 ' + (p.disabled || 0) + '</span>';
+    // distribution bars (single color)
+    var dist = d.cooldown_distribution || [];
+    var maxC = 1; dist.forEach(function (b) { if (b.count > maxC) maxC = b.count; });
+    document.getElementById('dash-dist').innerHTML = dist.map(function (b) {
+      var w = Math.round((b.count / maxC) * 100);
+      return '<div class="row"><span class="lab">' + escapeHtml(b.bucket) + '</span>' +
+        '<span class="track"><span class="seg" style="width:' + w + '%;background:' + COLORS.cooling + '"></span></span>' +
+        '<span class="val">' + b.count + '</span></div>';
+    }).join('');
+    // per-provider stacked bars
+    var prov = d.by_provider || [];
+    document.getElementById('dash-prov').innerHTML = prov.map(function (r) {
+      var t = r.total || 1;
+      function seg(n, c) { return '<span class="seg" style="width:' + pctOf(n, t) + '%;background:' + c + '"></span>'; }
+      return '<div class="row"><span class="lab">' + escapeHtml(r.provider || '') + '</span>' +
+        '<span class="track">' + seg(r.available, COLORS.available) + seg(r.cooling, COLORS.cooling) + seg(r.disabled, COLORS.disabled) + '</span>' +
+        '<span class="val">' + (r.total || 0) + '</span></div>';
+    }).join('');
+    // soonest recovery
+    var sr = d.soonest_recovery;
+    var soonestEl = document.getElementById('dash-soonest');
+    if (sr && sr.recover_at) {
+      var ms = new Date(sr.recover_at).getTime() - Date.now();
+      soonestEl.textContent = '最近恢复: ' + (sr.provider || '') + '·' + (sr.model || '') + '  约 ' + fmtDur(ms) + ' 后';
+    } else {
+      soonestEl.textContent = '无即将恢复的资源';
+    }
+    document.getElementById('dashboard').hidden = false;
+  }
+  function pctOf(n, total) { return total > 0 ? Math.round((n || 0) / total * 100) : 0; }
 
   function render(accounts) {
     var rows = [];
