@@ -33,7 +33,7 @@ func TestParseAntigravityQuota_ProAgent(t *testing.T) {
 	if detail.ResetDelay == nil {
 		t.Fatal("ResetDelay = nil, want retryDelay duration")
 	}
-	// RecoverAt 应优先用绝对 ResetAt
+	// RecoverAt should prefer the absolute ResetAt
 	now := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
 	if got := detail.RecoverAt(now); !got.Equal(want) {
 		t.Errorf("RecoverAt = %v, want %v", got, want)
@@ -67,7 +67,7 @@ func TestParseAntigravityQuota_AbsoluteOnly_NoRetryInfo(t *testing.T) {
 	}
 	want, _ := time.Parse(time.RFC3339, "2026-07-03T13:11:31Z")
 	now := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
-	// 无 RetryInfo 时 RecoverAt 仍应是上游绝对时间（不退化到 now+短退避）
+	// Without RetryInfo, RecoverAt should still be the upstream absolute time (not degrade to now + short backoff)
 	if got := detail.RecoverAt(now); !got.Equal(want) {
 		t.Errorf("RecoverAt = %v, want %v", got, want)
 	}

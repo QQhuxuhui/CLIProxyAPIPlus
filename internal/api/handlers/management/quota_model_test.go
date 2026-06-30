@@ -103,7 +103,7 @@ func TestBuildModelStatesEntry_ExposesQuota(t *testing.T) {
 					UpstreamModel: "gemini-pro-agent",
 				},
 			},
-			"gemini-3-pro": {}, // 无配额状态，应被忽略
+			"gemini-3-pro": {}, // no quota status, should be ignored
 		},
 	}
 	entries := buildModelStatesEntry(auth)

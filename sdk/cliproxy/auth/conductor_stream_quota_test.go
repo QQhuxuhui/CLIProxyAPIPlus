@@ -8,7 +8,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-// streamQuotaErr 模拟流中途到来的、带结构化配额信息的错误。
+// streamQuotaErr simulates an error that arrives mid-stream carrying structured quota info.
 type streamQuotaErr struct {
 	reset time.Time
 }
@@ -33,7 +33,7 @@ func TestWrapStreamResult_PostBootstrapPropagatesQuota(t *testing.T) {
 
 	sr := m.wrapStreamResult(context.Background(), auth.Clone(), "antigravity", "gemini-pro-agent",
 		nil, nil, remaining, OAuthModelAliasResult{})
-	for range sr.Chunks { // drain，触发 emit -> MarkResult
+	for range sr.Chunks { // drain to trigger emit -> MarkResult
 	}
 
 	m.mu.Lock()
