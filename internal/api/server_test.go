@@ -846,3 +846,48 @@ func TestHomeModelsErrorMessage(t *testing.T) {
 		t.Fatalf("default message = %q, want fallback", msg)
 	}
 }
+
+func TestServeQuotaMonitorPanelGating(t *testing.T) {
+	server := newTestServer(t)
+	server.cfg.Home.Enabled = false
+	server.cfg.RemoteManagement.DisableControlPanel = false
+
+	// 启用 → 200 + text/html
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/quota-monitor.html", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enabled: status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("content-type = %q, want text/html", rr.Header().Get("Content-Type"))
+	}
+	if rr.Body.Len() == 0 {
+		t.Error("empty body")
+	}
+
+	// DisableControlPanel → 404
+	server.cfg.RemoteManagement.DisableControlPanel = true
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/quota-monitor.html", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("DisableControlPanel: status = %d, want 404", rr.Code)
+	}
+	server.cfg.RemoteManagement.DisableControlPanel = false
+
+	// Home.Enabled → 404
+	server.cfg.Home.Enabled = true
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/quota-monitor.html", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("Home.Enabled: status = %d, want 404", rr.Code)
+	}
+}
+
+func TestModelQuotaEndpointRequiresManagementSecret(t *testing.T) {
+	server := newTestServer(t) // 无 MANAGEMENT_PASSWORD / secret → 管理路由未注册
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v0/management/model-quota", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("without management secret: status = %d, want 404 (management API not enabled)", rr.Code)
+	}
+}
