@@ -586,18 +586,20 @@ func buildModelStatesEntry(auth *coreauth.Auth) []gin.H {
 			continue
 		}
 		cooldownActive := !state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)
+		unavailableActive := state.Unavailable &&
+			(state.NextRetryAfter.IsZero() || state.NextRetryAfter.After(now))
 		// A quota whose recovery time has already elapsed is treated as recovered.
 		// A zero NextRecoverAt means no known recovery time (indefinite) -> still shown.
 		quotaActive := state.Quota.Exceeded &&
 			(state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now))
-		if !cooldownActive && !quotaActive && !state.Unavailable {
+		if !cooldownActive && !quotaActive && !unavailableActive {
 			continue
 		}
 		item := gin.H{
 			"model":          model,
 			"quota_exceeded": quotaActive,
 		}
-		if state.Unavailable {
+		if unavailableActive {
 			item["unavailable"] = true
 		}
 		if state.Status != "" {

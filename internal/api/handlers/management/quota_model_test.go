@@ -18,6 +18,7 @@ func TestBuildModelStatesEntry_TimeAwareFiltering(t *testing.T) {
 		ModelStates: map[string]*coreauth.ModelState{
 			// Past-reset: quota exceeded but recovery time already elapsed -> EXCLUDED
 			"past-reset-model": {
+				Unavailable: true,
 				Quota: coreauth.QuotaState{
 					Exceeded:      true,
 					NextRecoverAt: pastTime,
