@@ -3932,8 +3932,8 @@ func retryAfterFromError(err error) *time.Duration {
 	type retryAfterProvider interface {
 		RetryAfter() *time.Duration
 	}
-	rap, ok := err.(retryAfterProvider)
-	if !ok || rap == nil {
+	var rap retryAfterProvider
+	if !errors.As(err, &rap) || rap == nil {
 		return nil
 	}
 	retryAfter := rap.RetryAfter()
@@ -3951,8 +3951,8 @@ func quotaDetailFromError(err error) (cliproxyexecutor.QuotaDetail, bool) {
 	type quotaDetailProvider interface {
 		QuotaDetail() (cliproxyexecutor.QuotaDetail, bool)
 	}
-	qdp, ok := err.(quotaDetailProvider)
-	if !ok || qdp == nil {
+	var qdp quotaDetailProvider
+	if !errors.As(err, &qdp) || qdp == nil {
 		return cliproxyexecutor.QuotaDetail{}, false
 	}
 	return qdp.QuotaDetail()
