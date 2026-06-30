@@ -895,7 +895,10 @@ func cooldownQuotaEqual(a, b QuotaState) bool {
 	return a.Exceeded == b.Exceeded &&
 		a.Reason == b.Reason &&
 		a.BackoffLevel == b.BackoffLevel &&
-		a.NextRecoverAt.Equal(b.NextRecoverAt)
+		a.NextRecoverAt.Equal(b.NextRecoverAt) &&
+		a.ResetAt.Equal(b.ResetAt) &&
+		a.ReasonCode == b.ReasonCode &&
+		a.UpstreamModel == b.UpstreamModel
 }
 
 func cooldownErrorEqual(a, b *Error) bool {
