@@ -88,7 +88,7 @@
     if (!k) { setStatus('请填写管理 key 后保存', 'err'); return; }   // 无 key 绝不发请求（防封禁）
     fetch(ENDPOINT, { headers: { 'Authorization': 'Bearer ' + k } }).then(function (resp) {
       if (resp.status === 401) { stopAuto(); els.auto.disabled = true; firstSuccess = false; setStatus('管理 key 无效或缺失，请重新填写', 'err'); els.key.focus(); return null; }
-      if (resp.status === 403) { stopAuto(); return resp.text().then(function (t) { setStatus('已被临时封禁（管理 API 失败次数过多），请稍后再试。' + (t || ''), 'err'); return null; }); }
+      if (resp.status === 403) { stopAuto(); els.auto.disabled = true; firstSuccess = false; return resp.text().then(function (t) { setStatus('已被临时封禁（管理 API 失败次数过多），请稍后再试。' + (t || ''), 'err'); return null; }); }
       if (resp.status === 404) { stopAuto(); els.auto.disabled = true; setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
       if (!resp.ok) { setStatus('请求失败：HTTP ' + resp.status, 'err'); return null; }
       return resp.json();
