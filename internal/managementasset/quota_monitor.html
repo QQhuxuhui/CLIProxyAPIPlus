@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配额监控 · CLIProxyAPI</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .bar input[type=password] { flex: 1 1 320px; min-width: 220px; padding: 6px 8px; }
+  button { padding: 6px 10px; cursor: pointer; }
+  label { font-size: 13px; }
+  #status { margin: 6px 0 12px; font-size: 13px; min-height: 18px; }
+  #status.err { color: #c0392b; }
+  #status.ok { color: #2e7d32; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; white-space: nowrap; }
+  th { background: rgba(127,127,127,.15); position: sticky; top: 0; }
+  .badge { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .badge.q { background: #c0392b; color: #fff; }
+  .muted { color: #888; }
+  #empty { padding: 24px; text-align: center; color: #888; }
+</style>
+</head>
+<body>
+<h1>antigravity / 模型配额监控</h1>
+<div class="bar">
+  <input id="key" type="password" placeholder="管理 key（remote-management.secret-key 或 MANAGEMENT_PASSWORD）" autocomplete="off">
+  <label><input id="remember" type="checkbox"> 记住 key</label>
+  <button id="save">保存</button>
+  <button id="clear">清除 key</button>
+  <button id="refresh">刷新</button>
+  <label><input id="auto" type="checkbox" disabled> 自动刷新(15s)</label>
+  <span id="updated" class="muted"></span>
+</div>
+<div id="status"></div>
+<table id="table" hidden>
+  <thead><tr>
+    <th>provider</th><th>账号</th><th>model</th><th>quota</th><th>unavailable</th>
+    <th>status</th><th>reason_code</th><th>upstream_model</th>
+    <th>reset 倒计时</th><th>reset_at</th><th>next_retry_after</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" hidden>当前无模型处于配额/冷却</div>
+<script>
+(function () {
+  var KEY_NAME = 'cpa_quota_monitor_key';
+  var ENDPOINT = '/v0/management/model-quota';
+  var REFRESH_MS = 15000;
+  var els = {};
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty'].forEach(function (id) { els[id] = document.getElementById(id); });
+  var rowsData = [];
+  var firstSuccess = false;
+  var autoTimer = null;
+
+  function getStoredKey() { return sessionStorage.getItem(KEY_NAME) || localStorage.getItem(KEY_NAME) || ''; }
+  function setStatus(msg, kind) { els.status.textContent = msg || ''; els.status.className = kind || ''; }
+  function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
+  function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
+
+  function saveKey() {
+    var k = els.key.value.trim();
+    if (!k) { setStatus('请填写管理 key', 'err'); return; }
+    sessionStorage.setItem(KEY_NAME, k);
+    if (els.remember.checked) { localStorage.setItem(KEY_NAME, k); } else { localStorage.removeItem(KEY_NAME); }
+    setStatus('已保存', 'ok');
+    fetchData();
+  }
+  function clearKey() {
+    sessionStorage.removeItem(KEY_NAME); localStorage.removeItem(KEY_NAME);
+    els.key.value = ''; stopAuto(); firstSuccess = false; els.auto.disabled = true;
+    setStatus('key 已清除', '');
+  }
+
+  function fmtDur(ms) {
+    if (ms <= 0) return '已恢复';
+    var s = Math.floor(ms / 1000), d = Math.floor(s / 86400); s -= d * 86400;
+    var h = Math.floor(s / 3600); s -= h * 3600; var m = Math.floor(s / 60); s -= m * 60;
+    var out = ''; if (d) out += d + 'd '; if (d || h) out += h + 'h '; out += m + 'm ' + s + 's';
+    return out;
+  }
+
+  function fetchData() {
+    var k = getStoredKey();
+    if (!k) { setStatus('请填写管理 key 后保存', 'err'); return; }   // 无 key 绝不发请求（防封禁）
+    fetch(ENDPOINT, { headers: { 'Authorization': 'Bearer ' + k } }).then(function (resp) {
+      if (resp.status === 401) { stopAuto(); els.auto.disabled = true; firstSuccess = false; setStatus('管理 key 无效或缺失，请重新填写', 'err'); els.key.focus(); return null; }
+      if (resp.status === 403) { stopAuto(); return resp.text().then(function (t) { setStatus('已被临时封禁（管理 API 失败次数过多），请稍后再试。' + (t || ''), 'err'); return null; }); }
+      if (resp.status === 404) { stopAuto(); els.auto.disabled = true; setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
+      if (!resp.ok) { setStatus('请求失败：HTTP ' + resp.status, 'err'); return null; }
+      return resp.json();
+    }).then(function (data) {
+      if (!data) return;
+      firstSuccess = true; els.auto.disabled = false;
+      render(data.accounts || []);
+      els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
+      setStatus('', '');
+    }).catch(function (e) { setStatus('网络错误：' + e, 'err'); });
+  }
+
+  function render(accounts) {
+    var rows = [];
+    accounts.forEach(function (a) {
+      (a.model_states || []).forEach(function (ms) {
+        rows.push({
+          provider: a.provider || '', auth: a.auth_index || a.id || '', email: a.email || a.label || '',
+          model: ms.model || '', quota: !!ms.quota_exceeded, unavailable: !!ms.unavailable,
+          status: ms.status || '', status_message: ms.status_message || '',
+          reason: ms.reason_code || '', upstream: ms.upstream_model || '',
+          reset_at: ms.reset_at || '', next: ms.next_retry_after || ''
+        });
+      });
+    });
+    rows.sort(function (x, y) { return (x.provider + '|' + x.auth + '|' + x.model).localeCompare(y.provider + '|' + y.auth + '|' + y.model); });
+    rowsData = rows;
+    if (!rows.length) { els.table.hidden = true; els.empty.hidden = false; return; }
+    els.empty.hidden = true; els.table.hidden = false;
+    paint();
+  }
+
+  function paint() {
+    var now = Date.now();
+    els.rows.innerHTML = rowsData.map(function (r) {
+      var cd = r.reset_at ? fmtDur(new Date(r.reset_at).getTime() - now) : '';
+      var acc = r.auth + (r.email ? ' (' + r.email + ')' : '');
+      var st = r.status + (r.status_message ? ' / ' + r.status_message : '');
+      return '<tr>' + td(r.provider) + td(acc) + td(r.model) +
+        '<td>' + (r.quota ? '<span class="badge q">exhausted</span>' : '') + '</td>' +
+        td(r.unavailable ? '是' : '') + td(st) + td(r.reason) + td(r.upstream) +
+        td(cd) + td(r.reset_at) + td(r.next) + '</tr>';
+    }).join('');
+  }
+  function td(v) { return '<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>'; }
+  function escapeHtml(s) { return s.replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  els.save.addEventListener('click', saveKey);
+  els.clear.addEventListener('click', clearKey);
+  els.refresh.addEventListener('click', fetchData);
+  els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
+
+  var existing = getStoredKey();
+  if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
+  else { setStatus('请填写管理 key 后保存', ''); }
+  setInterval(function () { if (rowsData.length) paint(); }, 1000); // 倒计时每秒刷新
+})();
+</script>
+</body>
+</html>
