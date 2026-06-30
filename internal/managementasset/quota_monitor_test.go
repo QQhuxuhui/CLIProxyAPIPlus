@@ -20,7 +20,7 @@ func TestQuotaMonitorHTML(t *testing.T) {
 	if !strings.Contains(s, `id="key"`) {
 		t.Error("embedded page missing key input element")
 	}
-	// 必须返回 copy：改返回值不影响下次调用
+	// The returned slice must be a copy; mutating it must not affect later calls.
 	b[0] = 0
 	if QuotaMonitorHTML()[0] == 0 {
 		t.Error("QuotaMonitorHTML() did not return a copy")

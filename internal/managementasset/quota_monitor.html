@@ -60,6 +60,17 @@
   function setStatus(msg, kind) { els.status.textContent = msg || ''; els.status.className = kind || ''; }
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
   function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
+  function readError(resp) {
+    return resp.text().then(function (t) {
+      if (!t) return '';
+      try {
+        var parsed = JSON.parse(t);
+        if (parsed && parsed.error) return String(parsed.error);
+        if (parsed && parsed.message) return String(parsed.message);
+      } catch (e) {}
+      return t;
+    });
+  }
 
   function saveKey() {
     var k = els.key.value.trim();
@@ -85,10 +96,32 @@
 
   function fetchData() {
     var k = getStoredKey();
-    if (!k) { setStatus('请填写管理 key 后保存', 'err'); return; }   // 无 key 绝不发请求（防封禁）
+    if (!k) { setStatus('请填写管理 key 后保存', 'err'); return; }   // Never send requests without a key to avoid failed-attempt bans.
     fetch(ENDPOINT, { headers: { 'Authorization': 'Bearer ' + k } }).then(function (resp) {
-      if (resp.status === 401) { stopAuto(); els.auto.disabled = true; firstSuccess = false; setStatus('管理 key 无效或缺失，请重新填写', 'err'); els.key.focus(); return null; }
-      if (resp.status === 403) { stopAuto(); els.auto.disabled = true; firstSuccess = false; return resp.text().then(function (t) { setStatus('已被临时封禁（管理 API 失败次数过多），请稍后再试。' + (t || ''), 'err'); return null; }); }
+      if (resp.status === 401) {
+        stopAuto(); els.auto.disabled = true; firstSuccess = false;
+        return readError(resp).then(function (msg) {
+          setStatus('管理 key 无效或缺失，请重新填写' + (msg ? '：' + msg : ''), 'err');
+          els.key.focus();
+          return null;
+        });
+      }
+      if (resp.status === 403) {
+        stopAuto(); els.auto.disabled = true; firstSuccess = false;
+        return readError(resp).then(function (msg) {
+          var lower = msg.toLowerCase();
+          if (lower.indexOf('banned') >= 0 || lower.indexOf('too many failed') >= 0) {
+            setStatus('已被临时封禁（管理 API 失败次数过多），请稍后再试。' + (msg ? ' ' + msg : ''), 'err');
+          } else if (lower.indexOf('remote management disabled') >= 0) {
+            setStatus('远程管理未开启：请在服务端启用 remote-management.allow-remote 后重试', 'err');
+          } else if (lower.indexOf('management key not set') >= 0) {
+            setStatus('管理 API 未配置 key：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err');
+          } else {
+            setStatus('管理 API 拒绝访问' + (msg ? '：' + msg : ''), 'err');
+          }
+          return null;
+        });
+      }
       if (resp.status === 404) { stopAuto(); els.auto.disabled = true; setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
       if (!resp.ok) { setStatus('请求失败：HTTP ' + resp.status, 'err'); return null; }
       return resp.json();
@@ -144,7 +177,7 @@
   var existing = getStoredKey();
   if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
   else { setStatus('请填写管理 key 后保存', ''); }
-  setInterval(function () { if (rowsData.length) paint(); }, 1000); // 倒计时每秒刷新
+  setInterval(function () { if (rowsData.length) paint(); }, 1000); // Refresh countdown every second.
 })();
 </script>
 </body>

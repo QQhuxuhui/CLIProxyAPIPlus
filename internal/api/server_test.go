@@ -852,7 +852,7 @@ func TestServeQuotaMonitorPanelGating(t *testing.T) {
 	server.cfg.Home.Enabled = false
 	server.cfg.RemoteManagement.DisableControlPanel = false
 
-	// 启用 → 200 + text/html
+	// Enabled returns 200 + text/html.
 	rr := httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/quota-monitor.html", nil))
 	if rr.Code != http.StatusOK {
@@ -865,7 +865,7 @@ func TestServeQuotaMonitorPanelGating(t *testing.T) {
 		t.Error("empty body")
 	}
 
-	// DisableControlPanel → 404
+	// DisableControlPanel returns 404.
 	server.cfg.RemoteManagement.DisableControlPanel = true
 	rr = httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/quota-monitor.html", nil))
@@ -874,7 +874,7 @@ func TestServeQuotaMonitorPanelGating(t *testing.T) {
 	}
 	server.cfg.RemoteManagement.DisableControlPanel = false
 
-	// Home.Enabled → 404
+	// Home.Enabled returns 404.
 	server.cfg.Home.Enabled = true
 	rr = httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/quota-monitor.html", nil))
@@ -884,7 +884,7 @@ func TestServeQuotaMonitorPanelGating(t *testing.T) {
 }
 
 func TestModelQuotaEndpointRequiresManagementSecret(t *testing.T) {
-	server := newTestServer(t) // 无 MANAGEMENT_PASSWORD / secret → 管理路由未注册
+	server := newTestServer(t) // No MANAGEMENT_PASSWORD or secret means management routes are not registered.
 	rr := httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v0/management/model-quota", nil))
 	if rr.Code != http.StatusNotFound {
