@@ -1,10 +1,12 @@
 package management
 
 import (
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -170,4 +172,14 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 		CooldownDistribution: distList,
 		SoonestRecovery:      soonest,
 	}
+}
+
+// GetQuotaSummary returns the aggregated account×model availability snapshot.
+func (h *Handler) GetQuotaSummary(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+	summary := buildQuotaSummary(h.authManager.List(), registry.GetGlobalRegistry().GetModelsForClient, time.Now())
+	c.JSON(http.StatusOK, summary)
 }

@@ -891,3 +891,39 @@ func TestModelQuotaEndpointRequiresManagementSecret(t *testing.T) {
 		t.Fatalf("without management secret: status = %d, want 404 (management API not enabled)", rr.Code)
 	}
 }
+
+func TestQuotaSummaryEndpoint(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/quota-summary", nil)
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Pairs                map[string]int   `json:"pairs"`
+		Accounts             map[string]int   `json:"accounts"`
+		CooldownDistribution []map[string]any `json:"cooldown_distribution"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if len(body.CooldownDistribution) != 6 {
+		t.Errorf("distribution buckets = %d, want 6", len(body.CooldownDistribution))
+	}
+	if _, ok := body.Pairs["total"]; !ok {
+		t.Error("pairs.total missing")
+	}
+}
+
+func TestQuotaSummaryEndpointRequiresManagementSecret(t *testing.T) {
+	server := newTestServer(t) // 无密钥 → 管理路由未注册
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v0/management/quota-summary", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("without secret: status = %d, want 404", rr.Code)
+	}
+}
