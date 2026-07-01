@@ -87,6 +87,21 @@
   function setStatus(msg, kind) { els.status.textContent = msg || ''; els.status.className = kind || ''; }
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
   function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
+  function clearRenderedData() {
+    rowsData = [];
+    els.rows.innerHTML = '';
+    els.table.hidden = true;
+    els.empty.hidden = true;
+    document.getElementById('dashboard').hidden = true;
+    document.getElementById('dash-cards').innerHTML = '';
+    document.getElementById('dash-soonest').textContent = '';
+    document.getElementById('dash-donut').style.background = '';
+    document.getElementById('dash-donut').removeAttribute('data-total');
+    document.getElementById('dash-legend').innerHTML = '';
+    document.getElementById('dash-dist').innerHTML = '';
+    document.getElementById('dash-prov').innerHTML = '';
+    els.updated.textContent = '';
+  }
   function readError(resp) {
     return resp.text().then(function (t) {
       if (!t) return '';
@@ -110,6 +125,7 @@
   function clearKey() {
     sessionStorage.removeItem(KEY_NAME); localStorage.removeItem(KEY_NAME);
     els.key.value = ''; stopAuto(); firstSuccess = false; els.auto.disabled = true;
+    clearRenderedData();
     setStatus('key 已清除', '');
   }
 
@@ -127,6 +143,7 @@
     fetch(ENDPOINT, { headers: { 'Authorization': 'Bearer ' + k } }).then(function (resp) {
       if (resp.status === 401) {
         stopAuto(); els.auto.disabled = true; firstSuccess = false;
+        clearRenderedData();
         return readError(resp).then(function (msg) {
           setStatus('管理 key 无效或缺失，请重新填写' + (msg ? '：' + msg : ''), 'err');
           els.key.focus();
@@ -135,6 +152,7 @@
       }
       if (resp.status === 403) {
         stopAuto(); els.auto.disabled = true; firstSuccess = false;
+        clearRenderedData();
         return readError(resp).then(function (msg) {
           var lower = msg.toLowerCase();
           if (lower.indexOf('banned') >= 0 || lower.indexOf('too many failed') >= 0) {
@@ -149,7 +167,7 @@
           return null;
         });
       }
-      if (resp.status === 404) { stopAuto(); els.auto.disabled = true; setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
+      if (resp.status === 404) { stopAuto(); els.auto.disabled = true; firstSuccess = false; clearRenderedData(); setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
       if (!resp.ok) { setStatus('请求失败：HTTP ' + resp.status, 'err'); return null; }
       return resp.json();
     }).then(function (data) {

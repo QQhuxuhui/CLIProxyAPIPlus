@@ -40,3 +40,17 @@ func TestQuotaMonitorHTMLHasDashboard(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLClearsRenderedData(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"function clearRenderedData()",
+		"clearRenderedData();",
+		"document.getElementById('dashboard').hidden = true",
+		"els.updated.textContent = ''",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing stale data cleanup marker %q", marker)
+		}
+	}
+}
