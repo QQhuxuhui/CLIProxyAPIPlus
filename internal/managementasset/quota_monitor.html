@@ -23,27 +23,21 @@
   .muted { color: #888; }
   #empty { padding: 24px; text-align: center; color: #888; }
   #dashboard { margin: 8px 0 18px; }
-  .cards { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
-  .card { border: 1px solid #ccc; border-radius: 8px; padding: 8px 14px; min-width: 90px; }
-  .card .n { font-size: 22px; font-weight: 700; }
-  .card .l { font-size: 12px; color: #888; }
-  .charts { display: flex; flex-wrap: wrap; gap: 24px; margin: 10px 0; }
-  .chart { flex: 1 1 280px; }
-  .chart h2 { font-size: 13px; margin: 8px 0 6px; color: #888; }
-  .donut { width: 140px; height: 140px; border-radius: 50%; margin: 0 auto; display: grid; place-items: center; }
-  .donut::after { content: attr(data-total); width: 84px; height: 84px; background: Canvas; border-radius: 50%; display: grid; place-items: center; font-weight: 700; }
-  .legend { display: flex; gap: 12px; justify-content: center; font-size: 12px; margin-top: 6px; }
-  .legend span::before { content: "■ "; }
-  .bars { display: flex; flex-direction: column; gap: 5px; }
-  .bars .row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-  .bars .row .lab { width: 88px; flex: none; color: #888; }
-  .bars .row .track { flex: 1; background: rgba(127,127,127,.15); border-radius: 4px; height: 16px; overflow: hidden; display: flex; }
-  .bars .row .seg { height: 16px; }
-  .bars .row .val { width: 48px; flex: none; text-align: right; }
+  .strip { font-size: 13px; line-height: 1.8; margin-bottom: 8px; }
+  .strip b { font-weight: 700; }
+  .sec { font-size: 13px; color: #888; margin: 16px 0 6px; }
+  .mh tbody tr { cursor: pointer; }
+  .mh tbody tr:hover { background: rgba(127,127,127,.08); }
+  .mh .glyph { font-weight: 700; }
+  .mh .track { display: inline-flex; width: 120px; height: 12px; background: rgba(127,127,127,.15); border-radius: 4px; overflow: hidden; vertical-align: middle; }
+  .mh .seg { height: 12px; }
+  #mh-filter { margin: 8px 0; font-size: 13px; }
+  #mh-filter button { padding: 0 6px; margin-left: 4px; }
+  @media (max-width: 700px) { .mh th.wide, .mh td.wide { display: none; } }
 </style>
 </head>
 <body>
-<h1>antigravity / 模型配额监控</h1>
+<h1>模型配额监控</h1>
 <div class="bar">
   <input id="key" type="password" placeholder="管理 key（remote-management.secret-key 或 MANAGEMENT_PASSWORD）" autocomplete="off">
   <label><input id="remember" type="checkbox"> 记住 key</label>
@@ -55,14 +49,20 @@
 </div>
 <div id="status"></div>
 <section id="dashboard" hidden>
-  <div id="dash-cards" class="cards"></div>
-  <div id="dash-soonest" class="muted"></div>
-  <div class="charts">
-    <div class="chart"><h2>可用 / 冷却 / 禁用</h2><div id="dash-donut" class="donut"></div><div id="dash-legend" class="legend"></div></div>
-    <div class="chart"><h2>冷却时间分布</h2><div id="dash-dist" class="bars"></div></div>
+  <div id="dash-strip" class="strip">
+    <div id="strip-models"></div>
+    <div id="strip-soonest" class="muted"></div>
   </div>
-  <div class="chart"><h2>各 provider</h2><div id="dash-prov" class="bars"></div></div>
+  <table id="model-health" class="mh">
+    <thead><tr>
+      <th>状态</th><th>模型</th><th>provider</th><th>容量</th>
+      <th>可用/服务</th><th>可用%</th><th>冷却</th><th>最快恢复</th><th class="wide">全部恢复</th>
+    </tr></thead>
+    <tbody id="mh-rows"></tbody>
+  </table>
 </section>
+<div id="mh-filter" hidden>过滤: <b id="mh-filter-label"></b><button id="mh-filter-clear">✕</button></div>
+<h2 class="sec">冷却明细（账号×模型）</h2>
 <table id="table" hidden>
   <thead><tr>
     <th>provider</th><th>账号</th><th>model</th><th>quota</th><th>unavailable</th>
@@ -79,7 +79,10 @@
   var REFRESH_MS = 15000;
   var els = {};
   ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty'].forEach(function (id) { els[id] = document.getElementById(id); });
-  var rowsData = [];
+  var allRows = [];      // full detail rows (unfiltered)
+  var rowsData = [];     // detail rows currently shown
+  var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
+  var detailFilter = null; // {provider, model} | null
   var firstSuccess = false;
   var autoTimer = null;
 
@@ -88,18 +91,15 @@
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
   function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
   function clearRenderedData() {
-    rowsData = [];
+    allRows = []; rowsData = []; modelRows = []; detailFilter = null;
     els.rows.innerHTML = '';
     els.table.hidden = true;
     els.empty.hidden = true;
     document.getElementById('dashboard').hidden = true;
-    document.getElementById('dash-cards').innerHTML = '';
-    document.getElementById('dash-soonest').textContent = '';
-    document.getElementById('dash-donut').style.background = '';
-    document.getElementById('dash-donut').removeAttribute('data-total');
-    document.getElementById('dash-legend').innerHTML = '';
-    document.getElementById('dash-dist').innerHTML = '';
-    document.getElementById('dash-prov').innerHTML = '';
+    document.getElementById('mh-rows').innerHTML = '';
+    document.getElementById('strip-models').innerHTML = '';
+    document.getElementById('strip-soonest').textContent = '';
+    document.getElementById('mh-filter').hidden = true;
     els.updated.textContent = '';
   }
   function readError(resp) {
@@ -181,63 +181,132 @@
   }
 
   var COLORS = { available: '#2e7d32', cooling: '#c0392b', disabled: '#888' };
+  // Health tiers derived from round-robin load math: survivors absorb serving/available x
+  // their normal share. <60% -> >1.67x (WARN); <20% -> >=5x, cascade imminent (CRIT);
+  // a single surviving account in a multi-account pool is a SPOF (CRIT).
+  var HEALTH = {
+    pctCrit: 20, pctWarn: 60,
+    tiers: {
+      DOWN: { glyph: '○', color: '#c0392b', rank: 0 },
+      CRIT: { glyph: '◔', color: '#c0392b', rank: 1 },
+      WARN: { glyph: '◑', color: '#e67e22', rank: 2 },
+      OK:   { glyph: '●', color: '#2e7d32', rank: 3 },
+      OFF:  { glyph: '◌', color: '#888',    rank: 4 }
+    }
+  };
+  function healthOf(m) {
+    var serving = (m.total || 0) - (m.disabled || 0);
+    if (serving <= 0) return 'OFF';
+    if ((m.available || 0) === 0) return 'DOWN';
+    var pct = Math.round(100 * m.available / serving);
+    if (pct < HEALTH.pctCrit || (m.available === 1 && serving >= 2)) return 'CRIT';
+    if (pct < HEALTH.pctWarn) return 'WARN';
+    return 'OK';
+  }
 
   function fetchSummary(k) {
     fetch('/v0/management/quota-summary', { headers: { 'Authorization': 'Bearer ' + k } })
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(function (data) { if (data) renderSummary(data); })
-      .catch(function () {}); // 表格成功后才调用，错误这里不动防封禁状态
+      .catch(function () {}); // Only called after the table fetch succeeded; stay silent to protect anti-ban state.
   }
-
-  function card(n, label) { return '<div class="card"><div class="n">' + n + '</div><div class="l">' + label + '</div></div>'; }
 
   function renderSummary(d) {
-    var p = d.pairs || {}, a = d.accounts || {};
-    document.getElementById('dash-cards').innerHTML =
-      card(p.total || 0, '总资源(账号×模型)') + card(p.available || 0, '可用') +
-      card(p.cooling || 0, '冷却中') + card(p.disabled || 0, '禁用') +
-      card(a.total || 0, '账号总数');
-    // donut
-    var tot = (p.available || 0) + (p.cooling || 0) + (p.disabled || 0);
-    var av = pctOf(p.available, tot), co = pctOf(p.cooling, tot);
-    var donut = document.getElementById('dash-donut');
-    donut.style.background = 'conic-gradient(' + COLORS.available + ' 0 ' + av + '%,' +
-      COLORS.cooling + ' ' + av + '% ' + (av + co) + '%,' + COLORS.disabled + ' ' + (av + co) + '% 100%)';
-    donut.setAttribute('data-total', tot);
-    document.getElementById('dash-legend').innerHTML =
-      '<span style="color:' + COLORS.available + '">可用 ' + (p.available || 0) + '</span>' +
-      '<span style="color:' + COLORS.cooling + '">冷却 ' + (p.cooling || 0) + '</span>' +
-      '<span style="color:' + COLORS.disabled + '">禁用 ' + (p.disabled || 0) + '</span>';
-    // distribution bars (single color)
-    var dist = d.cooldown_distribution || [];
-    var maxC = 1; dist.forEach(function (b) { if (b.count > maxC) maxC = b.count; });
-    document.getElementById('dash-dist').innerHTML = dist.map(function (b) {
-      var w = Math.round((b.count / maxC) * 100);
-      return '<div class="row"><span class="lab">' + escapeHtml(b.bucket) + '</span>' +
-        '<span class="track"><span class="seg" style="width:' + w + '%;background:' + COLORS.cooling + '"></span></span>' +
-        '<span class="val">' + b.count + '</span></div>';
-    }).join('');
-    // per-provider stacked bars
-    var prov = d.by_provider || [];
-    document.getElementById('dash-prov').innerHTML = prov.map(function (r) {
-      var t = r.total || 1;
-      function seg(n, c) { return '<span class="seg" style="width:' + pctOf(n, t) + '%;background:' + c + '"></span>'; }
-      return '<div class="row"><span class="lab">' + escapeHtml(r.provider || '') + '</span>' +
-        '<span class="track">' + seg(r.available, COLORS.available) + seg(r.cooling, COLORS.cooling) + seg(r.disabled, COLORS.disabled) + '</span>' +
-        '<span class="val">' + (r.total || 0) + '</span></div>';
-    }).join('');
-    // soonest recovery
-    var sr = d.soonest_recovery;
-    var soonestEl = document.getElementById('dash-soonest');
-    if (sr && sr.recover_at) {
-      var ms = new Date(sr.recover_at).getTime() - Date.now();
-      soonestEl.textContent = '最近恢复: ' + (sr.provider || '') + '·' + (sr.model || '') + '  约 ' + fmtDur(ms) + ' 后';
+    var p = d.pairs || {};
+    modelRows = (d.by_model || []).map(function (m) {
+      var serving = (m.total || 0) - (m.disabled || 0);
+      var tier = healthOf(m);
+      return {
+        provider: m.provider || '', model: m.model || '',
+        total: m.total || 0, available: m.available || 0, cooling: m.cooling || 0, disabled: m.disabled || 0,
+        serving: serving, pct: serving > 0 ? Math.round(100 * (m.available || 0) / serving) : null,
+        next: m.next_recover_at || '', last: m.last_recover_at || '', unknown: m.unknown_recovery || 0,
+        tier: tier, rank: HEALTH.tiers[tier].rank
+      };
+    });
+    modelRows.sort(mhCompare);
+    // strip line 1
+    var counts = { DOWN: 0, CRIT: 0, WARN: 0, OK: 0, OFF: 0 };
+    modelRows.forEach(function (m) { counts[m.tier]++; });
+    var unhealthy = counts.DOWN + counts.CRIT + counts.WARN;
+    var resTxt = '资源 <b>' + (p.available || 0) + '/' + (p.total || 0) + '</b> 可用 · 冷却 ' + (p.cooling || 0) + ' · 禁用 ' + (p.disabled || 0);
+    if (unhealthy === 0) {
+      document.getElementById('strip-models').innerHTML = '全部 ' + modelRows.length + ' 个模型健康 · ' + resTxt;
     } else {
-      soonestEl.textContent = '无即将恢复的资源';
+      document.getElementById('strip-models').innerHTML = '模型: ' +
+        ['DOWN', 'CRIT', 'WARN', 'OK'].map(function (tname) {
+          var tt = HEALTH.tiers[tname];
+          return '<span style="color:' + tt.color + '">' + counts[tname] + ' ' + tt.glyph + tname + '</span>';
+        }).join(' · ') + (counts.OFF ? ' · ' + counts.OFF + ' ◌OFF' : '') + ' │ ' + resTxt;
     }
+    paintModels();
     document.getElementById('dashboard').hidden = false;
   }
-  function pctOf(n, total) { return total > 0 ? Math.round((n || 0) / total * 100) : 0; }
+
+  function mhCompare(a, b) {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    var an = a.next ? new Date(a.next).getTime() : Infinity;
+    var bn = b.next ? new Date(b.next).getTime() : Infinity;
+    if (a.tier === 'DOWN') { if (an !== bn) return an - bn; }
+    else if (a.tier === 'CRIT' || a.tier === 'WARN' || a.tier === 'OK') {
+      if (a.pct !== b.pct) return (a.pct == null ? 101 : a.pct) - (b.pct == null ? 101 : b.pct);
+      if (an !== bn) return an - bn;
+    }
+    if (a.provider !== b.provider) return a.provider < b.provider ? -1 : 1;
+    return a.model < b.model ? -1 : (a.model > b.model ? 1 : 0);
+  }
+
+  function paintModels() {
+    var now = Date.now();
+    // strip line 2: soonest recovery among non-OK models with a known time
+    var soon = null;
+    modelRows.forEach(function (m) {
+      if ((m.tier === 'DOWN' || m.tier === 'CRIT' || m.tier === 'WARN') && m.next) {
+        var t = new Date(m.next).getTime();
+        if (!soon || t < soon.t) soon = { t: t, provider: m.provider, model: m.model };
+      }
+    });
+    var soonEl = document.getElementById('strip-soonest');
+    soonEl.textContent = soon
+      ? '最近恢复(非OK模型): ' + soon.provider + '·' + soon.model + '  约 ' + fmtDur(soon.t - now) + ' 后'
+      : '';
+    document.getElementById('mh-rows').innerHTML = modelRows.map(function (m) {
+      var tt = HEALTH.tiers[m.tier];
+      var avPct = m.total > 0 ? Math.round(100 * m.available / m.total) : 0;
+      var coPct = m.total > 0 ? Math.round(100 * m.cooling / m.total) : 0;
+      var cap = '<span class="track">' +
+        '<span class="seg" style="width:' + avPct + '%;background:' + COLORS.available + '"></span>' +
+        '<span class="seg" style="width:' + coPct + '%;background:' + COLORS.cooling + '"></span>' +
+        '<span class="seg" style="width:' + Math.max(0, 100 - avPct - coPct) + '%;background:' + COLORS.disabled + '"></span></span>';
+      var avail = m.available + '/' + m.serving + (m.disabled > 0 ? ' <span class="muted">+' + m.disabled + '禁</span>' : '');
+      var pctCell = m.pct == null ? '—' : m.pct + '%';
+      var nextCell = m.cooling === 0 ? '—' : (m.next ? fmtDur(new Date(m.next).getTime() - now) : '未知');
+      var lastCell;
+      if (m.cooling === 0) { lastCell = '—'; }
+      else if (m.last) { lastCell = (m.unknown > 0 ? '≥' : '') + fmtDur(new Date(m.last).getTime() - now) + (m.unknown > 0 ? ' ?×' + m.unknown : ''); }
+      else { lastCell = '未知 ?×' + m.unknown; }
+      return '<tr data-provider="' + escapeHtml(m.provider) + '" data-model="' + escapeHtml(m.model) + '">' +
+        '<td><span class="glyph" style="color:' + tt.color + '">' + tt.glyph + '</span> <span style="color:' + tt.color + '">' + m.tier + '</span></td>' +
+        td(m.model) + '<td class="muted">' + escapeHtml(m.provider) + '</td>' +
+        '<td>' + cap + '</td><td>' + avail + '</td>' + td(pctCell) + td(m.cooling) +
+        td(nextCell) + '<td class="wide">' + escapeHtml(lastCell) + '</td></tr>';
+    }).join('');
+  }
+
+  function applyDetailFilter() {
+    var f = detailFilter;
+    rowsData = f ? allRows.filter(function (r) { return r.provider === f.provider && r.model === f.model; }) : allRows;
+    var chip = document.getElementById('mh-filter');
+    if (f) {
+      document.getElementById('mh-filter-label').textContent = f.provider + '·' + f.model;
+      chip.hidden = false;
+    } else {
+      chip.hidden = true;
+    }
+    if (!rowsData.length) { els.table.hidden = true; els.empty.hidden = false; return; }
+    els.empty.hidden = true; els.table.hidden = false;
+    paint();
+  }
 
   function render(accounts) {
     var rows = [];
@@ -252,11 +321,15 @@
         });
       });
     });
-    rows.sort(function (x, y) { return (x.provider + '|' + x.auth + '|' + x.model).localeCompare(y.provider + '|' + y.auth + '|' + y.model); });
-    rowsData = rows;
-    if (!rows.length) { els.table.hidden = true; els.empty.hidden = false; return; }
-    els.empty.hidden = true; els.table.hidden = false;
-    paint();
+    // Soonest-recovery first; rows without a reset time sort last.
+    rows.sort(function (x, y) {
+      var xt = x.reset_at ? new Date(x.reset_at).getTime() : Infinity;
+      var yt = y.reset_at ? new Date(y.reset_at).getTime() : Infinity;
+      if (xt !== yt) return xt - yt;
+      return (x.provider + '|' + x.auth + '|' + x.model).localeCompare(y.provider + '|' + y.auth + '|' + y.model);
+    });
+    allRows = rows;
+    applyDetailFilter();
   }
 
   function paint() {
@@ -278,11 +351,24 @@
   els.clear.addEventListener('click', clearKey);
   els.refresh.addEventListener('click', fetchData);
   els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
+  document.getElementById('mh-rows').addEventListener('click', function (e) {
+    var tr = e.target && e.target.closest ? e.target.closest('tr') : null;
+    if (!tr) return;
+    detailFilter = { provider: tr.getAttribute('data-provider'), model: tr.getAttribute('data-model') };
+    applyDetailFilter();
+  });
+  document.getElementById('mh-filter-clear').addEventListener('click', function () {
+    detailFilter = null;
+    applyDetailFilter();
+  });
 
   var existing = getStoredKey();
   if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
   else { setStatus('请填写管理 key 后保存', ''); }
-  setInterval(function () { if (rowsData.length) paint(); }, 1000); // Refresh countdown every second.
+  setInterval(function () {          // Refresh countdowns every second.
+    if (rowsData.length) paint();
+    if (modelRows.length) paintModels();
+  }, 1000);
 })();
 </script>
 </body>

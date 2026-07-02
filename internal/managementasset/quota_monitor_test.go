@@ -31,12 +31,22 @@ func TestQuotaMonitorHTMLHasDashboard(t *testing.T) {
 	s := string(QuotaMonitorHTML())
 	for _, marker := range []string{
 		"/v0/management/quota-summary",
-		`id="dash-cards"`,
-		`id="dash-donut"`,
-		`id="dash-dist"`,
+		`id="dash-strip"`,
+		`id="model-health"`,
+		`id="mh-rows"`,
+		`id="mh-filter"`,
+		"function healthOf",
+		"var HEALTH",
 	} {
 		if !strings.Contains(s, marker) {
-			t.Errorf("embedded page missing dashboard marker %q", marker)
+			t.Errorf("embedded page missing model-health marker %q", marker)
+		}
+	}
+	for _, gone := range []string{
+		`id="dash-donut"`, `id="dash-dist"`, `id="dash-prov"`, `id="dash-cards"`,
+	} {
+		if strings.Contains(s, gone) {
+			t.Errorf("embedded page still contains removed widget %q", gone)
 		}
 	}
 }
@@ -48,6 +58,7 @@ func TestQuotaMonitorHTMLClearsRenderedData(t *testing.T) {
 		"clearRenderedData();",
 		"document.getElementById('dashboard').hidden = true",
 		"els.updated.textContent = ''",
+		"document.getElementById('mh-rows').innerHTML = ''",
 	} {
 		if !strings.Contains(s, marker) {
 			t.Errorf("embedded page missing stale data cleanup marker %q", marker)
