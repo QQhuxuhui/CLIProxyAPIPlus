@@ -385,10 +385,11 @@ func (m *Manager) RefreshSchedulerAll() {
 // ReconcileRegistryModelStates aligns per-model runtime state with the current
 // registry snapshot for one auth.
 //
-// Supported models are reset to a clean state because re-registration already
-// cleared the registry-side cooldown/suspension snapshot. ModelStates for
-// models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale.
+// Supported models whose cooldown/quota block has already elapsed are reset to a
+// clean state; states still inside an active block are preserved so re-registration
+// does not erase upstream reset times. ModelStates for models that are no longer
+// present in the registry are pruned entirely so renamed/removed models cannot
+// keep auth-level status stale.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
@@ -431,6 +432,14 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				continue
 			}
 			if modelStateIsClean(state) {
+				continue
+			}
+			if modelStateHasActiveCooldown(state, now) {
+				// Preserve un-expired cooldown/quota state across
+				// re-registration (token refresh, config reload, catalog
+				// refresh). Wiping it here erased upstream reset times from
+				// the monitor and un-blocked routing before the quota
+				// actually recovered.
 				continue
 			}
 			resetModelState(state, now)
@@ -3743,6 +3752,15 @@ func modelStateIsClean(state *ModelState) bool {
 		return false
 	}
 	return true
+}
+
+// modelStateHasActiveCooldown reports whether the state carries a cooldown
+// or quota block whose recovery time has not yet elapsed.
+func modelStateHasActiveCooldown(state *ModelState, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	return state.NextRetryAfter.After(now) || state.Quota.NextRecoverAt.After(now)
 }
 
 func updateAggregatedAvailability(auth *Auth, now time.Time) {
