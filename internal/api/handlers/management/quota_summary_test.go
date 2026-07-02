@@ -116,6 +116,42 @@ func TestBuildQuotaSummary_NoCooling_SoonestNull(t *testing.T) {
 	}
 }
 
+func TestBuildQuotaSummary_StatusDisabled(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	auths := []*coreauth.Auth{
+		// Auth disabled via Status (not the Disabled flag): all pairs disabled.
+		{ID: "s1", Index: "1", Provider: "p", Status: coreauth.StatusDisabled},
+		// Active auth with one Status-disabled model state and one normal model.
+		{ID: "s2", Index: "2", Provider: "p", ModelStates: map[string]*coreauth.ModelState{
+			"m1": {Status: coreauth.StatusDisabled},
+		}},
+	}
+	lister := func(id string) []*registry.ModelInfo {
+		if id == "s1" {
+			return []*registry.ModelInfo{{ID: "m1"}}
+		}
+		return []*registry.ModelInfo{{ID: "m1"}, {ID: "m2"}}
+	}
+	s := buildQuotaSummary(auths, lister, now)
+	// s1: 1 pair disabled (status-disabled auth). s2: m1 disabled (status-disabled state), m2 available.
+	if s.Pairs.Total != 3 || s.Pairs.Disabled != 2 || s.Pairs.Available != 1 || s.Pairs.Cooling != 0 {
+		t.Fatalf("pairs = %+v, want total3 disabled2 available1", s.Pairs)
+	}
+	if s.Accounts.Disabled != 1 || s.Accounts.Available != 1 {
+		t.Fatalf("accounts = %+v, want disabled1 available1", s.Accounts)
+	}
+	bm := map[string]modelSummary{}
+	for _, m := range s.ByModel {
+		bm[m.Model] = m
+	}
+	if m1 := bm["m1"]; m1.Disabled != 2 || m1.Available != 0 {
+		t.Errorf("m1 = %+v, want disabled2", m1)
+	}
+	if m2 := bm["m2"]; m2.Available != 1 {
+		t.Errorf("m2 = %+v, want available1", m2)
+	}
+}
+
 func TestBuildQuotaSummary_ByModelMinMaxUnknown(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	t2h := now.Add(2 * time.Hour)

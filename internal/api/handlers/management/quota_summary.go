@@ -105,6 +105,7 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			provOrder = append(provOrder, provider)
 		}
 
+		authDisabled := auth.Disabled || auth.Status == coreauth.StatusDisabled
 		acctAvailable, acctCooling := 0, 0
 		for _, mi := range modelsForClient(auth.ID) {
 			if mi == nil {
@@ -122,7 +123,7 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			}
 			msum.Total++
 
-			if auth.Disabled {
+			if authDisabled {
 				pairs.Disabled++
 				ps.Disabled++
 				msum.Disabled++
@@ -130,6 +131,12 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			}
 
 			state := auth.ModelStates[model]
+			if state != nil && state.Status == coreauth.StatusDisabled {
+				pairs.Disabled++
+				ps.Disabled++
+				msum.Disabled++
+				continue
+			}
 			cooling := false
 			if state != nil {
 				cooldownActive := !state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)
@@ -180,7 +187,7 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			}
 		}
 
-		if auth.Disabled {
+		if authDisabled {
 			accounts.Disabled++
 		} else if acctAvailable > 0 {
 			accounts.Available++
