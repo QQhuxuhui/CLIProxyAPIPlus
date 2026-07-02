@@ -3615,7 +3615,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							}
 						case 429:
 							var next time.Time
-							backoffLevel := state.Quota.BackoffLevel
+							prevQuota := state.Quota
+							backoffLevel := prevQuota.BackoffLevel
 							reasonCode := ""
 							upstreamModel := ""
 							var resetAt time.Time
@@ -3623,6 +3624,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								reasonCode = strings.TrimSpace(result.QuotaDetail.ReasonCode)
 								upstreamModel = strings.TrimSpace(result.QuotaDetail.Model)
 								resetAt = result.QuotaDetail.ResetAt
+							}
+							// Merge with previously learned quota facts: upstream only
+							// includes the absolute reset timestamp on some 429s, so a
+							// detail-less 429 must not erase what an earlier one taught us.
+							explicitReset := !resetAt.IsZero()
+							if reasonCode == "" {
+								reasonCode = prevQuota.ReasonCode
+							}
+							if upstreamModel == "" {
+								upstreamModel = prevQuota.UpstreamModel
+							}
+							if !explicitReset {
+								resetAt = prevQuota.ResetAt
 							}
 							if !disableCooling {
 								if result.QuotaDetail != nil {
@@ -3640,6 +3654,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 										}
 										backoffLevel = nextLevel
 									}
+								}
+								// Zero-probe policy: never shorten a known recovery time
+								// unless this 429 carried its own explicit reset timestamp.
+								if !explicitReset && prevQuota.NextRecoverAt.After(next) {
+									next = prevQuota.NextRecoverAt
 								}
 							}
 							state.NextRetryAfter = next
