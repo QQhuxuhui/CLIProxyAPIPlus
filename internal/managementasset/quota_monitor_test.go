@@ -66,3 +66,16 @@ func TestQuotaMonitorHTMLClearsRenderedData(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLRendersPendingVerification(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"pending_verification",
+		"待验证",
+		".badge.p",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing pending-verification marker %q", marker)
+		}
+	}
+}

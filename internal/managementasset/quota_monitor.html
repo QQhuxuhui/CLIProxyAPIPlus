@@ -20,6 +20,7 @@
   th { background: rgba(127,127,127,.15); position: sticky; top: 0; }
   .badge { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
   .badge.q { background: #c0392b; color: #fff; }
+  .badge.p { background: #e67e22; color: #fff; }
   .muted { color: #888; }
   #empty { padding: 24px; text-align: center; color: #888; }
   #dashboard { margin: 8px 0 18px; }
@@ -317,7 +318,7 @@
       (a.model_states || []).forEach(function (ms) {
         rows.push({
           provider: a.provider || '', auth: a.auth_index || a.id || '', email: a.email || a.label || '',
-          model: ms.model || '', quota: !!ms.quota_exceeded, unavailable: !!ms.unavailable,
+          model: ms.model || '', quota: !!ms.quota_exceeded, pending: !!ms.pending_verification, unavailable: !!ms.unavailable,
           status: ms.status || '', status_message: ms.status_message || '',
           reason: ms.reason_code || '', upstream: ms.upstream_model || '',
           reset_at: ms.reset_at || '', next: ms.next_retry_after || ''
@@ -338,11 +339,11 @@
   function paint() {
     var now = Date.now();
     els.rows.innerHTML = rowsData.map(function (r) {
-      var cd = r.reset_at ? fmtDur(new Date(r.reset_at).getTime() - now) : '';
+      var cd = r.pending ? '已到预计恢复时间' : (r.reset_at ? fmtDur(new Date(r.reset_at).getTime() - now) : '');
       var acc = r.auth + (r.email ? ' (' + r.email + ')' : '');
       var st = r.status + (r.status_message ? ' / ' + r.status_message : '');
       return '<tr>' + td(r.provider) + td(acc) + td(r.model) +
-        '<td>' + (r.quota ? '<span class="badge q">exhausted</span>' : '') + '</td>' +
+        '<td>' + (r.quota ? '<span class="badge q">exhausted</span>' : (r.pending ? '<span class="badge p">待验证</span>' : '')) + '</td>' +
         td(r.unavailable ? '是' : '') + td(st) + td(r.reason) + td(r.upstream) +
         td(cd) + td(r.reset_at) + td(r.next) + '</tr>';
     }).join('');
