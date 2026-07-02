@@ -38,11 +38,24 @@ type soonestRecovery struct {
 	RecoverAt time.Time `json:"recover_at"`
 }
 
+type modelSummary struct {
+	Provider        string     `json:"provider"`
+	Model           string     `json:"model"`
+	Total           int        `json:"total"`
+	Available       int        `json:"available"`
+	Cooling         int        `json:"cooling"`
+	Disabled        int        `json:"disabled"`
+	NextRecoverAt   *time.Time `json:"next_recover_at,omitempty"` // min known future recoverAt among cooling pairs
+	LastRecoverAt   *time.Time `json:"last_recover_at,omitempty"` // max known future recoverAt (full-capacity ETA)
+	UnknownRecovery int        `json:"unknown_recovery"`          // cooling pairs with indefinite/unknown recovery
+}
+
 // QuotaSummary is the aggregated account×model availability snapshot.
 type QuotaSummary struct {
 	Pairs                quotaCounts          `json:"pairs"`
 	Accounts             quotaCounts          `json:"accounts"`
 	ByProvider           []providerSummary    `json:"by_provider"`
+	ByModel              []modelSummary       `json:"by_model"`
 	CooldownDistribution []distributionBucket `json:"cooldown_distribution"`
 	SoonestRecovery      *soonestRecovery     `json:"soonest_recovery"`
 }
@@ -76,6 +89,7 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 	var pairs, accounts quotaCounts
 	provOrder := make([]string, 0)
 	provAgg := make(map[string]*providerSummary)
+	modelAgg := make(map[string]*modelSummary)
 	var soonest *soonestRecovery
 
 	for _, auth := range auths {
@@ -100,9 +114,18 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			pairs.Total++
 			ps.Total++
 
+			mkey := provider + "\x00" + model
+			msum := modelAgg[mkey]
+			if msum == nil {
+				msum = &modelSummary{Provider: provider, Model: model}
+				modelAgg[mkey] = msum
+			}
+			msum.Total++
+
 			if auth.Disabled {
 				pairs.Disabled++
 				ps.Disabled++
+				msum.Disabled++
 				continue
 			}
 
@@ -117,12 +140,14 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			if !cooling {
 				pairs.Available++
 				ps.Available++
+				msum.Available++
 				acctAvailable++
 				continue
 			}
 
 			pairs.Cooling++
 			ps.Cooling++
+			msum.Cooling++
 			acctCooling++
 
 			// recoverAt: indefinite quota -> unknown; else max of known future times.
@@ -138,9 +163,18 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			}
 			if indefiniteQuota || recoverAt.IsZero() {
 				dist["unknown"]++
+				msum.UnknownRecovery++
 				continue
 			}
 			dist[bucketOf(recoverAt.Sub(now))]++
+			if msum.NextRecoverAt == nil || recoverAt.Before(*msum.NextRecoverAt) {
+				tNext := recoverAt
+				msum.NextRecoverAt = &tNext
+			}
+			if msum.LastRecoverAt == nil || recoverAt.After(*msum.LastRecoverAt) {
+				tLast := recoverAt
+				msum.LastRecoverAt = &tLast
+			}
 			if soonest == nil || recoverAt.Before(soonest.RecoverAt) {
 				soonest = &soonestRecovery{Provider: provider, AuthIndex: auth.EnsureIndex(), Model: model, RecoverAt: recoverAt}
 			}
@@ -165,10 +199,22 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 	}
 	sort.Slice(provList, func(i, j int) bool { return provList[i].Provider < provList[j].Provider })
 
+	modelList := make([]modelSummary, 0, len(modelAgg))
+	for _, m := range modelAgg {
+		modelList = append(modelList, *m)
+	}
+	sort.Slice(modelList, func(i, j int) bool {
+		if modelList[i].Provider != modelList[j].Provider {
+			return modelList[i].Provider < modelList[j].Provider
+		}
+		return modelList[i].Model < modelList[j].Model
+	})
+
 	return QuotaSummary{
 		Pairs:                pairs,
 		Accounts:             accounts,
 		ByProvider:           provList,
+		ByModel:              modelList,
 		CooldownDistribution: distList,
 		SoonestRecovery:      soonest,
 	}

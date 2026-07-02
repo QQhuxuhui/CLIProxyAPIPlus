@@ -907,6 +907,7 @@ func TestQuotaSummaryEndpoint(t *testing.T) {
 		Pairs                map[string]int   `json:"pairs"`
 		Accounts             map[string]int   `json:"accounts"`
 		CooldownDistribution []map[string]any `json:"cooldown_distribution"`
+		ByModel              []map[string]any `json:"by_model"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
@@ -916,6 +917,9 @@ func TestQuotaSummaryEndpoint(t *testing.T) {
 	}
 	if _, ok := body.Pairs["total"]; !ok {
 		t.Error("pairs.total missing")
+	}
+	if body.ByModel == nil {
+		t.Error("by_model missing from response")
 	}
 }
 

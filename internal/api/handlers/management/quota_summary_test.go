@@ -68,6 +68,39 @@ func TestBuildQuotaSummary(t *testing.T) {
 	if len(s.ByProvider) != 3 || s.ByProvider[0].Provider != "antigravity" || s.ByProvider[2].Provider != "gemini" {
 		t.Errorf("by_provider = %+v", s.ByProvider)
 	}
+
+	// by_model: sorted by provider then model asc; 7 rows
+	// antigravity: m-cool, m-expired, m-far, m-indef, m-ok; claude: c1, c2
+	if len(s.ByModel) != 7 {
+		t.Fatalf("by_model rows = %d, want 7: %+v", len(s.ByModel), s.ByModel)
+	}
+	bm := map[string]modelSummary{}
+	for _, m := range s.ByModel {
+		bm[m.Provider+"/"+m.Model] = m
+	}
+	mc := bm["antigravity/m-cool"]
+	if mc.Total != 1 || mc.Available != 0 || mc.Cooling != 1 || mc.UnknownRecovery != 0 ||
+		mc.NextRecoverAt == nil || !mc.NextRecoverAt.Equal(future6h) ||
+		mc.LastRecoverAt == nil || !mc.LastRecoverAt.Equal(future6h) {
+		t.Errorf("m-cool = %+v, want cooling1 next=last=future6h", mc)
+	}
+	mi := bm["antigravity/m-indef"]
+	if mi.Cooling != 1 || mi.UnknownRecovery != 1 || mi.NextRecoverAt != nil || mi.LastRecoverAt != nil {
+		t.Errorf("m-indef = %+v, want cooling1 unknown1 no recover times", mi)
+	}
+	mo := bm["antigravity/m-ok"]
+	if mo.Available != 1 || mo.Cooling != 0 || mo.NextRecoverAt != nil {
+		t.Errorf("m-ok = %+v, want available1", mo)
+	}
+	c1 := bm["claude/c1"]
+	if c1.Total != 1 || c1.Disabled != 1 || c1.Available != 0 {
+		t.Errorf("c1 = %+v, want disabled1", c1)
+	}
+	if s.ByModel[0].Provider != "antigravity" || s.ByModel[0].Model != "m-cool" ||
+		s.ByModel[6].Provider != "claude" || s.ByModel[6].Model != "c2" {
+		t.Errorf("by_model order wrong: first=%s/%s last=%s/%s",
+			s.ByModel[0].Provider, s.ByModel[0].Model, s.ByModel[6].Provider, s.ByModel[6].Model)
+	}
 }
 
 func TestBuildQuotaSummary_NoCooling_SoonestNull(t *testing.T) {
@@ -80,5 +113,37 @@ func TestBuildQuotaSummary_NoCooling_SoonestNull(t *testing.T) {
 	}
 	if s.Pairs.Available != 1 || s.Pairs.Cooling != 0 {
 		t.Errorf("pairs = %+v", s.Pairs)
+	}
+}
+
+func TestBuildQuotaSummary_ByModelMinMaxUnknown(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	t2h := now.Add(2 * time.Hour)
+	t50h := now.Add(50 * time.Hour)
+	mkCooling := func(at time.Time) *coreauth.ModelState {
+		return &coreauth.ModelState{Unavailable: true, NextRetryAfter: at,
+			Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: at}}
+	}
+	auths := []*coreauth.Auth{
+		{ID: "b1", Index: "1", Provider: "p", ModelStates: map[string]*coreauth.ModelState{"m": mkCooling(t2h)}},
+		{ID: "b2", Index: "2", Provider: "p", ModelStates: map[string]*coreauth.ModelState{"m": mkCooling(t50h)}},
+		{ID: "b3", Index: "3", Provider: "p", ModelStates: map[string]*coreauth.ModelState{
+			"m": {Quota: coreauth.QuotaState{Exceeded: true}}, // indefinite
+		}},
+	}
+	lister := func(id string) []*registry.ModelInfo { return []*registry.ModelInfo{{ID: "m"}} }
+	s := buildQuotaSummary(auths, lister, now)
+	if len(s.ByModel) != 1 {
+		t.Fatalf("by_model rows = %d, want 1", len(s.ByModel))
+	}
+	m := s.ByModel[0]
+	if m.Total != 3 || m.Cooling != 3 || m.Available != 0 || m.UnknownRecovery != 1 {
+		t.Fatalf("m = %+v, want total3 cooling3 unknown1", m)
+	}
+	if m.NextRecoverAt == nil || !m.NextRecoverAt.Equal(t2h) {
+		t.Errorf("NextRecoverAt = %v, want %v (min)", m.NextRecoverAt, t2h)
+	}
+	if m.LastRecoverAt == nil || !m.LastRecoverAt.Equal(t50h) {
+		t.Errorf("LastRecoverAt = %v, want %v (max known)", m.LastRecoverAt, t50h)
 	}
 }
