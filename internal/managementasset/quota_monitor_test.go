@@ -37,6 +37,7 @@ func TestQuotaMonitorHTMLHasDashboard(t *testing.T) {
 		`id="mh-filter"`,
 		"function healthOf",
 		"var HEALTH",
+		"可服务模型全部健康",
 	} {
 		if !strings.Contains(s, marker) {
 			t.Errorf("embedded page missing model-health marker %q", marker)

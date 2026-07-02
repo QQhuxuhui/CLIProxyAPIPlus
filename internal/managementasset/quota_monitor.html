@@ -231,7 +231,10 @@
     var unhealthy = counts.DOWN + counts.CRIT + counts.WARN;
     var resTxt = '资源 <b>' + (p.available || 0) + '/' + (p.total || 0) + '</b> 可用 · 冷却 ' + (p.cooling || 0) + ' · 禁用 ' + (p.disabled || 0);
     if (unhealthy === 0) {
-      document.getElementById('strip-models').innerHTML = '全部 ' + modelRows.length + ' 个模型健康 · ' + resTxt;
+      var okCount = modelRows.length - counts.OFF;
+      document.getElementById('strip-models').innerHTML = (counts.OFF > 0
+        ? '可服务模型全部健康(' + okCount + ') · <span style="color:' + HEALTH.tiers.OFF.color + '">' + counts.OFF + ' ◌OFF</span>'
+        : '全部 ' + modelRows.length + ' 个模型健康') + ' · ' + resTxt;
     } else {
       document.getElementById('strip-models').innerHTML = '模型: ' +
         ['DOWN', 'CRIT', 'WARN', 'OK'].map(function (tname) {
