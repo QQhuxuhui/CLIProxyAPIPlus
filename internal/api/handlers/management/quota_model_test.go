@@ -55,9 +55,16 @@ func TestBuildModelStatesEntry_TimeAwareFiltering(t *testing.T) {
 		byModel[model] = e
 	}
 
-	// past-reset-model must NOT appear
-	if _, found := byModel["past-reset-model"]; found {
-		t.Errorf("past-reset-model should be excluded (quota recovery time elapsed) but was included with quota_exceeded=%v", byModel["past-reset-model"]["quota_exceeded"])
+	// past-reset-model now appears with pending_verification=true (elapsed recovery time, unverified)
+	if e, found := byModel["past-reset-model"]; !found {
+		t.Errorf("past-reset-model should be included with pending_verification but was absent")
+	} else {
+		if e["pending_verification"] != true {
+			t.Errorf("past-reset-model pending_verification = %v, want true (recovery time elapsed, unverified)", e["pending_verification"])
+		}
+		if e["quota_exceeded"] != false {
+			t.Errorf("past-reset-model quota_exceeded = %v, want false (pending verification)", e["quota_exceeded"])
+		}
 	}
 
 	// clean-model must NOT appear
@@ -129,5 +136,42 @@ func TestBuildModelStatesEntry_ExposesQuota(t *testing.T) {
 	}
 	if got, ok := e["next_retry_after"].(time.Time); !ok || !got.Equal(reset) {
 		t.Errorf("next_retry_after = %v, want %v", e["next_retry_after"], reset)
+	}
+}
+
+func TestBuildModelStatesEntry_PendingVerification(t *testing.T) {
+	elapsed := time.Now().Add(-30 * time.Minute)
+	auth := &coreauth.Auth{
+		ID: "auth-pending",
+		ModelStates: map[string]*coreauth.ModelState{
+			"gemini-3-pro-image": {
+				Status:         coreauth.StatusError,
+				Unavailable:    true,
+				NextRetryAfter: elapsed,
+				Quota: coreauth.QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: elapsed,
+					ResetAt:       elapsed,
+					ReasonCode:    "QUOTA_EXHAUSTED",
+					UpstreamModel: "gemini-3-pro-image",
+				},
+			},
+		},
+	}
+
+	entries := buildModelStatesEntry(auth)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (elapsed-but-unverified quota must stay visible)", len(entries))
+	}
+	entry := entries[0]
+	if entry["pending_verification"] != true {
+		t.Errorf("pending_verification = %v, want true", entry["pending_verification"])
+	}
+	if entry["quota_exceeded"] != false {
+		t.Errorf("quota_exceeded = %v, want false (recovery unverified, not confirmed exceeded)", entry["quota_exceeded"])
+	}
+	if _, ok := entry["reset_at"]; !ok {
+		t.Error("reset_at missing; the elapsed reset time must remain visible")
 	}
 }
