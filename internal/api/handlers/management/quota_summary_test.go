@@ -15,12 +15,14 @@ func TestBuildQuotaSummary(t *testing.T) {
 	past := now.Add(-time.Hour)
 
 	auths := []*coreauth.Auth{
-		// A1 antigravity: m-ok available, m-cool cooling(6h future), m-indef indefinite quota
+		// A1 antigravity: m-ok available, m-cool cooling(6h future, Unavailable+future NextRetryAfter),
+		// m-indef indefinite quota but Unavailable=false -> router still uses it -> available (router-aligned)
 		{ID: "a1", Index: "1", Provider: "antigravity", ModelStates: map[string]*coreauth.ModelState{
 			"m-cool":  {Unavailable: true, NextRetryAfter: future6h, Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: future6h}},
-			"m-indef": {Quota: coreauth.QuotaState{Exceeded: true}}, // NextRecoverAt zero -> indefinite
+			"m-indef": {Quota: coreauth.QuotaState{Exceeded: true}}, // NextRecoverAt zero, Unavailable=false -> available
 		}},
-		// A2 antigravity: m-expired(过期不计 cooling -> available), m-far cooling(90h)
+		// A2 antigravity: m-expired(过期不计 cooling -> available), m-far Quota.Exceeded but Unavailable=false
+		// -> router still uses it -> available (router-aligned)
 		{ID: "a2", Index: "2", Provider: "antigravity", ModelStates: map[string]*coreauth.ModelState{
 			"m-expired": {Unavailable: true, NextRetryAfter: past, Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: past}},
 			"m-far":     {NextRetryAfter: future90h, Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: future90h}},
@@ -40,15 +42,18 @@ func TestBuildQuotaSummary(t *testing.T) {
 
 	s := buildQuotaSummary(auths, lister, now)
 
-	// pairs: a1=3 (m-ok avail, m-cool cool, m-indef cool), a2=2 (m-expired avail, m-far cool), a3=2 disabled
-	if s.Pairs.Total != 7 || s.Pairs.Available != 2 || s.Pairs.Cooling != 3 || s.Pairs.Disabled != 2 {
-		t.Fatalf("pairs = %+v, want total7 avail2 cool3 disabled2", s.Pairs)
+	// pairs: a1=3 (m-ok avail, m-cool cool, m-indef avail [router-aligned]),
+	// a2=2 (m-expired avail, m-far avail [router-aligned]), a3=2 disabled
+	if s.Pairs.Total != 7 || s.Pairs.Available != 4 || s.Pairs.Cooling != 1 || s.Pairs.Disabled != 2 {
+		t.Fatalf("pairs = %+v, want total7 avail4 cool1 disabled2 (router-aligned)", s.Pairs)
 	}
 	// accounts: total4; a1 has m-ok avail -> available; a2 has m-expired avail -> available; a3 disabled; a4 no models -> none
 	if s.Accounts.Total != 4 || s.Accounts.Available != 2 || s.Accounts.Cooling != 0 || s.Accounts.Disabled != 1 {
 		t.Fatalf("accounts = %+v, want total4 avail2 cool0 disabled1", s.Accounts)
 	}
 	// distribution: m-cool(6h)->"1-6h"? 6h is not <6h so falls in 6-24h boundary — see bucketOf (<6h => 1-6h). 6h -> 6-24h.
+	// m-far and m-indef are router-aligned available (Unavailable=false), so they no longer
+	// contribute to the distribution; m-cool is the only cooling pair.
 	got := map[string]int{}
 	for _, b := range s.CooldownDistribution {
 		got[b.Bucket] = b.Count
@@ -56,8 +61,15 @@ func TestBuildQuotaSummary(t *testing.T) {
 	if len(s.CooldownDistribution) != 6 {
 		t.Fatalf("distribution buckets = %d, want 6", len(s.CooldownDistribution))
 	}
-	if got["6-24h"] != 1 || got[">72h"] != 1 || got["unknown"] != 1 {
-		t.Errorf("distribution = %v, want 6-24h:1 >72h:1 unknown:1", got)
+	if got["6-24h"] != 1 {
+		t.Errorf("distribution = %v, want 6-24h:1 (router-aligned)", got)
+	}
+	sum := 0
+	for _, v := range got {
+		sum += v
+	}
+	if sum != 1 {
+		t.Errorf("distribution sum = %d, want 1 (only m-cool cooling, router-aligned)", sum)
 	}
 	// soonest_recovery: earliest known future recoverAt = m-cool @ future6h on a1
 	if s.SoonestRecovery == nil || !s.SoonestRecovery.RecoverAt.Equal(future6h) ||
@@ -84,9 +96,16 @@ func TestBuildQuotaSummary(t *testing.T) {
 		mc.LastRecoverAt == nil || !mc.LastRecoverAt.Equal(future6h) {
 		t.Errorf("m-cool = %+v, want cooling1 next=last=future6h", mc)
 	}
+	// m-indef: indefinite quota but Unavailable=false -> router still routes to it -> available (router-aligned)
 	mi := bm["antigravity/m-indef"]
-	if mi.Cooling != 1 || mi.UnknownRecovery != 1 || mi.NextRecoverAt != nil || mi.LastRecoverAt != nil {
-		t.Errorf("m-indef = %+v, want cooling1 unknown1 no recover times", mi)
+	if mi.Available != 1 || mi.Cooling != 0 || mi.UnknownRecovery != 0 || mi.NextRecoverAt != nil || mi.LastRecoverAt != nil {
+		t.Errorf("m-indef = %+v, want available1 cooling0 unknown0 (router-aligned)", mi)
+	}
+	// m-far: Quota.Exceeded with a future NextRecoverAt but Unavailable=false -> router still
+	// routes to it -> available (router-aligned); this is the exact case the fix targets.
+	mf := bm["antigravity/m-far"]
+	if mf.Available != 1 || mf.Cooling != 0 {
+		t.Errorf("m-far = %+v, want available1 cooling0 (router-aligned)", mf)
 	}
 	mo := bm["antigravity/m-ok"]
 	if mo.Available != 1 || mo.Cooling != 0 || mo.NextRecoverAt != nil {
@@ -164,7 +183,8 @@ func TestBuildQuotaSummary_ByModelMinMaxUnknown(t *testing.T) {
 		{ID: "b1", Index: "1", Provider: "p", ModelStates: map[string]*coreauth.ModelState{"m": mkCooling(t2h)}},
 		{ID: "b2", Index: "2", Provider: "p", ModelStates: map[string]*coreauth.ModelState{"m": mkCooling(t50h)}},
 		{ID: "b3", Index: "3", Provider: "p", ModelStates: map[string]*coreauth.ModelState{
-			"m": {Quota: coreauth.QuotaState{Exceeded: true}}, // indefinite
+			// indefinite quota, Unavailable=false -> router still uses it -> available (router-aligned)
+			"m": {Quota: coreauth.QuotaState{Exceeded: true}},
 		}},
 	}
 	lister := func(id string) []*registry.ModelInfo { return []*registry.ModelInfo{{ID: "m"}} }
@@ -173,13 +193,43 @@ func TestBuildQuotaSummary_ByModelMinMaxUnknown(t *testing.T) {
 		t.Fatalf("by_model rows = %d, want 1", len(s.ByModel))
 	}
 	m := s.ByModel[0]
-	if m.Total != 3 || m.Cooling != 3 || m.Available != 0 || m.UnknownRecovery != 1 {
-		t.Fatalf("m = %+v, want total3 cooling3 unknown1", m)
+	if m.Total != 3 || m.Cooling != 2 || m.Available != 1 || m.UnknownRecovery != 0 {
+		t.Fatalf("m = %+v, want total3 cooling2 available1 unknown0 (router-aligned: b3 available)", m)
 	}
 	if m.NextRecoverAt == nil || !m.NextRecoverAt.Equal(t2h) {
 		t.Errorf("NextRecoverAt = %v, want %v (min)", m.NextRecoverAt, t2h)
 	}
 	if m.LastRecoverAt == nil || !m.LastRecoverAt.Equal(t50h) {
 		t.Errorf("LastRecoverAt = %v, want %v (max known)", m.LastRecoverAt, t50h)
+	}
+}
+
+// TestBuildQuotaSummary_RouterAlignedAvailability verifies the summary's
+// cooling classification matches the router's blocking predicate
+// (isAuthBlockedForModel in sdk/cliproxy/auth/selector.go): a pair is only
+// unroutable while Unavailable with a future NextRetryAfter. States the
+// router still routes to (zero NextRetryAfter under disable-cooling,
+// indefinite quota with zero NextRetryAfter) must count as available.
+func TestBuildQuotaSummary_RouterAlignedAvailability(t *testing.T) {
+	now := time.Now()
+	auths := []*coreauth.Auth{
+		{
+			ID:       "disable-cooling-auth",
+			Index:    "1",
+			Provider: "antigravity",
+			ModelStates: map[string]*coreauth.ModelState{
+				// disable-cooling shape: unavailable but zero NextRetryAfter -> router uses it -> available
+				"model-a": {Status: coreauth.StatusError, Unavailable: true},
+				// indefinite quota with zero NextRetryAfter -> router uses it -> available
+				"model-b": {Status: coreauth.StatusError, Unavailable: true, Quota: coreauth.QuotaState{Exceeded: true}},
+			},
+		},
+	}
+	modelsFor := func(clientID string) []*registry.ModelInfo {
+		return []*registry.ModelInfo{{ID: "model-a"}, {ID: "model-b"}}
+	}
+	s := buildQuotaSummary(auths, modelsFor, now)
+	if s.Pairs.Available != 2 || s.Pairs.Cooling != 0 {
+		t.Errorf("pairs = %+v, want 2 available / 0 cooling (router-aligned)", s.Pairs)
 	}
 }

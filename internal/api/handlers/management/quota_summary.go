@@ -79,8 +79,11 @@ func bucketOf(d time.Duration) string {
 
 // buildQuotaSummary aggregates per-(account,model) availability. modelsForClient
 // supplies the registered model list for an auth id (registry.GetModelsForClient
-// in production; a fake in tests). Cooling classification mirrors
-// buildModelStatesEntry (recovery-aware).
+// in production; a fake in tests). Cooling classification mirrors the router's
+// blocking predicate (isAuthBlockedForModel in sdk/cliproxy/auth/selector.go),
+// so the dashboard never reports capacity the router disagrees with. The
+// detail endpoints (model_states, see auth_files.go/buildModelStatesEntry)
+// intentionally show a broader set of error rows the router may still use.
 func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID string) []*registry.ModelInfo, now time.Time) QuotaSummary {
 	dist := make(map[string]int, len(cooldownBuckets))
 	for _, b := range cooldownBuckets {
@@ -137,13 +140,12 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 				msum.Disabled++
 				continue
 			}
-			cooling := false
-			if state != nil {
-				cooldownActive := !state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)
-				unavailableActive := state.Unavailable && (state.NextRetryAfter.IsZero() || state.NextRetryAfter.After(now))
-				quotaActive := state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now))
-				cooling = cooldownActive || unavailableActive || quotaActive
-			}
+			// Cooling mirrors the router's blocking predicate (isAuthBlockedForModel):
+			// a pair is unroutable only while Unavailable with a future NextRetryAfter.
+			// States the router still uses (zero NextRetryAfter under disable-cooling,
+			// elapsed cooldowns, indefinite quota) count as available so the dashboard
+			// never reports capacity the router disagrees with.
+			cooling := state != nil && state.Unavailable && state.NextRetryAfter.After(now)
 			if !cooling {
 				pairs.Available++
 				ps.Available++
@@ -157,21 +159,11 @@ func buildQuotaSummary(auths []*coreauth.Auth, modelsForClient func(clientID str
 			msum.Cooling++
 			acctCooling++
 
-			// recoverAt: indefinite quota -> unknown; else max of known future times.
-			indefiniteQuota := state.Quota.Exceeded && state.Quota.NextRecoverAt.IsZero()
-			var recoverAt time.Time
-			if !indefiniteQuota {
-				if state.NextRetryAfter.After(now) {
-					recoverAt = state.NextRetryAfter
-				}
-				if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(now) && state.Quota.NextRecoverAt.After(recoverAt) {
-					recoverAt = state.Quota.NextRecoverAt
-				}
-			}
-			if indefiniteQuota || recoverAt.IsZero() {
-				dist["unknown"]++
-				msum.UnknownRecovery++
-				continue
+			// cooling implies state.Unavailable with a future NextRetryAfter (see predicate
+			// above), so recoverAt is always known; fold in a later quota recovery time if any.
+			recoverAt := state.NextRetryAfter
+			if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(recoverAt) {
+				recoverAt = state.Quota.NextRecoverAt
 			}
 			dist[bucketOf(recoverAt.Sub(now))]++
 			if msum.NextRecoverAt == nil || recoverAt.Before(*msum.NextRecoverAt) {
