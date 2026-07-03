@@ -104,6 +104,61 @@ func TestReconcileRegistryModelStates_ResetsExpiredState(t *testing.T) {
 	}
 }
 
+func TestReconcileRegistryModelStates_RearmsRegistryQuota(t *testing.T) {
+	future := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	const model = "gemini-rearm-probe-model"
+	m, auth := reconcileTestManager(t, "auth-reconcile-rearm", model, &ModelState{
+		Status:         StatusError,
+		Unavailable:    true,
+		NextRetryAfter: future,
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: future,
+			ResetAt:       future,
+		},
+	})
+	reg := registry.GetGlobalRegistry()
+	// Simulate the re-registration that precedes reconcile: it clears the
+	// registry-side quota entry for this client.
+	if got := reg.GetModelCount(model); got < 1 {
+		t.Fatalf("precondition: GetModelCount = %d, want >= 1", got)
+	}
+
+	m.ReconcileRegistryModelStates(context.Background(), auth.ID)
+
+	if got := reg.GetModelCount(model); got != 0 {
+		t.Errorf("GetModelCount = %d, want 0 (registry quota entry must be re-armed for preserved cooldown)", got)
+	}
+}
+
+func TestReconcileRegistryModelStates_ExpiredStateDoesNotRearmRegistryQuota(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
+	const model = "gemini-rearm-expired-probe-model"
+	m, auth := reconcileTestManager(t, "auth-reconcile-rearm-expired", model, &ModelState{
+		Status:         StatusError,
+		Unavailable:    true,
+		NextRetryAfter: past,
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: past,
+			ResetAt:       past,
+		},
+	})
+	reg := registry.GetGlobalRegistry()
+	want := reg.GetModelCount(model)
+	if want < 1 {
+		t.Fatalf("precondition: GetModelCount = %d, want >= 1", want)
+	}
+
+	m.ReconcileRegistryModelStates(context.Background(), auth.ID)
+
+	if got := reg.GetModelCount(model); got != want {
+		t.Errorf("GetModelCount = %d, want %d (expired cooldown must not re-arm registry quota)", got, want)
+	}
+}
+
 func TestReconcileRegistryModelStates_StillPrunesUnsupportedModels(t *testing.T) {
 	future := time.Now().Add(48 * time.Hour)
 	m, auth := reconcileTestManager(t, "auth-reconcile-prune", "gemini-3-pro-image", &ModelState{

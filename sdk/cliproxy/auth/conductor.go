@@ -410,6 +410,11 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 
 	var snapshot *Auth
 	now := time.Now()
+	type quotaRearm struct {
+		model     string
+		recoverAt time.Time
+	}
+	var rearmQuotas []quotaRearm
 
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
@@ -440,6 +445,10 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				// refresh). Wiping it here erased upstream reset times from
 				// the monitor and un-blocked routing before the quota
 				// actually recovered.
+				if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(now) {
+					// Re-arm registry quota entries for preserved states: re-registration cleared the registry copy, which would over-advertise blocked models via GetAvailableModels.
+					rearmQuotas = append(rearmQuotas, quotaRearm{model: modelKey, recoverAt: state.Quota.NextRecoverAt})
+				}
 				continue
 			}
 			resetModelState(state, now)
@@ -463,6 +472,10 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		}
 	}
 	m.mu.Unlock()
+
+	for _, rq := range rearmQuotas {
+		registry.GetGlobalRegistry().SetModelQuotaExceededUntil(authID, rq.model, rq.recoverAt)
+	}
 
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
