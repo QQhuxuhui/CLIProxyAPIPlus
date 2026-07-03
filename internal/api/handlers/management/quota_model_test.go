@@ -16,7 +16,7 @@ func TestBuildModelStatesEntry_TimeAwareFiltering(t *testing.T) {
 		ID:       "auth-filter",
 		Provider: "test",
 		ModelStates: map[string]*coreauth.ModelState{
-			// Past-reset: quota exceeded but recovery time already elapsed -> EXCLUDED
+			// Past-reset: quota exceeded, recovery time elapsed unverified -> included as pending_verification
 			"past-reset-model": {
 				Unavailable: true,
 				Quota: coreauth.QuotaState{
@@ -173,5 +173,8 @@ func TestBuildModelStatesEntry_PendingVerification(t *testing.T) {
 	}
 	if _, ok := entry["reset_at"]; !ok {
 		t.Error("reset_at missing; the elapsed reset time must remain visible")
+	}
+	if _, ok := entry["unavailable"]; ok {
+		t.Error("unavailable key must be absent on pending rows")
 	}
 }
