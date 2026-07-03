@@ -644,7 +644,7 @@ func (r *ModelRegistry) unregisterClientInternal(clientID string) {
 	r.triggerModelsUnregistered(provider, clientID)
 }
 
-// SetModelQuotaExceeded marks a model as quota exceeded for a specific client.
+// SetModelQuotaExceededUntil marks a model as quota exceeded for a specific client.
 // Parameters:
 //   - clientID: The client that exceeded quota
 //   - modelID: The model that exceeded quota
@@ -652,7 +652,7 @@ func (r *ModelRegistry) unregisterClientInternal(clientID string) {
 //     If resetAt.IsZero(), falls back to now+modelQuotaExceededWindow (preserves old behaviour).
 //
 // QuotaExceededClients stores the absolute recovery time, not the mark time.
-func (r *ModelRegistry) SetModelQuotaExceeded(clientID, modelID string, resetAt time.Time) {
+func (r *ModelRegistry) SetModelQuotaExceededUntil(clientID, modelID string, resetAt time.Time) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
@@ -666,6 +666,13 @@ func (r *ModelRegistry) SetModelQuotaExceeded(clientID, modelID string, resetAt 
 		r.invalidateAvailableModelsCacheLocked()
 		log.Debugf("Marked model %s as quota exceeded for client %s (recovery at %s)", modelID, clientID, resetAt.Format(time.RFC3339))
 	}
+}
+
+// SetModelQuotaExceeded marks a model as quota exceeded for a specific client
+// using the default recovery window. Kept for public SDK compatibility; use
+// SetModelQuotaExceededUntil to honour an upstream-provided reset time.
+func (r *ModelRegistry) SetModelQuotaExceeded(clientID, modelID string) {
+	r.SetModelQuotaExceededUntil(clientID, modelID, time.Time{})
 }
 
 // ClearModelQuotaExceeded removes quota exceeded status for a model and client

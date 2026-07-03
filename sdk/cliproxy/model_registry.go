@@ -1,10 +1,6 @@
 package cliproxy
 
-import (
-	"time"
-
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-)
+import "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 
 // ModelInfo re-exports the registry model info structure.
 type ModelInfo = registry.ModelInfo
@@ -16,7 +12,7 @@ type ModelRegistryHook = registry.ModelRegistryHook
 type ModelRegistry interface {
 	RegisterClient(clientID, clientProvider string, models []*ModelInfo)
 	UnregisterClient(clientID string)
-	SetModelQuotaExceeded(clientID, modelID string, resetAt time.Time)
+	SetModelQuotaExceeded(clientID, modelID string)
 	ClearModelQuotaExceeded(clientID, modelID string)
 	ClientSupportsModel(clientID, modelID string) bool
 	GetAvailableModels(handlerType string) []map[string]any

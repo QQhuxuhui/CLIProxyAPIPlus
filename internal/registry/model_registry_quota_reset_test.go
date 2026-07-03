@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// TestSetModelQuotaExceeded_HonorsRealReset verifies that SetModelQuotaExceeded stores the
+// TestSetModelQuotaExceeded_HonorsRealReset verifies that SetModelQuotaExceededUntil stores the
 // absolute recovery time (resetAt) rather than the mark time, so that the model availability
 // layer honours the real upstream reset instead of a fixed 5-minute window.
 //
@@ -14,7 +14,7 @@ import (
 func TestSetModelQuotaExceeded_HonorsRealReset(t *testing.T) {
 	t.Run("past_resetAt_immediately_recovered", func(t *testing.T) {
 		// A resetAt in the past means recovery has already happened.
-		// Under the old fixed-5-min code, SetModelQuotaExceeded(client, model) would store
+		// Under the old fixed-5-min code, SetModelQuotaExceededUntil(client, model) would store
 		// time.Now() and the model would remain cooling for ~5 minutes — the only way to
 		// get count==1 immediately was CleanupExpiredQuotas or manual override.
 		// Under the new code, a past resetAt must make the model immediately available.
@@ -22,7 +22,7 @@ func TestSetModelQuotaExceeded_HonorsRealReset(t *testing.T) {
 		r.RegisterClient("client-1", "gemini", []*ModelInfo{{ID: "m1"}})
 
 		pastReset := time.Now().Add(-time.Hour)
-		r.SetModelQuotaExceeded("client-1", "m1", pastReset)
+		r.SetModelQuotaExceededUntil("client-1", "m1", pastReset)
 
 		// The stored value must equal the resetAt we passed (not time.Now()).
 		r.mutex.RLock()
@@ -49,7 +49,7 @@ func TestSetModelQuotaExceeded_HonorsRealReset(t *testing.T) {
 		r.RegisterClient("client-1", "gemini", []*ModelInfo{{ID: "m2"}})
 
 		futureReset := time.Now().Add(90 * time.Hour)
-		r.SetModelQuotaExceeded("client-1", "m2", futureReset)
+		r.SetModelQuotaExceededUntil("client-1", "m2", futureReset)
 
 		// The stored value must equal the resetAt we passed.
 		r.mutex.RLock()
@@ -75,7 +75,7 @@ func TestSetModelQuotaExceeded_HonorsRealReset(t *testing.T) {
 		r.RegisterClient("client-1", "gemini", []*ModelInfo{{ID: "m3"}})
 
 		before := time.Now()
-		r.SetModelQuotaExceeded("client-1", "m3", time.Time{})
+		r.SetModelQuotaExceededUntil("client-1", "m3", time.Time{})
 		after := time.Now()
 
 		r.mutex.RLock()
@@ -95,4 +95,17 @@ func TestSetModelQuotaExceeded_HonorsRealReset(t *testing.T) {
 			t.Fatalf("GetModelCount after zero-resetAt = %d, want 0 (should still be cooling)", count)
 		}
 	})
+}
+
+// TestSetModelQuotaExceeded_DefaultWindowCompat verifies the public SDK-facing
+// two-arg SetModelQuotaExceeded signature still compiles and behaves like the
+// default-window fallback of SetModelQuotaExceededUntil.
+func TestSetModelQuotaExceeded_DefaultWindowCompat(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("compat-client", "antigravity", []*ModelInfo{{ID: "compat-model"}})
+	defer r.UnregisterClient("compat-client")
+	r.SetModelQuotaExceeded("compat-client", "compat-model")
+	if got := r.GetModelCount("compat-model"); got != 0 {
+		t.Errorf("GetModelCount = %d, want 0 (client quota-exceeded under default window)", got)
+	}
 }

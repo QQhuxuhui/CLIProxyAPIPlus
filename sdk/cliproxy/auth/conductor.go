@@ -3717,7 +3717,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
 	}
 	if setModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, result.Model, setModelQuotaResetAt)
+		registry.GetGlobalRegistry().SetModelQuotaExceededUntil(result.AuthID, result.Model, setModelQuotaResetAt)
 	}
 	if shouldResumeModel {
 		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, result.Model)
