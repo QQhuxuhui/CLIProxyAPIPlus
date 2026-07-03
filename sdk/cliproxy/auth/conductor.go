@@ -447,6 +447,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				// actually recovered.
 				if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(now) {
 					// Re-arm registry quota entries for preserved states: re-registration cleared the registry copy, which would over-advertise blocked models via GetAvailableModels.
+					// Quota entry only, deliberately without a parallel SuspendClientModel("quota"): the router still blocks via the preserved ModelStates, and re-suspending would reintroduce GetModelCount's client double-subtraction (once for the quota entry, once for the suspension). Non-quota cooldowns (401/403/404) are likewise not re-suspended here; any registry advertising skew is tolerated because auth-side state keeps routing correct.
 					rearmQuotas = append(rearmQuotas, quotaRearm{model: modelKey, recoverAt: state.Quota.NextRecoverAt})
 				}
 				continue
