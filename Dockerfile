@@ -4,6 +4,11 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
 
+# proxy.golang.org is unreachable from this build environment; default to a
+# China-accessible module proxy. Override with --build-arg GOPROXY=... if needed.
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 COPY go.mod go.sum ./
 
 RUN go mod download
