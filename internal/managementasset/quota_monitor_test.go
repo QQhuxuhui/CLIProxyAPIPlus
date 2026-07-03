@@ -79,3 +79,13 @@ func TestQuotaMonitorHTMLRendersPendingVerification(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLSurfacesSummaryFetchFailure(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	if !strings.Contains(s, "模型健康汇总加载失败") {
+		t.Error("embedded page missing quota-summary failure message")
+	}
+	if strings.Contains(s, ".catch(function () {});") {
+		t.Error("fetchSummary still swallows errors silently")
+	}
+}

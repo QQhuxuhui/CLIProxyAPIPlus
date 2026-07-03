@@ -206,10 +206,16 @@
   }
 
   function fetchSummary(k) {
+    // Only called after the table fetch succeeded. Failures here must not
+    // touch auto-refresh/ban handling (that lives in the main fetch); surface
+    // a status message only — the next refresh cycle retries automatically.
     fetch('/v0/management/quota-summary', { headers: { 'Authorization': 'Bearer ' + k } })
-      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (resp) {
+        if (!resp.ok) { setStatus('模型健康汇总加载失败：HTTP ' + resp.status + '（下次刷新自动重试）', 'err'); return null; }
+        return resp.json();
+      })
       .then(function (data) { if (data) renderSummary(data); })
-      .catch(function () {}); // Only called after the table fetch succeeded; stay silent to protect anti-ban state.
+      .catch(function (e) { setStatus('模型健康汇总加载失败：' + e + '（下次刷新自动重试）', 'err'); });
   }
 
   function renderSummary(d) {
