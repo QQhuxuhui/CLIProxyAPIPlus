@@ -243,12 +243,6 @@ type Server struct {
 	// rateLimiter enforces the optional, default-disabled per-key/per-IP token
 	// bucket limiter on data-plane route groups.
 	rateLimiter *middleware.RateLimiter
-
-	// authLockout applies an always-on per-IP failed-authentication lockout on
-	// the data-plane auth path, closing the credential brute-force gap the token
-	// bucket cannot cover (the bucket runs after auth and keys on the
-	// authenticated principal).
-	authLockout *middleware.AuthLockout
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -339,7 +333,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
 		rateLimiter:         middleware.NewRateLimiter(),
-		authLockout:         middleware.NewAuthLockout(),
 	}
 	s.applyWebsocketAuthConfig(cfg)
 	// General body-size cap for everything except the Management API (which gets
@@ -470,7 +463,7 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(s.authMiddleware(), s.rateLimitMiddleware())
+	v1.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -490,7 +483,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
-	openaiV1.Use(s.authMiddleware(), s.rateLimitMiddleware())
+	openaiV1.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -499,7 +492,7 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(s.authMiddleware(), s.rateLimitMiddleware())
+	codexDirect.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -508,7 +501,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(s.authMiddleware(), s.rateLimitMiddleware())
+	v1beta.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -610,17 +603,13 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 	s.wsRoutes[trimmed] = struct{}{}
 	s.wsRouteMu.Unlock()
 
-	// Use the lockout-aware data-plane auth handler so /v1/ws shares the same
-	// per-IP failed-authentication lockout as the REST groups; otherwise the
-	// upgrade endpoint would be an unthrottled brute-force surface against the
-	// same access keys once ws-auth is enabled (the default).
-	wsAuth := s.authMiddleware()
+	authMiddleware := AuthMiddleware(s.accessManager)
 	conditionalAuth := func(c *gin.Context) {
 		if !s.wsAuthEnabled.Load() {
 			c.Next()
 			return
 		}
-		wsAuth(c)
+		authMiddleware(c)
 	}
 	finalHandler := func(c *gin.Context) {
 		handler.ServeHTTP(c.Writer, c.Request)
@@ -1577,7 +1566,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
 
 	s.rateLimiter.Stop()
-	s.authLockout.Stop()
 
 	if s.keepAliveEnabled {
 		select {
@@ -1951,59 +1939,6 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 
 		statusCode := err.HTTPStatusCode()
 		if statusCode >= http.StatusInternalServerError {
-			log.Errorf("authentication middleware error: %v", err)
-		}
-		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
-	}
-}
-
-// authMiddleware is the data-plane authentication handler. It wraps the same auth
-// logic as the free AuthMiddleware with an always-on per-IP failed-authentication
-// lockout: a banned IP is rejected with 429 (and a Retry-After hint) before auth
-// is attempted, repeated invalid-credential responses drive the lockout, and a
-// successful auth resets the IP's counter. Server errors (>=500) never feed the
-// lockout. The free AuthMiddleware is intentionally left unchanged so the /v1/ws
-// conditional-auth path (and any other callers) keep their stateless behaviour.
-func (s *Server) authMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		if banned, retryAfter := s.authLockout.Banned(ip); banned {
-			if retryAfter > 0 {
-				c.Header("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
-			}
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many failed authentication attempts"})
-			return
-		}
-
-		if s.accessManager == nil {
-			c.Next()
-			return
-		}
-
-		result, err := s.accessManager.Authenticate(c.Request.Context(), c.Request)
-		if err == nil {
-			s.authLockout.RecordSuccess(ip)
-			if result != nil {
-				c.Set("userApiKey", result.Principal)
-				c.Set("accessProvider", result.Provider)
-				if len(result.Metadata) > 0 {
-					c.Set("accessMetadata", result.Metadata)
-				}
-			}
-			c.Next()
-			return
-		}
-
-		statusCode := err.HTTPStatusCode()
-		if sdkaccess.IsAuthErrorCode(err, sdkaccess.AuthErrorCodeInvalidCredential) {
-			// Only an actually-supplied WRONG key feeds the lockout. A missing
-			// credential (no key) and server errors must NOT: otherwise keyless
-			// probes, or a fail-closed server with zero providers (S06) that
-			// returns NoCredentials for every request, could ban a shared egress
-			// IP (CGNAT/corporate NAT) and lock out co-located legitimate clients.
-			s.authLockout.RecordFailure(ip)
-		} else if statusCode >= http.StatusInternalServerError {
-			// Server-side errors must never ban a client.
 			log.Errorf("authentication middleware error: %v", err)
 		}
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
