@@ -58,13 +58,6 @@ func decodeRequestBody(raw []byte, encoding string) ([]byte, error) {
 	return body, nil
 }
 
-// maxDecodedRequestBodyBytes caps the decompressed size of a single zstd
-// request-body stage. Without a cap a few-KB compressed payload could expand
-// to gigabytes and OOM the process (a decompression bomb). 128 MiB is generous
-// for legitimate JSON/base64-image payloads yet far below memory exhaustion.
-// It is a var (not const) so tests can lower it and restore via defer.
-var maxDecodedRequestBodyBytes int64 = 128 << 20
-
 func decodeZstdRequestBody(raw []byte) ([]byte, error) {
 	decoder, err := zstd.NewReader(bytes.NewReader(raw))
 	if err != nil {
@@ -72,15 +65,9 @@ func decodeZstdRequestBody(raw []byte) ([]byte, error) {
 	}
 	defer decoder.Close()
 
-	// Bound the decompressed output: read one byte past the cap so an
-	// over-cap stream is detectable, then reject it instead of returning the
-	// oversized data.
-	decoded, err := io.ReadAll(io.LimitReader(decoder, maxDecodedRequestBodyBytes+1))
+	decoded, err := io.ReadAll(decoder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode zstd request body: %w", err)
-	}
-	if int64(len(decoded)) > maxDecodedRequestBodyBytes {
-		return nil, fmt.Errorf("decompressed request body exceeds maximum allowed size of %d bytes", maxDecodedRequestBodyBytes)
 	}
 	return decoded, nil
 }

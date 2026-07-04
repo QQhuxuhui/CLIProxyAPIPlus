@@ -13,12 +13,6 @@ import (
 
 const dayLayout = "2006-01-02"
 
-// inMemRetentionDays bounds how many recent calendar days stay resident in
-// a.mem (today + yesterday). Without eviction a.mem gains one entry per day of
-// process uptime and never shrinks. query() transparently reloads older days
-// from disk, so evicting them is safe.
-const inMemRetentionDays = 2
-
 // ModelStat is one model's counts in a query result.
 type ModelStat struct {
 	Model   string `json:"model"`
@@ -138,31 +132,6 @@ func (a *aggregator) flush() {
 	}
 }
 
-// evictStaleMemDays drops from a.mem any resident day older than the
-// in-memory retention window (today plus inMemRetentionDays-1 prior days). A
-// day with unsaved counts (a.dirty) is kept so it is not lost before the next
-// flush; days whose key fails to parse are left in place defensively. Evicted
-// days are transparently reloaded from disk by query(), so correctness holds.
-// Call this only after flush() so a day is persisted before it can be evicted.
-func (a *aggregator) evictStaleMemDays(now time.Time) {
-	cutoff := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
-		AddDate(0, 0, -(inMemRetentionDays - 1))
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for day := range a.mem {
-		if a.dirty[day] {
-			continue
-		}
-		t, err := time.ParseInLocation(dayLayout, day, now.Location())
-		if err != nil {
-			continue
-		}
-		if t.Before(cutoff) {
-			delete(a.mem, day)
-		}
-	}
-}
-
 // mergeDayInto adds one day's counts into agg, optionally filtered to a
 // single account. Callers must ensure data is not concurrently mutated
 // while this runs (either by holding a.mu, or by owning a private copy).
@@ -254,8 +223,6 @@ func (a *aggregator) flushLoop() {
 	for range ticker.C {
 		a.flush()
 		a.store.sweep(time.Now(), int(retention.Load()))
-		// Evict after flush so a day is persisted before it leaves memory.
-		a.evictStaleMemDays(time.Now())
 	}
 }
 
