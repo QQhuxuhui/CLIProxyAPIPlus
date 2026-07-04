@@ -6,29 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
-
-// checkOrigin validates the WebSocket upgrade Origin header to guard against
-// cross-site WebSocket hijacking. Non-browser provider clients typically omit
-// the Origin header, so a missing Origin is allowed. When present, the Origin's
-// host must match the request Host; otherwise the handshake is rejected.
-func checkOrigin(r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(parsed.Host, r.Host)
-}
 
 // Manager exposes a websocket endpoint that proxies Gemini requests to
 // connected clients.
@@ -73,7 +56,9 @@ func NewManager(opts Options) *Manager {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			CheckOrigin:     checkOrigin,
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
 		},
 		providerFactory: opts.ProviderFactory,
 		onConnected:     opts.OnConnected,

@@ -160,17 +160,8 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
-	// AllowAnonymous, when true, permits data-plane requests even when no
-	// api-keys/access providers are configured (an open proxy). It defaults to
-	// false, so a configuration without any api-keys fails closed and rejects
-	// all data-plane requests instead of silently allowing anonymous access.
-	AllowAnonymous bool `yaml:"allow-anonymous" json:"allow-anonymous"`
-
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
-	// It is tri-state: nil means "unset" and defaults to enabled (secure
-	// default); an explicit false disables authentication on /v1/ws. Use
-	// WebsocketAuthEnabled to read the effective value.
-	WebsocketAuth *bool `yaml:"ws-auth,omitempty" json:"ws-auth,omitempty"`
+	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
 	// AntigravitySignatureCacheEnabled controls whether signature cache validation is enabled for thinking blocks.
 	// When true (default), cached signatures are preferred and validated.
@@ -227,17 +218,6 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
-}
-
-// WebsocketAuthEnabled reports whether authentication is required on the
-// WebSocket API (/v1/ws). The underlying config field is tri-state: a nil
-// pointer (key omitted) defaults to true (secure default), and an explicit
-// value is honored as-is.
-func WebsocketAuthEnabled(cfg *Config) bool {
-	if cfg != nil && cfg.WebsocketAuth != nil {
-		return *cfg.WebsocketAuth
-	}
-	return true
 }
 
 // PluginsConfig holds dynamic plugin system settings.
@@ -1565,15 +1545,6 @@ func appendPath(path []string, key string) []string {
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
-	// ws-auth is tri-state (*bool): an omitted key means "enabled" (the secure
-	// default), so an explicit value — including false — is meaningful and must
-	// always be persisted rather than dropped as a zero/default. A nil pointer is
-	// already omitted upstream via omitempty, so this branch only runs for an
-	// explicit value; without it, disabling ws-auth via the management API when the
-	// key is absent from config.yaml would silently revert to enabled on reload.
-	if len(path) == 1 && path[0] == "ws-auth" {
-		return false
-	}
 	// First check if it's a zero value
 	if isZeroValueNode(node) {
 		return true

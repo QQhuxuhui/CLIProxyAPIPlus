@@ -353,14 +353,8 @@ func (m configTabModel) parseConfig(cfg map[string]any) []configField {
 		fields = append(fields, configField{"Routing Strategy", "routing/strategy", "string", "", nil})
 	}
 
-	// WebSocket auth. Unset (key absent) defaults to enabled (secure default).
-	wsAuth := true
-	if v, ok := cfg["ws-auth"]; ok {
-		if b, ok := v.(bool); ok {
-			wsAuth = b
-		}
-	}
-	fields = append(fields, configField{"WebSocket Auth", "ws-auth", "bool", fmt.Sprintf("%v", wsAuth), nil})
+	// WebSocket auth
+	fields = append(fields, configField{"WebSocket Auth", "ws-auth", "bool", fmt.Sprintf("%v", getBool(cfg, "ws-auth")), nil})
 
 	return fields
 }

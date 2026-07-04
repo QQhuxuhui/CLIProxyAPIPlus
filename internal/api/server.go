@@ -334,7 +334,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		pluginHost:          optionState.pluginHost,
 		rateLimiter:         middleware.NewRateLimiter(),
 	}
-	s.applyWebsocketAuthConfig(cfg)
+	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	// General body-size cap for everything except the Management API (which gets
 	// its own, higher fixed ceiling applied per-route/group below) and CORS both
 	// read s.cfg dynamically so they honor config hot-reloads.
@@ -1714,26 +1714,6 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg); err != nil {
 		return
 	}
-	// Wire the anonymous-access opt-out and surface the resulting security
-	// posture. This runs on both initial startup and every config reload.
-	s.accessManager.SetAllowAnonymous(newCfg.AllowAnonymous)
-	providerCount := len(s.accessManager.Providers())
-	if newCfg.AllowAnonymous {
-		log.Warn("anonymous data-plane access is ENABLED (allow-anonymous: true): anyone who can reach the proxy can use it without an API key.")
-	} else if providerCount == 0 {
-		log.Warn("data-plane authentication is FAIL-CLOSED: no api-keys/access providers are configured, so all data-plane requests will be rejected. Configure api-keys, or set allow-anonymous: true to intentionally run an open proxy.")
-	}
-}
-
-// applyWebsocketAuthConfig stores the effective websocket-auth flag and warns
-// when authentication has been explicitly disabled. It runs on both initial
-// startup and config reload.
-func (s *Server) applyWebsocketAuthConfig(cfg *config.Config) {
-	enabled := config.WebsocketAuthEnabled(cfg)
-	s.wsAuthEnabled.Store(enabled)
-	if !enabled {
-		log.Warn("websocket relay authentication is DISABLED (ws-auth: false): any client that can reach /v1/ws can register as an upstream provider.")
-	}
 }
 
 // UpdateClients updates the server's client list and configuration.
@@ -1845,11 +1825,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 
 	s.applyAccessConfig(oldCfg, cfg)
 	s.cfg = cfg
-	s.applyWebsocketAuthConfig(cfg)
-	oldWSAuth := config.WebsocketAuthEnabled(oldCfg)
-	newWSAuth := config.WebsocketAuthEnabled(cfg)
-	if oldCfg != nil && s.wsAuthChanged != nil && oldWSAuth != newWSAuth {
-		s.wsAuthChanged(oldWSAuth, newWSAuth)
+	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
+		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
 	}
 	managementasset.SetCurrentConfig(cfg)
 	// Save YAML snapshot for next comparison
@@ -1913,10 +1891,8 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 // (management handlers moved to internal/api/handlers/management)
 
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
-// using the configured authentication providers. A nil manager allows all
-// requests (SDK embedders that intentionally do not wire access control); a
-// configured manager with zero providers fails closed and rejects requests
-// unless allow-anonymous is set (see sdk/access Manager.Authenticate).
+// using the configured authentication providers. When no providers are available,
+// it allows all requests (legacy behaviour).
 func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {

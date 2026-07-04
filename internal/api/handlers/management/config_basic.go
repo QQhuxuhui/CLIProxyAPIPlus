@@ -249,14 +249,10 @@ func (h *Handler) PutRequestLog(c *gin.Context) {
 
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
-	// Return the effective value (nil pointer defaults to enabled).
-	c.JSON(200, gin.H{"ws-auth": config.WebsocketAuthEnabled(h.cfg)})
+	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
 }
 func (h *Handler) PutWebsocketAuth(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) {
-		vv := v
-		h.cfg.WebsocketAuth = &vv
-	})
+	h.updateBoolField(c, func(v bool) { h.cfg.WebsocketAuth = v })
 }
 
 // Request retry

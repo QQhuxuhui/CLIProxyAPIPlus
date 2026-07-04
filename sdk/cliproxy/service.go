@@ -1411,8 +1411,7 @@ func forceHomeRuntimeConfig(cfg *config.Config) {
 	cfg.UsageStatisticsEnabled = true
 	cfg.DisableCooling = true
 	cfg.SaveCooldownStatus = false
-	wsAuthDisabled := false
-	cfg.WebsocketAuth = &wsAuthDisabled
+	cfg.WebsocketAuth = false
 	cfg.RemoteManagement.AllowRemote = false
 	cfg.RemoteManagement.DisableControlPanel = true
 }
