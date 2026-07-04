@@ -67,8 +67,7 @@ func (ts *ClaudeTokenStorage) SaveTokenToFile(authFilePath string) error {
 	}
 
 	// Create the token file
-	// 0o600: credential files must not be group/world-readable (matches sdk/auth/filestore.go).
-	f, err := os.OpenFile(authFilePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.Create(authFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
 	}

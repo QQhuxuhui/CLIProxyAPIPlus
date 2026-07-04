@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -91,9 +90,7 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 				baseURL = strings.TrimSpace(auth.Attributes["base-url"])
 			}
 		}
-		// The composite key is serialized as an object key in the response,
-		// so mask the raw upstream API key to avoid leaking it to the client.
-		compositeKey := baseURL + "|" + util.HideAPIKey(apiKey)
+		compositeKey := baseURL + "|" + apiKey
 		provider := apiKeyUsageProviderKey(auth)
 
 		recent := auth.RecentRequestsSnapshot(now)

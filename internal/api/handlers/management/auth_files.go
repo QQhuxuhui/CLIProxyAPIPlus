@@ -498,11 +498,6 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account_type"] = accountType
 		}
 		if account != "" {
-			// Mask raw upstream API keys before returning them in the listing.
-			// OAuth accounts (emails) are left unchanged.
-			if accountType == "api_key" {
-				account = util.HideAPIKey(account)
-			}
 			entry["account"] = account
 		}
 	}
