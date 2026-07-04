@@ -81,8 +81,8 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.ProxyURL != newCfg.ProxyURL {
 		changes = append(changes, fmt.Sprintf("proxy-url: %s -> %s", formatProxyURL(oldCfg.ProxyURL), formatProxyURL(newCfg.ProxyURL)))
 	}
-	if oldCfg.WebsocketAuth != newCfg.WebsocketAuth {
-		changes = append(changes, fmt.Sprintf("ws-auth: %t -> %t", oldCfg.WebsocketAuth, newCfg.WebsocketAuth))
+	if oldWSAuth, newWSAuth := config.WebsocketAuthEnabled(oldCfg), config.WebsocketAuthEnabled(newCfg); oldWSAuth != newWSAuth {
+		changes = append(changes, fmt.Sprintf("ws-auth: %t -> %t", oldWSAuth, newWSAuth))
 	}
 	if oldCfg.ForceModelPrefix != newCfg.ForceModelPrefix {
 		changes = append(changes, fmt.Sprintf("force-model-prefix: %t -> %t", oldCfg.ForceModelPrefix, newCfg.ForceModelPrefix))

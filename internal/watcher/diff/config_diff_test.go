@@ -198,7 +198,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		RequestRetry:                  1,
 		MaxRetryCredentials:           1,
 		MaxRetryInterval:              1,
-		WebsocketAuth:                 false,
+		WebsocketAuth:                 wsAuthPtr(false),
 		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false, AntigravityCredits: false},
 		ClaudeKey:                     []config.ClaudeKey{{APIKey: "c1"}},
 		CodexKey:                      []config.CodexKey{{APIKey: "x1"}},
@@ -223,7 +223,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		RequestRetry:                  2,
 		MaxRetryCredentials:           3,
 		MaxRetryInterval:              3,
-		WebsocketAuth:                 true,
+		WebsocketAuth:                 wsAuthPtr(true),
 		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true, AntigravityCredits: true},
 		ClaudeKey: []config.ClaudeKey{
 			{APIKey: "c1", BaseURL: "http://new", ProxyURL: "http://p", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"a"}},
@@ -290,7 +290,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 		RequestRetry:                  1,
 		MaxRetryCredentials:           1,
 		MaxRetryInterval:              1,
-		WebsocketAuth:                 false,
+		WebsocketAuth:                 wsAuthPtr(false),
 		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false, AntigravityCredits: false},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "g-old", BaseURL: "http://g-old", ProxyURL: "http://gp-old", Headers: map[string]string{"A": "1"}},
@@ -339,7 +339,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 		RequestRetry:                  2,
 		MaxRetryCredentials:           3,
 		MaxRetryInterval:              3,
-		WebsocketAuth:                 true,
+		WebsocketAuth:                 wsAuthPtr(true),
 		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true, AntigravityCredits: true},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "g-new", BaseURL: "http://g-new", ProxyURL: "http://gp-new", Headers: map[string]string{"A": "2"}, ExcludedModels: []string{"x", "y"}},
@@ -489,6 +489,8 @@ func TestBuildConfigChangeDetails_CountBranches(t *testing.T) {
 	expectContains(t, changes, "codex-api-key count: 0 -> 1")
 	expectContains(t, changes, "vertex-api-key count: 0 -> 1")
 }
+
+func wsAuthPtr(v bool) *bool { return &v }
 
 func TestTrimStrings(t *testing.T) {
 	out := trimStrings([]string{" a ", "b", "  c"})

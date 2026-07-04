@@ -76,6 +76,12 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Security: when no api-keys/access providers are configured the data plane
+# fails CLOSED and rejects every request. Set allow-anonymous: true only if you
+# intentionally want an open proxy that anyone who can reach the port may use
+# without an API key. Default is false.
+allow-anonymous: false
+
 # Enable debug logging
 debug: false
 
@@ -220,7 +226,10 @@ codex:
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
 
-# When true, enable authentication for the WebSocket API (/v1/ws).
+# Authentication for the WebSocket API (/v1/ws). When this key is omitted it
+# defaults to true (authentication required, the secure default). Set it to
+# false only to intentionally allow unauthenticated clients to register as
+# upstream providers on /v1/ws.
 ws-auth: true
 
 # When > 0, emit blank lines every N seconds for non-streaming responses to prevent idle timeouts.

@@ -8,13 +8,27 @@ import (
 
 // Manager coordinates authentication providers.
 type Manager struct {
-	mu        sync.RWMutex
-	providers []Provider
+	mu             sync.RWMutex
+	providers      []Provider
+	allowAnonymous bool
 }
 
 // NewManager constructs an empty manager.
 func NewManager() *Manager {
 	return &Manager{}
+}
+
+// SetAllowAnonymous controls whether the data plane fails open when no access
+// providers are configured. When false (the secure default), a request that
+// reaches a manager with zero providers is rejected with a missing-credentials
+// error; when true, such a request is allowed through (open proxy).
+func (m *Manager) SetAllowAnonymous(allow bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.allowAnonymous = allow
+	m.mu.Unlock()
 }
 
 // SetProviders replaces the active provider list.
@@ -48,7 +62,15 @@ func (m *Manager) Authenticate(ctx context.Context, r *http.Request) (*Result, *
 	}
 	providers := m.Providers()
 	if len(providers) == 0 {
-		return nil, nil
+		m.mu.RLock()
+		allowAnonymous := m.allowAnonymous
+		m.mu.RUnlock()
+		if allowAnonymous {
+			return nil, nil
+		}
+		// Fail closed: no access providers configured means no way to
+		// authenticate, so reject rather than silently running an open proxy.
+		return nil, NewNoCredentialsError()
 	}
 
 	var (
