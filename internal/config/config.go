@@ -73,6 +73,13 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// UsageStatsEnabled toggles persistent per-account per-model call-count
+	// aggregation (separate from the in-memory UsageStatistics queue).
+	UsageStatsEnabled bool `yaml:"usage-stats-enabled" json:"usage-stats-enabled"`
+
+	// UsageStatsRetentionDays is how many days of usage-stats day files to keep.
+	UsageStatsRetentionDays int `yaml:"usage-stats-retention-days" json:"usage-stats-retention-days"`
+
 	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
 	// in memory for Management API consumers.
 	// Default: 60. Max: 3600.
@@ -713,6 +720,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.UsageStatsEnabled = false
+	cfg.UsageStatsRetentionDays = 90
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
 	cfg.SaveCooldownStatus = false

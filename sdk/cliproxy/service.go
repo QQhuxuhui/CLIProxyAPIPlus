@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagestats"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
@@ -1318,6 +1319,7 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 
 	s.applyRetryConfig(newCfg)
 	s.configureCooldownStateStore(newCfg)
+	applyUsageStatsConfig(newCfg)
 	s.applyPprofConfig(newCfg)
 	if s.server != nil {
 		s.server.UpdateClients(newCfg)
@@ -1414,6 +1416,15 @@ func forceHomeRuntimeConfig(cfg *config.Config) {
 	cfg.WebsocketAuth = false
 	cfg.RemoteManagement.AllowRemote = false
 	cfg.RemoteManagement.DisableControlPanel = true
+}
+
+// applyUsageStatsConfig toggles persistent usage-stats aggregation based on config.
+func applyUsageStatsConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	usagestats.SetEnabled(cfg.UsageStatsEnabled)
+	usagestats.SetRetentionDays(cfg.UsageStatsRetentionDays)
 }
 
 func (s *Service) applyHomeOverlay(remoteCfg *config.Config) {
@@ -1633,6 +1644,8 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.applyRetryConfig(s.cfg)
 	s.configureCooldownStateStore(s.cfg)
+	usagestats.Init("usage-stats")
+	applyUsageStatsConfig(s.cfg)
 
 	s.registerPluginAuthParser()
 	if s.coreManager != nil && !homeEnabled {
