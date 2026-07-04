@@ -45,7 +45,8 @@ func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 	if errMkdirAll := os.MkdirAll(filepath.Dir(authFilePath), 0o700); errMkdirAll != nil {
 		return fmt.Errorf("xai token storage: create directory: %w", errMkdirAll)
 	}
-	file, err := os.Create(authFilePath)
+	// 0o600: credential files must not be group/world-readable (matches sdk/auth/filestore.go).
+	file, err := os.OpenFile(authFilePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("xai token storage: create token file: %w", err)
 	}

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -63,12 +65,18 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
+	// The composite key embeds the api key and is serialized into the response,
+	// so the raw key must never appear in the body.
+	if body := rec.Body.String(); strings.Contains(body, "codex-key") || strings.Contains(body, "claude-key") {
+		t.Fatalf("raw api key leaked in api-key-usage body: %s", body)
+	}
+
 	var payload map[string]map[string]apiKeyUsageEntry
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
 
-	codexEntry := payload["codex"]["https://codex.example.com|codex-key"]
+	codexEntry := payload["codex"]["https://codex.example.com|"+util.HideAPIKey("codex-key")]
 	if codexEntry.Success != 1 || codexEntry.Failed != 1 {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexEntry.Success, codexEntry.Failed)
 	}
@@ -80,7 +88,7 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexSuccess, codexFailed)
 	}
 
-	claudeEntry := payload["claude"]["https://claude.example.com|claude-key"]
+	claudeEntry := payload["claude"]["https://claude.example.com|"+util.HideAPIKey("claude-key")]
 	if claudeEntry.Success != 1 || claudeEntry.Failed != 0 {
 		t.Fatalf("claude totals = %d/%d, want 1/0", claudeEntry.Success, claudeEntry.Failed)
 	}
@@ -131,11 +139,14 @@ func TestGetAPIKeyUsage_GroupsOpenAICompatibleByCompatName(t *testing.T) {
 	if _, exists := payload["openai-compatible-vast"]; exists {
 		t.Fatalf("unexpected namespaced provider bucket in payload: %#v", payload)
 	}
+	if body := rec.Body.String(); strings.Contains(body, "vast-key") {
+		t.Fatalf("raw api key leaked in api-key-usage body: %s", body)
+	}
 	vastBucket, exists := payload["vast"]
 	if !exists {
 		t.Fatalf("missing compat provider bucket in payload: %#v", payload)
 	}
-	vastEntry := vastBucket["https://www.vastnum.com/v1|vast-key"]
+	vastEntry := vastBucket["https://www.vastnum.com/v1|"+util.HideAPIKey("vast-key")]
 	if vastEntry.Success != 1 || vastEntry.Failed != 0 {
 		t.Fatalf("vast totals = %d/%d, want 1/0", vastEntry.Success, vastEntry.Failed)
 	}

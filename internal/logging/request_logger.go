@@ -423,7 +423,11 @@ type homeRequestLogPayload struct {
 	RequestLog string              `json:"request_log,omitempty"`
 }
 
-func cloneHeaders(headers map[string][]string) map[string][]string {
+// cloneAndMaskHeaders deep-copies the given headers while masking sensitive
+// values (Authorization, api-key/token/secret headers) via
+// util.MaskSensitiveHeaderValue. It is used when forwarding request logs to the
+// Home control plane so that raw credentials are never transmitted off-box.
+func cloneAndMaskHeaders(headers map[string][]string) map[string][]string {
 	if len(headers) == 0 {
 		return nil
 	}
@@ -437,7 +441,9 @@ func cloneHeaders(headers map[string][]string) map[string][]string {
 			continue
 		}
 		copied := make([]string, len(values))
-		copy(copied, values)
+		for i, value := range values {
+			copied[i] = util.MaskSensitiveHeaderValue(key, value)
+		}
 		out[key] = copied
 	}
 	if len(out) == 0 {
@@ -455,7 +461,7 @@ func (l *FileRequestLogger) forwardRequestLogToHome(ctx context.Context, headers
 		return nil
 	}
 	payload := homeRequestLogPayload{
-		Headers:    cloneHeaders(headers),
+		Headers:    cloneAndMaskHeaders(headers),
 		RequestID:  strings.TrimSpace(requestID),
 		RequestLog: logText,
 	}
@@ -2155,7 +2161,7 @@ func (w *homeStreamingLogWriter) Close() error {
 	}
 
 	payload := homeRequestLogPayload{
-		Headers:    cloneHeaders(w.requestHeaders),
+		Headers:    cloneAndMaskHeaders(w.requestHeaders),
 		RequestID:  w.requestID,
 		RequestLog: buf.String(),
 	}

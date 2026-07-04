@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
 
 type stubHomeRequestLogClient struct {
@@ -139,8 +141,16 @@ func TestFileRequestLogger_HomeEnabled_ForwardsWhenRequestLogEnabled(t *testing.
 	if got.Headers == nil || got.Headers["Content-Type"][0] != "application/json" {
 		t.Fatalf("headers.content-type = %+v, want application/json", got.Headers["Content-Type"])
 	}
-	if got.Headers == nil || got.Headers["Authorization"][0] != "Bearer secret" {
-		t.Fatalf("headers.authorization = %+v, want Bearer secret", got.Headers["Authorization"])
+	// The Authorization header must be masked before being forwarded to Home.
+	wantAuth := util.MaskSensitiveHeaderValue("Authorization", "Bearer secret")
+	if wantAuth == "Bearer secret" {
+		t.Fatalf("mask helper did not alter Authorization value; test fixture is ineffective")
+	}
+	if got.Headers == nil || got.Headers["Authorization"][0] != wantAuth {
+		t.Fatalf("headers.authorization = %+v, want masked %q", got.Headers["Authorization"], wantAuth)
+	}
+	if strings.Contains(string(stub.pushed[0]), "Bearer secret") {
+		t.Fatalf("raw Authorization leaked to Home payload: %s", string(stub.pushed[0]))
 	}
 	if got.RequestID != "req-1" {
 		t.Fatalf("request_id = %q, want req-1", got.RequestID)
@@ -346,6 +356,99 @@ func TestFileRequestLogger_HomeEnabled_ForwardsStreamingRequestID(t *testing.T) 
 	}
 	if got.RequestLog == "" {
 		t.Fatalf("request_log empty, want non-empty")
+	}
+}
+
+func TestCloneAndMaskHeaders_MasksSensitiveValues(t *testing.T) {
+	in := map[string][]string{
+		"Content-Type":  {"application/json"},
+		"Authorization": {"Bearer sk-super-secret-token"},
+		"X-Api-Key":     {"sk-raw-key-value"},
+	}
+
+	out := cloneAndMaskHeaders(in)
+
+	if out["Content-Type"][0] != "application/json" {
+		t.Fatalf("content-type = %+v, want unchanged application/json", out["Content-Type"])
+	}
+	wantAuth := util.MaskSensitiveHeaderValue("Authorization", "Bearer sk-super-secret-token")
+	if out["Authorization"][0] != wantAuth {
+		t.Fatalf("authorization = %+v, want masked %q", out["Authorization"], wantAuth)
+	}
+	if out["Authorization"][0] == "Bearer sk-super-secret-token" {
+		t.Fatalf("authorization value was not masked")
+	}
+	wantKey := util.MaskSensitiveHeaderValue("X-Api-Key", "sk-raw-key-value")
+	if out["X-Api-Key"][0] != wantKey {
+		t.Fatalf("x-api-key = %+v, want masked %q", out["X-Api-Key"], wantKey)
+	}
+	if out["X-Api-Key"][0] == "sk-raw-key-value" {
+		t.Fatalf("x-api-key value was not masked")
+	}
+	// The source map must not be mutated (deep copy semantics).
+	if in["Authorization"][0] != "Bearer sk-super-secret-token" {
+		t.Fatalf("input headers were mutated: %+v", in["Authorization"])
+	}
+}
+
+func TestFileRequestLogger_HomeStreaming_MasksSensitiveHeaders(t *testing.T) {
+	original := currentHomeRequestLogClient
+	defer func() {
+		currentHomeRequestLogClient = original
+	}()
+
+	stub := &stubHomeRequestLogClient{heartbeatOK: true}
+	currentHomeRequestLogClient = func() homeRequestLogClient {
+		return stub
+	}
+
+	logsDir := t.TempDir()
+	logger := NewFileRequestLogger(true, logsDir, "", 0)
+	logger.SetHomeEnabled(true)
+
+	writer, errLog := logger.LogStreamingRequest(
+		"/v1/responses",
+		http.MethodPost,
+		map[string][]string{
+			"Content-Type":  {"application/json"},
+			"Authorization": {"Bearer sk-secret-streaming"},
+			"X-Api-Key":     {"sk-abcdef-streaming"},
+		},
+		[]byte(`{"input":"hello"}`),
+		"stream-mask-1",
+	)
+	if errLog != nil {
+		t.Fatalf("LogStreamingRequest error: %v", errLog)
+	}
+	if errStatus := writer.WriteStatus(http.StatusOK, map[string][]string{"Content-Type": {"text/event-stream"}}); errStatus != nil {
+		t.Fatalf("WriteStatus error: %v", errStatus)
+	}
+	writer.WriteChunkAsync([]byte("data: ok\n\n"))
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("Close error: %v", errClose)
+	}
+
+	if len(stub.pushed) != 1 {
+		t.Fatalf("home pushed records = %d, want 1", len(stub.pushed))
+	}
+	if body := string(stub.pushed[0]); strings.Contains(body, "sk-secret-streaming") || strings.Contains(body, "sk-abcdef-streaming") {
+		t.Fatalf("raw secret leaked to Home payload: %s", body)
+	}
+
+	var got struct {
+		Headers map[string][]string `json:"headers"`
+	}
+	if errUnmarshal := json.Unmarshal(stub.pushed[0], &got); errUnmarshal != nil {
+		t.Fatalf("unmarshal payload: %v payload=%s", errUnmarshal, string(stub.pushed[0]))
+	}
+	if wantAuth := util.MaskSensitiveHeaderValue("Authorization", "Bearer sk-secret-streaming"); got.Headers["Authorization"][0] != wantAuth {
+		t.Fatalf("headers.authorization = %+v, want masked %q", got.Headers["Authorization"], wantAuth)
+	}
+	if wantKey := util.MaskSensitiveHeaderValue("X-Api-Key", "sk-abcdef-streaming"); got.Headers["X-Api-Key"][0] != wantKey {
+		t.Fatalf("headers.x-api-key = %+v, want masked %q", got.Headers["X-Api-Key"], wantKey)
+	}
+	if got.Headers["Content-Type"][0] != "application/json" {
+		t.Fatalf("headers.content-type = %+v, want application/json", got.Headers["Content-Type"])
 	}
 }
 
