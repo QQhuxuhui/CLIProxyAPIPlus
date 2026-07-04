@@ -73,6 +73,70 @@ func TestAggregator_QueryAccountFilterAndFlushReload(t *testing.T) {
 	}
 }
 
+// memHasDay reports whether day is resident in a.mem (test helper).
+func (a *aggregator) memHasDay(day string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.mem[day]
+	return ok
+}
+
+// TestAggregator_EvictStaleMemDays asserts the in-memory day map is bounded to
+// today+yesterday: an old, already-persisted day is evicted from a.mem yet its
+// counts remain queryable from disk; a dirty (unsaved) old day is never
+// evicted; today and yesterday stay resident. It fails if eviction is a no-op
+// (old day would linger in a.mem forever).
+func TestAggregator_EvictStaleMemDays(t *testing.T) {
+	dir := t.TempDir()
+	a := newAggregator(dir)
+	a.setEnabled(true)
+
+	now := time.Date(2026, 7, 3, 10, 0, 0, 0, time.Local)
+	today := now.Format(dayLayout)
+	yesterday := now.AddDate(0, 0, -1).Format(dayLayout)
+	old := now.AddDate(0, 0, -5) // 5 days ago -> outside retention window
+	oldDay := old.Format(dayLayout)
+
+	rec := func(ts time.Time) coreusage.Record {
+		return coreusage.Record{AuthIndex: "1", Model: "m", RequestedAt: ts, Failed: false}
+	}
+	a.HandleUsage(context.Background(), rec(old))
+	a.HandleUsage(context.Background(), rec(now.AddDate(0, 0, -1)))
+	a.HandleUsage(context.Background(), rec(now))
+
+	// Persist so the old day can be safely evicted.
+	a.flush()
+	a.evictStaleMemDays(now)
+
+	if a.memHasDay(oldDay) {
+		t.Fatalf("old day %s still resident in a.mem after eviction", oldDay)
+	}
+	if !a.memHasDay(today) {
+		t.Fatalf("today %s must remain resident", today)
+	}
+	if !a.memHasDay(yesterday) {
+		t.Fatalf("yesterday %s must remain resident", yesterday)
+	}
+
+	// Evicted day is transparently reloaded from disk on query.
+	stats, err := a.query(old, old, "1")
+	if err != nil {
+		t.Fatalf("query old day: %v", err)
+	}
+	if len(stats) != 1 || len(stats[0].Models) != 1 || stats[0].Models[0].Success != 1 {
+		t.Fatalf("evicted old day lost counts on disk-reload: %+v", stats)
+	}
+
+	// A dirty (unsaved) old day must not be evicted.
+	dirtyOld := now.AddDate(0, 0, -6)
+	dirtyOldDay := dirtyOld.Format(dayLayout)
+	a.HandleUsage(context.Background(), rec(dirtyOld)) // marks day dirty, not flushed
+	a.evictStaleMemDays(now)
+	if !a.memHasDay(dirtyOldDay) {
+		t.Fatalf("dirty old day %s must not be evicted before it is persisted", dirtyOldDay)
+	}
+}
+
 // TestAggregator_ConcurrentRecordAndQuery drives HandleUsage and query
 // concurrently so the -race run actually exercises the mem-map lock. Without
 // real concurrency the race detector finds nothing — a placebo test.
