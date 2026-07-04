@@ -95,7 +95,7 @@ func TestBuildModelStatesEntry_TimeAwareFiltering(t *testing.T) {
 }
 
 func TestBuildModelStatesEntry_ExposesQuota(t *testing.T) {
-	reset := time.Date(2026, 7, 3, 13, 11, 31, 0, time.UTC)
+	reset := time.Now().Add(2 * time.Hour)
 	auth := &coreauth.Auth{
 		ID:       "auth-1",
 		Provider: "antigravity",
