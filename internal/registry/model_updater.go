@@ -17,6 +17,10 @@ import (
 const (
 	modelsFetchTimeout    = 30 * time.Second
 	modelsRefreshInterval = 3 * time.Hour
+	// maxModelsResponseBytes bounds the models.json response body read so a compromised or
+	// misbehaving host cannot exhaust process memory. models.json is small (tens of KB);
+	// 5 MiB is a comfortable ceiling well above any legitimate catalog.
+	maxModelsResponseBytes int64 = 5 << 20
 )
 
 var modelsURLs = []string{
@@ -165,12 +169,16 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			continue
 		}
 
-		data, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsResponseBytes+1))
 		resp.Body.Close()
 		cancel()
 
 		if err != nil {
 			log.Debugf("models fetch read error from %s: %v", url, err)
+			continue
+		}
+		if int64(len(data)) > maxModelsResponseBytes {
+			log.Warnf("models fetch from %s exceeded maximum allowed size of %d bytes, skipping", url, maxModelsResponseBytes)
 			continue
 		}
 
