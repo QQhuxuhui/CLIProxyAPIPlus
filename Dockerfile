@@ -39,4 +39,12 @@ ENV TZ=Asia/Shanghai
 
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
 
+# Run as a dedicated non-root user. HOME is /CLIProxyAPI so "~" resolves there,
+# and chown makes the app dir writable for config/auth/logs at runtime.
+RUN groupadd -r cliproxy && useradd -r -g cliproxy -d /CLIProxyAPI cliproxy
+
+RUN chown -R cliproxy:cliproxy /CLIProxyAPI
+
+USER cliproxy
+
 CMD ["./CLIProxyAPI"]
