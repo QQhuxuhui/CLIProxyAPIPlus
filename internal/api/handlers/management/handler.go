@@ -71,14 +71,6 @@ type configReloadSnapshot struct {
 func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Manager) *Handler {
 	envSecret, _ := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envSecret = strings.TrimSpace(envSecret)
-	allowRemoteOverride := envSecret != ""
-
-	if allowRemoteOverride && cfg != nil && !cfg.RemoteManagement.AllowRemote {
-		log.Warn("MANAGEMENT_PASSWORD is set: forcing remote management access to be allowed, " +
-			"overriding remote-management.allow-remote=false in config.yaml. " +
-			"Set remote-management.allow-remote: true explicitly if this is intended, " +
-			"or unset MANAGEMENT_PASSWORD to respect the configured value.")
-	}
 
 	h := &Handler{
 		cfg:                 cfg,
@@ -86,7 +78,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		failedAttempts:      make(map[string]*attemptInfo),
 		authManager:         manager,
 		tokenStore:          sdkAuth.GetTokenStore(),
-		allowRemoteOverride: allowRemoteOverride,
+		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 	}
 	h.startAttemptCleanup()

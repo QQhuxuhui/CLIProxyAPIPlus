@@ -24,26 +24,6 @@ const (
 	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 	DefaultPprofAddr             = "127.0.0.1:8316"
 	DefaultAuthDir               = "~/.cli-proxy-api"
-
-	// DefaultRequestMaxBodyBytes is the default cap (in bytes) applied to client
-	// request bodies on the data-plane API when request-max-body-bytes is unset or
-	// invalid (<= 0). 32 MiB comfortably covers legitimate payloads (e.g. base64
-	// image generation/edit requests) while bounding memory use per request.
-	DefaultRequestMaxBodyBytes int64 = 32 << 20 // 32 MiB
-
-	// ManagementRequestMaxBodyBytes is a fixed, higher body-size ceiling applied to
-	// the Management API, which legitimately handles larger payloads than the
-	// data-plane default (full config.yaml uploads, auth-file imports, plugin
-	// bundles).
-	ManagementRequestMaxBodyBytes int64 = 128 << 20 // 128 MiB
-
-	// DefaultRateLimitRequestsPerSecond is the sustained request rate used by the
-	// optional rate limiter when enabled without an explicit requests-per-second value.
-	DefaultRateLimitRequestsPerSecond = 5.0
-
-	// DefaultRateLimitBurst is the burst size used by the optional rate limiter when
-	// enabled without an explicit burst value.
-	DefaultRateLimitBurst = 20
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -54,40 +34,6 @@ type Config struct {
 	Host string `yaml:"host" json:"-"`
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
-
-	// TrustedProxies lists CIDR ranges (or bare IPs) of reverse proxies allowed to
-	// influence the client IP resolved by gin's ClientIP() via the
-	// X-Forwarded-For/X-Real-IP headers. Default is empty: no proxy is trusted, so
-	// ClientIP() always returns the real TCP peer address. Only populate this when
-	// the server sits behind a known, trusted reverse proxy; otherwise a remote
-	// client could spoof these headers (e.g. claim to be 127.0.0.1) to bypass the
-	// management API's localhost gate and its brute-force lockout, both of which
-	// key off ClientIP().
-	TrustedProxies []string `yaml:"trusted-proxies" json:"-"`
-
-	// RequestMaxBodyBytes caps the size (in bytes) of client request bodies accepted
-	// on the data-plane API, guarding against memory-exhaustion from oversized
-	// uploads. Values <= 0 fall back to DefaultRequestMaxBodyBytes (32 MiB). The
-	// Management API always uses a separate, higher fixed ceiling
-	// (ManagementRequestMaxBodyBytes) since it legitimately handles larger payloads
-	// (auth-file/config imports).
-	RequestMaxBodyBytes int64 `yaml:"request-max-body-bytes" json:"-"`
-
-	// CORSAllowedOrigins restricts the Access-Control-Allow-Origin values the server
-	// emits. Default empty preserves the historical permissive "*" behavior on the
-	// data-plane API for backward compatibility, but the Management API
-	// (/v0/management/*) never receives a wildcard: with this list empty,
-	// management responses omit CORS headers entirely (same-origin only).
-	// Populate it with explicit origins to allow specific cross-origin admin UIs;
-	// Access-Control-Allow-Credentials is never emitted, so wildcard entries here
-	// cannot be combined with credentialed CORS requests.
-	CORSAllowedOrigins []string `yaml:"cors-allowed-origins" json:"-"`
-
-	// RateLimit configures an optional per-key/per-IP token-bucket limiter applied
-	// to the data-plane API route groups (/v1, /openai/v1, /backend-api/codex,
-	// /v1beta). Disabled by default so existing deployments are unaffected unless
-	// explicitly opted in.
-	RateLimit RateLimitConfig `yaml:"rate-limit" json:"-"`
 
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
@@ -365,21 +311,6 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
-}
-
-// RateLimitConfig controls the optional token-bucket rate limiter applied to the
-// data-plane API route groups. Disabled by default so existing deployments are
-// unaffected until an operator explicitly opts in.
-type RateLimitConfig struct {
-	// Enabled turns on rate limiting. Default: false.
-	Enabled bool `yaml:"enabled"`
-	// RequestsPerSecond is the sustained request rate allowed per limiter key (the
-	// authenticated API key, or the client IP when no key is available). Values <= 0
-	// fall back to DefaultRateLimitRequestsPerSecond when Enabled is true.
-	RequestsPerSecond float64 `yaml:"requests-per-second"`
-	// Burst is the maximum number of requests allowed in a short burst above the
-	// sustained rate. Values <= 0 fall back to DefaultRateLimitBurst when Enabled is true.
-	Burst int `yaml:"burst"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
@@ -790,9 +721,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
-	cfg.RequestMaxBodyBytes = DefaultRequestMaxBodyBytes
-	cfg.RateLimit.RequestsPerSecond = DefaultRateLimitRequestsPerSecond
-	cfg.RateLimit.Burst = DefaultRateLimitBurst
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -846,20 +774,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.MaxRetryCredentials = 0
 	}
 
-	if cfg.RequestMaxBodyBytes <= 0 {
-		cfg.RequestMaxBodyBytes = DefaultRequestMaxBodyBytes
-	}
-
-	if cfg.RateLimit.RequestsPerSecond <= 0 {
-		cfg.RateLimit.RequestsPerSecond = DefaultRateLimitRequestsPerSecond
-	}
-	if cfg.RateLimit.Burst <= 0 {
-		cfg.RateLimit.Burst = DefaultRateLimitBurst
-	}
-
-	cfg.TrustedProxies = normalizeStringList(cfg.TrustedProxies)
-	cfg.CORSAllowedOrigins = normalizeStringList(cfg.CORSAllowedOrigins)
-
 	cfg.NormalizePluginsConfig()
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
@@ -894,23 +808,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
-}
-
-// normalizeStringList trims whitespace and drops empty entries from a string slice.
-// A nil or empty input returns nil unchanged so YAML round-trips keep an omitted key omitted.
-func normalizeStringList(values []string) []string {
-	if len(values) == 0 {
-		return values
-	}
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		out = append(out, v)
-	}
-	return out
 }
 
 // NormalizePluginsConfig applies default plugin configuration values.
