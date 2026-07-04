@@ -519,23 +519,16 @@ func TestApplyCodexWebsocketHeadersUsesCanonicalAccountHeader(t *testing.T) {
 func TestApplyCodexPromptCacheHeadersSetsSessionIDAndLegacyConversation(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"cache-1"}`)}
 
-	// The client prompt_cache_key is caller-scoped before it is forwarded as
-	// session_id / Conversation_id, so drive it with a caller context and expect
-	// the scoped value.
-	wantKey := scopedReplayKey("cache-1")
-	_, headers, errCache := applyCodexPromptCacheHeadersWithContext(codexReplayTestContext(), "openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
-	if errCache != nil {
-		t.Fatalf("applyCodexPromptCacheHeadersWithContext error: %v", errCache)
-	}
+	_, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
 
-	if got := headers["session_id"]; len(got) != 1 || got[0] != wantKey {
-		t.Fatalf("session_id = %#v, want [%q]", got, wantKey)
+	if got := headers["session_id"]; len(got) != 1 || got[0] != "cache-1" {
+		t.Fatalf("session_id = %#v, want [cache-1]", got)
 	}
 	if got := headers.Get("Session-Id"); got != "" {
 		t.Fatalf("Session-Id = %s, want empty", got)
 	}
-	if got := headers.Get("Conversation_id"); got != wantKey {
-		t.Fatalf("Conversation_id = %s, want %q", got, wantKey)
+	if got := headers.Get("Conversation_id"); got != "cache-1" {
+		t.Fatalf("Conversation_id = %s, want cache-1", got)
 	}
 }
 
@@ -555,17 +548,8 @@ func TestApplyCodexPromptCacheHeadersClaudeUsesClaudeCodeSessionID(t *testing.T)
 		}`),
 	}
 
-	// Prompt cache keys are scoped to the authenticated caller, so drive both
-	// requests through one caller context to keep the same session_id sharing.
-	ctx := codexReplayTestContext()
-	firstBody, firstHeaders, errFirst := applyCodexPromptCacheHeadersWithContext(ctx, "claude", firstReq, []byte(`{"model":"gpt-5-codex"}`))
-	if errFirst != nil {
-		t.Fatalf("first prompt cache error: %v", errFirst)
-	}
-	secondBody, secondHeaders, errSecond := applyCodexPromptCacheHeadersWithContext(ctx, "claude", secondReq, []byte(`{"model":"gpt-5-codex"}`))
-	if errSecond != nil {
-		t.Fatalf("second prompt cache error: %v", errSecond)
-	}
+	firstBody, firstHeaders := applyCodexPromptCacheHeaders("claude", firstReq, []byte(`{"model":"gpt-5-codex"}`))
+	secondBody, secondHeaders := applyCodexPromptCacheHeaders("claude", secondReq, []byte(`{"model":"gpt-5-codex"}`))
 
 	firstKey := gjson.GetBytes(firstBody, "prompt_cache_key").String()
 	secondKey := gjson.GetBytes(secondBody, "prompt_cache_key").String()
@@ -605,42 +589,6 @@ func TestApplyCodexPromptCacheHeadersClaudeRejectsBareUserID(t *testing.T) {
 	}
 }
 
-// TestApplyCodexPromptCacheHeadersOpenAIResponseIsolatesCallers asserts the
-// websocket OpenAIResponse prompt_cache_key passthrough is scoped to the
-// authenticated caller before it becomes session_id / Conversation_id.
-// Reverting the ScopeSessionKeyToCaller call in the WithContext OpenAIResponse
-// branch makes both callers forward the raw "shared-ws-openai-session" and
-// fails this test.
-func TestApplyCodexPromptCacheHeadersOpenAIResponseIsolatesCallers(t *testing.T) {
-	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"shared-ws-openai-session"}`)}
-	rawJSON := []byte(`{"model":"gpt-5-codex"}`)
-
-	_, headersA, errA := applyCodexPromptCacheHeadersWithContext(codexReplaySessionOnlyContext("caller-A"), "openai-response", req, rawJSON)
-	if errA != nil {
-		t.Fatalf("caller-A error: %v", errA)
-	}
-	_, headersB, errB := applyCodexPromptCacheHeadersWithContext(codexReplaySessionOnlyContext("caller-B"), "openai-response", req, rawJSON)
-	if errB != nil {
-		t.Fatalf("caller-B error: %v", errB)
-	}
-	keyA := headerValueCaseInsensitive(headersA, "session_id")
-	keyB := headerValueCaseInsensitive(headersB, "session_id")
-	if keyA == "" || keyB == "" {
-		t.Fatalf("expected session_id headers, got a=%q b=%q", keyA, keyB)
-	}
-	if keyA == keyB {
-		t.Fatalf("different callers must not share websocket prompt_cache_key: %q", keyA)
-	}
-
-	_, headersNone, errNone := applyCodexPromptCacheHeadersWithContext(context.Background(), "openai-response", req, rawJSON)
-	if errNone != nil {
-		t.Fatalf("no-caller error: %v", errNone)
-	}
-	if got := headerValueCaseInsensitive(headersNone, "session_id"); got != "" {
-		t.Fatalf("no caller must fail closed (no session_id), got %q", got)
-	}
-}
-
 func TestApplyCodexWebsocketHeadersIdentityConfuseRemapsPromptCacheKey(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{SessionAffinity: true},
@@ -652,12 +600,7 @@ func TestApplyCodexWebsocketHeadersIdentityConfuseRemapsPromptCacheKey(t *testin
 		Payload: []byte(`{"prompt_cache_key":"cache-ws-1","client_metadata":{"x-codex-installation-id":"install-ws-1"}}`),
 	}
 
-	// A caller context is required now that the prompt_cache_key passthrough is
-	// caller-scoped; identity-confuse then remaps the value from the raw payload.
-	body, headers, errCache := applyCodexPromptCacheHeadersWithContext(codexReplayTestContext(), "openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
-	if errCache != nil {
-		t.Fatalf("applyCodexPromptCacheHeadersWithContext error: %v", errCache)
-	}
+	body, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
 	body, identityState := applyCodexIdentityConfuseBody(cfg, auth, req.Payload, body)
 	ctx := contextWithGinHeaders(map[string]string{
 		"X-Codex-Turn-Metadata": `{"prompt_cache_key":"cache-ws-1","turn_id":"turn-ws-1","window_id":"cache-ws-1:0"}`,

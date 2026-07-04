@@ -44,19 +44,6 @@ func antigravityReasoningReplayScopeFromPayload(modelName string, payload []byte
 }
 
 func antigravityReasoningReplayScopeFromRequest(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, payload []byte) antigravityReasoningReplayScope {
-	scope := antigravityReasoningReplayScopeFromRequestRaw(modelName, req, opts, payload)
-	if !scope.valid() {
-		return scope
-	}
-	// Bind the client-derived session key to the authenticated caller so a
-	// guessed or reused session id from another tenant maps to a different
-	// cache entry. An unidentifiable caller yields an empty key -> invalid scope
-	// -> cache disabled (fail closed).
-	scope.sessionKey = helps.ScopeSessionKeyToCaller(ctx, scope.sessionKey)
-	return scope
-}
-
-func antigravityReasoningReplayScopeFromRequestRaw(modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, payload []byte) antigravityReasoningReplayScope {
 	if scope := antigravityReasoningReplayScopeFromPayload(modelName, payload); scope.valid() {
 		return scope
 	}
@@ -69,6 +56,7 @@ func antigravityReasoningReplayScopeFromRequestRaw(modelName string, req cliprox
 	if value := metadataString(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
 		return antigravityReasoningReplayScope{modelName: modelName, sessionKey: "execution:" + value}
 	}
+	_ = ctx
 	return antigravityReasoningReplayScope{}
 }
 

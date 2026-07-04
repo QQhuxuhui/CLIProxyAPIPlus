@@ -20,9 +20,7 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
 
 	model := "gemini-3-flash-agent"
-	// Replay session keys are scoped to the authenticated caller; seed and assert
-	// under the scoped key and drive Execute with the matching caller context.
-	sessionKey := scopedReplayKey("session:pr3900-invalid-sig")
+	sessionKey := "session:pr3900-invalid-sig"
 	bad := []byte(`{"type":"thought_signature","thoughtSignature":"INVALID_REPLAY_SIGNATURE_PR3900_XXXXXXXXX","contentIndex":1,"partIndex":0}`)
 	if !internalcache.CacheAntigravityReasoningReplayItems(model, sessionKey, [][]byte{bad}) {
 		t.Fatal("failed to seed replay cache")
@@ -50,7 +48,7 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 	}
 
 	payload := []byte(`{"sessionId":"pr3900-invalid-sig","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"user","parts":[{"functionResponse":{"id":"id1","name":"Bash","response":{"result":"ok"}}}]}]}}`)
-	_, err := exec.Execute(codexReplayTestContext(), auth, cliproxyexecutor.Request{
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   model,
 		Payload: payload,
 	}, cliproxyexecutor.Options{
