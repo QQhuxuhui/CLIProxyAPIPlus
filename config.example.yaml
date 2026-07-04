@@ -6,9 +6,6 @@ host: ""
 port: 8317
 
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
-# SECURITY: TLS is DISABLED by default, so the server serves PLAINTEXT HTTP. If this server is
-# reachable beyond localhost, terminate TLS in front of it (a reverse proxy) or set enable: true
-# with a valid cert/key - otherwise API keys and request/response content travel unencrypted.
 tls:
   enable: false
   cert: ""
