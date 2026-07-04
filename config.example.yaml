@@ -100,6 +100,15 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# When true, enable persistent per-account per-model call-count aggregation
+# (day-bucketed on disk). This is a DIFFERENT feature from usage-statistics-enabled
+# above, which only toggles the in-memory usage queue. Default: false.
+usage-stats-enabled: false
+
+# How many days of usage-stats day files (from usage-stats-enabled above) to keep
+# on disk before older files are swept. Default: 90.
+usage-stats-retention-days: 90
+
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.

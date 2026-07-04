@@ -1887,6 +1887,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		// Persist any usage-stats counts accumulated since the last periodic
+		// flush so a graceful shutdown never loses in-memory counters.
+		usagestats.Flush()
+
 		usage.StopDefault()
 	})
 	return shutdownErr
