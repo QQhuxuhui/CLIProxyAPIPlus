@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/test"
 )
 
 func TestAuthenticateManagementKey_LocalhostIPBan_BlocksCorrectKeyDuringBan(t *testing.T) {
@@ -85,4 +87,71 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
 		}
 	})
+}
+
+// TestNewHandlerWarnsWhenEnvPasswordOverridesExplicitAllowRemoteFalse verifies that
+// setting MANAGEMENT_PASSWORD while remote-management.allow-remote is false (the
+// documented safe default) emits a prominent startup warning, since the env var
+// silently forces remote management access to be allowed regardless of that
+// setting (behavior unchanged; this only adds visibility for operators).
+func TestNewHandlerWarnsWhenEnvPasswordOverridesExplicitAllowRemoteFalse(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-env-secret")
+
+	hook := test.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	cfg := &config.Config{RemoteManagement: config.RemoteManagement{AllowRemote: false}}
+	h := NewHandler(cfg, "", nil)
+
+	if !h.allowRemoteOverride {
+		t.Fatal("expected allowRemoteOverride to be true when MANAGEMENT_PASSWORD is set")
+	}
+
+	var found bool
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == log.WarnLevel && strings.Contains(entry.Message, "MANAGEMENT_PASSWORD") && strings.Contains(entry.Message, "allow-remote") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning log about MANAGEMENT_PASSWORD overriding allow-remote=false, got entries: %+v", hook.AllEntries())
+	}
+}
+
+// TestNewHandlerNoWarnWhenAllowRemoteAlreadyTrue verifies the warning only fires
+// when the env var actually changes effective behavior versus the configured value.
+func TestNewHandlerNoWarnWhenAllowRemoteAlreadyTrue(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-env-secret")
+
+	hook := test.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	cfg := &config.Config{RemoteManagement: config.RemoteManagement{AllowRemote: true}}
+	_ = NewHandler(cfg, "", nil)
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == log.WarnLevel && strings.Contains(entry.Message, "MANAGEMENT_PASSWORD") {
+			t.Fatalf("did not expect an override warning when allow-remote is already true, got: %q", entry.Message)
+		}
+	}
+}
+
+// TestNewHandlerNoWarnWithoutEnvPassword verifies no override warning fires when
+// MANAGEMENT_PASSWORD is not set at all.
+func TestNewHandlerNoWarnWithoutEnvPassword(t *testing.T) {
+	hook := test.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	cfg := &config.Config{RemoteManagement: config.RemoteManagement{AllowRemote: false}}
+	h := NewHandler(cfg, "", nil)
+
+	if h.allowRemoteOverride {
+		t.Fatal("expected allowRemoteOverride to be false without MANAGEMENT_PASSWORD")
+	}
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == log.WarnLevel && strings.Contains(entry.Message, "MANAGEMENT_PASSWORD") {
+			t.Fatalf("did not expect an override warning without MANAGEMENT_PASSWORD, got: %q", entry.Message)
+		}
+	}
 }

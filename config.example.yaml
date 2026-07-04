@@ -5,6 +5,35 @@ host: ""
 # Server port
 port: 8317
 
+# CIDR ranges (or bare IPs) of reverse proxies allowed to set the client IP via the
+# X-Forwarded-For/X-Real-IP headers. Default is empty: no proxy is trusted, so the
+# real TCP peer address is always used. Only set this when the server sits behind a
+# known, trusted reverse proxy - otherwise a remote client could spoof these headers
+# to impersonate 127.0.0.1 and bypass the management API's localhost gate.
+# trusted-proxies:
+#   - "127.0.0.1/32"
+
+# Caps the size (in bytes) of client request bodies on the data-plane API. Default:
+# 33554432 (32 MiB) when unset or <= 0. The Management API always uses a separate,
+# higher fixed ceiling (128 MiB) since it legitimately handles larger payloads
+# (auth-file/config imports).
+# request-max-body-bytes: 33554432
+
+# Restricts the Access-Control-Allow-Origin values the server emits. Default empty
+# keeps the permissive "*" behavior on the data-plane API for backward
+# compatibility, but the Management API never uses a wildcard: with this left
+# empty, management responses omit CORS headers entirely (same-origin only).
+# cors-allowed-origins:
+#   - "https://example.com"
+
+# Optional per-key/per-IP token-bucket rate limiter for the data-plane API
+# (/v1, /openai/v1, /backend-api/codex, /v1beta). Disabled by default so existing
+# deployments are unaffected unless explicitly opted in.
+rate-limit:
+  enabled: false
+  # requests-per-second: 5
+  # burst: 20
+
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:
   enable: false

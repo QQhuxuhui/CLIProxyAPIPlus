@@ -239,6 +239,10 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	// rateLimiter enforces the optional, default-disabled per-key/per-IP token
+	// bucket limiter on data-plane route groups.
+	rateLimiter *middleware.RateLimiter
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -265,6 +269,17 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
+	// Restrict trusted proxies to the operator-configured list (default: none), so
+	// gin's ClientIP() always falls back to the real TCP peer address unless a
+	// reverse proxy is explicitly trusted. This must run before any middleware or
+	// handler that relies on ClientIP() (e.g. the management API's localhost gate
+	// and its brute-force lockout, both keyed by ClientIP()) — otherwise gin's
+	// default of trusting every proxy would let a remote client spoof
+	// X-Forwarded-For to impersonate 127.0.0.1.
+	if errTrustedProxies := engine.SetTrustedProxies(cfg.TrustedProxies); errTrustedProxies != nil {
+		log.Errorf("invalid trusted-proxies configuration, falling back to no trusted proxies: %v", errTrustedProxies)
+		_ = engine.SetTrustedProxies(nil)
+	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
@@ -292,7 +307,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 	}
 
-	engine.Use(corsMiddleware())
+	// CORS and body-size-limit middleware are registered below, once the Server
+	// instance exists, since both read cfg dynamically off s.cfg so config
+	// hot-reloads (management API config changes) take effect without a restart.
 	wd, err := os.Getwd()
 	if err != nil {
 		wd = configFilePath
@@ -315,8 +332,14 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+		rateLimiter:         middleware.NewRateLimiter(),
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	// General body-size cap for everything except the Management API (which gets
+	// its own, higher fixed ceiling applied per-route/group below) and CORS both
+	// read s.cfg dynamically so they honor config hot-reloads.
+	engine.Use(s.generalBodySizeLimitMiddleware())
+	engine.Use(s.corsMiddleware())
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
@@ -376,10 +399,20 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
 	}
 
-	// Create HTTP server
+	// Create HTTP server.
+	// ReadHeaderTimeout/ReadTimeout are accept-side guards against slow-header /
+	// slow-body ("Slowloris") clients holding connections open indefinitely; they
+	// only bound how long we wait to finish reading an incoming request and mirror
+	// the 5s ReadHeaderTimeout already used by other servers in this codebase
+	// (auth_files.go, pprof_server.go, xai.go). Deliberately no WriteTimeout/
+	// IdleTimeout here: once a request is accepted this proxy streams SSE/chunked
+	// responses that may legitimately run far longer than any fixed write deadline,
+	// and AGENTS.md forbids timeouts on established upstream connections.
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           engine,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       60 * time.Second,
 	}
 
 	return s
@@ -430,7 +463,7 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -450,7 +483,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
-	openaiV1.Use(AuthMiddleware(s.accessManager))
+	openaiV1.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -459,7 +492,7 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -468,7 +501,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(AuthMiddleware(s.accessManager), s.rateLimitMiddleware())
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -596,11 +629,11 @@ func (s *Server) registerManagementRoutes() {
 
 	log.Info("management routes registered after secret key configuration")
 
-	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
-	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+	s.engine.POST("/v0/management/oauth-callback", middleware.BodySizeLimit(config.ManagementRequestMaxBodyBytes), s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
+	s.engine.GET("/v0/management/oauth-callback", middleware.BodySizeLimit(config.ManagementRequestMaxBodyBytes), s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	mgmt.Use(middleware.BodySizeLimit(config.ManagementRequestMaxBodyBytes), s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
@@ -813,6 +846,12 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 	}
 	if !s.managementAvailable(c) {
 		return
+	}
+	// This dynamic dispatch path bypasses the registered "/v0/management" route
+	// group (and thus its Use() middleware), so the management body-size cap must
+	// be (re)applied here explicitly.
+	if c.Request.Body != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, config.ManagementRequestMaxBodyBytes)
 	}
 	s.mgmt.Middleware()(c)
 	if c.IsAborted() {
@@ -1526,6 +1565,8 @@ func (s *Server) Start() error {
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
 
+	s.rateLimiter.Stop()
+
 	if s.keepAliveEnabled {
 		select {
 		case s.keepAliveStop <- struct{}{}:
@@ -1551,14 +1592,37 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// corsMiddleware returns a Gin middleware handler that adds CORS headers
-// to every response, allowing cross-origin requests.
-//
-// Returns:
-//   - gin.HandlerFunc: The CORS middleware handler
-func corsMiddleware() gin.HandlerFunc {
+// corsMiddleware returns a Gin middleware handler that adds CORS headers to every
+// response. By default (no cors-allowed-origins configured) it preserves the
+// historical, backward-compatible permissive behavior for the data-plane API
+// ("*"), but the Management API (/v0/management/*) never receives a wildcard:
+// with no explicit allow-list configured, management responses omit
+// Access-Control-Allow-Origin entirely (i.e. cross-origin JS cannot read
+// responses), since that surface already carries the privileged management
+// secret and must not gain an extra, unnecessary cross-origin attack surface.
+// Access-Control-Allow-Credentials is never emitted, so a configured wildcard
+// entry can never be paired with credentialed CORS requests.
+func (s *Server) corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		isManagement := c.Request != nil && c.Request.URL != nil && isManagementPath(c.Request.URL.Path)
+
+		var allowedOrigins []string
+		if s != nil && s.cfg != nil {
+			allowedOrigins = s.cfg.CORSAllowedOrigins
+		}
+
+		switch {
+		case len(allowedOrigins) > 0:
+			if origin != "" && originInAllowList(origin, allowedOrigins) {
+				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Vary", "Origin")
+			}
+		case !isManagement:
+			// Backward-compatible default for the data-plane API only.
+			c.Header("Access-Control-Allow-Origin", "*")
+		}
+
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "*")
 		c.Header("Access-Control-Expose-Headers", corsExposedResponseHeadersJoined)
@@ -1570,6 +1634,77 @@ func corsMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// originInAllowList reports whether origin matches an entry in allowed, either
+// literally (case-insensitive) or via an explicit "*" wildcard entry.
+func originInAllowList(origin string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if candidate == "*" || strings.EqualFold(candidate, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+// isManagementPath reports whether path belongs to the Management API surface.
+func isManagementPath(path string) bool {
+	return path == "/v0/management" || strings.HasPrefix(path, "/v0/management/")
+}
+
+// effectiveRequestMaxBodyBytes returns the configured data-plane body-size cap,
+// falling back to config.DefaultRequestMaxBodyBytes when unset or invalid.
+func (s *Server) effectiveRequestMaxBodyBytes() int64 {
+	if s != nil && s.cfg != nil && s.cfg.RequestMaxBodyBytes > 0 {
+		return s.cfg.RequestMaxBodyBytes
+	}
+	return config.DefaultRequestMaxBodyBytes
+}
+
+// generalBodySizeLimitMiddleware caps client request body size for every route
+// except the Management API, which is capped separately (and more generously,
+// since it legitimately handles larger payloads such as auth-file/config
+// imports) via middleware.BodySizeLimit(config.ManagementRequestMaxBodyBytes)
+// applied to the management route group/handlers directly. Skipping management
+// paths here is required: http.MaxBytesReader cannot be "loosened" by wrapping
+// it again with a larger limit downstream, since the smaller inner cap sticks.
+func (s *Server) generalBodySizeLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request != nil && c.Request.URL != nil && isManagementPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		if c.Request != nil && c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.effectiveRequestMaxBodyBytes())
+		}
+		c.Next()
+	}
+}
+
+// rateLimitMiddleware returns the optional data-plane rate limiter. It reads
+// s.cfg.RateLimit on every request so config hot-reloads take effect immediately,
+// and is a strict no-op unless rate-limit.enabled is set (default: disabled),
+// so existing deployments are never surprised by new throttling behavior.
+func (s *Server) rateLimitMiddleware() gin.HandlerFunc {
+	return s.rateLimiter.Middleware(
+		func() (middleware.RateLimiterConfig, bool) {
+			if s == nil || s.cfg == nil || !s.cfg.RateLimit.Enabled {
+				return middleware.RateLimiterConfig{}, false
+			}
+			return middleware.RateLimiterConfig{
+				RequestsPerSecond: s.cfg.RateLimit.RequestsPerSecond,
+				Burst:             s.cfg.RateLimit.Burst,
+			}, true
+		},
+		func(c *gin.Context) string {
+			if v, ok := c.Get("userApiKey"); ok {
+				if key, ok2 := v.(string); ok2 && key != "" {
+					return "key:" + key
+				}
+			}
+			return ""
+		},
+	)
 }
 
 func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {

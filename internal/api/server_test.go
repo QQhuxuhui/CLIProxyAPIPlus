@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,8 +19,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -929,5 +932,291 @@ func TestQuotaSummaryEndpointRequiresManagementSecret(t *testing.T) {
 	server.engine.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v0/management/quota-summary", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("without secret: status = %d, want 404", rr.Code)
+	}
+}
+
+// TestSpoofedForwardedForDoesNotBypassRemoteManagementGate is a regression test for
+// the fix that calls engine.SetTrustedProxies(cfg.TrustedProxies) (default: empty)
+// immediately after gin.New(). Before that fix, gin trusted every peer as a proxy
+// by default, so a remote client could set X-Forwarded-For: 127.0.0.1 and have
+// gin's ClientIP() report "127.0.0.1", which the management middleware treats as
+// a local, gate-exempt client — bypassing both the allow-remote-management=false
+// restriction and the per-IP brute-force lockout (both keyed by ClientIP()).
+func TestSpoofedForwardedForDoesNotBypassRemoteManagementGate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	hashed, errHash := bcrypt.GenerateFromPassword([]byte("test-secret"), bcrypt.DefaultCost)
+	if errHash != nil {
+		t.Fatalf("failed to hash secret: %v", errHash)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{APIKeys: []string{"test-key"}},
+		AuthDir:   authDir,
+		Debug:     true,
+		RemoteManagement: proxyconfig.RemoteManagement{
+			AllowRemote: false, // explicit, documented safe default
+			SecretKey:   string(hashed),
+		},
+	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	accessManager := sdkaccess.NewManager()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	server := NewServer(cfg, authManager, accessManager, configPath)
+
+	t.Run("spoofed X-Forwarded-For from a remote peer is rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+		// httptest.NewRequest defaults RemoteAddr to the non-local "192.0.2.1:1234".
+		req.Header.Set("X-Forwarded-For", "127.0.0.1")
+		req.Header.Set("Authorization", "Bearer test-secret")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("spoofed X-Forwarded-For bypassed the remote-management gate: status = %d, want %d (body=%s)",
+				rr.Code, http.StatusForbidden, rr.Body.String())
+		}
+	})
+
+	t.Run("genuine localhost peer is still exempt from the gate", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		req.Header.Set("Authorization", "Bearer test-secret")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("genuine localhost request was rejected: status = %d, want %d (body=%s)",
+				rr.Code, http.StatusOK, rr.Body.String())
+		}
+	})
+}
+
+// TestServerListenerHasAcceptSideTimeoutsOnly verifies the primary HTTP listener
+// gets accept-side Slowloris protections (ReadHeaderTimeout/ReadTimeout) while
+// deliberately leaving WriteTimeout/IdleTimeout unset so long-lived streaming
+// (SSE/chunked) responses on already-established connections are never cut off.
+func TestServerListenerHasAcceptSideTimeoutsOnly(t *testing.T) {
+	server := newTestServer(t)
+
+	if got, want := server.server.ReadHeaderTimeout, 5*time.Second; got != want {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", got, want)
+	}
+	if got, want := server.server.ReadTimeout, 60*time.Second; got != want {
+		t.Fatalf("ReadTimeout = %v, want %v", got, want)
+	}
+	if server.server.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 (unset, so streaming responses are never cut off)", server.server.WriteTimeout)
+	}
+	if server.server.IdleTimeout != 0 {
+		t.Fatalf("IdleTimeout = %v, want 0 (unset)", server.server.IdleTimeout)
+	}
+}
+
+// TestCORSDefaultsPreserveDataPlaneWildcardButLockDownManagement verifies the
+// default (no cors-allowed-origins configured) CORS behavior: the data-plane API
+// keeps the historical permissive wildcard for backward compatibility, but the
+// Management API never emits a wildcard (or any Access-Control-Allow-Origin at
+// all, absent an explicit allow-list), since that surface already carries the
+// privileged management secret.
+func TestCORSDefaultsPreserveDataPlaneWildcardButLockDownManagement(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+
+	t.Run("data-plane keeps wildcard", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Origin", "https://evil.example.com")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Fatalf("data-plane Access-Control-Allow-Origin = %q, want %q", got, "*")
+		}
+	})
+
+	t.Run("management omits wildcard by default", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		req.Header.Set("Origin", "https://evil.example.com")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("management Access-Control-Allow-Origin = %q, want empty (no wildcard)", got)
+		}
+		if got := rr.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Fatalf("management Access-Control-Allow-Credentials = %q, want empty (never emitted)", got)
+		}
+	})
+
+	t.Run("management honors an explicit allow-list", func(t *testing.T) {
+		server.cfg.CORSAllowedOrigins = []string{"https://admin.example.com"}
+		defer func() { server.cfg.CORSAllowedOrigins = nil }()
+
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		req.Header.Set("Origin", "https://admin.example.com")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://admin.example.com" {
+			t.Fatalf("management Access-Control-Allow-Origin = %q, want the allow-listed origin", got)
+		}
+
+		unlisted := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+		unlisted.Header.Set("Authorization", "Bearer test-management-key")
+		unlisted.Header.Set("Origin", "https://not-allowed.example.com")
+		unlistedRR := httptest.NewRecorder()
+		server.engine.ServeHTTP(unlistedRR, unlisted)
+		if got := unlistedRR.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("management Access-Control-Allow-Origin for unlisted origin = %q, want empty", got)
+		}
+	})
+}
+
+// TestEffectiveRequestMaxBodyBytesHonorsConfigAndDefault verifies the wiring
+// between cfg.RequestMaxBodyBytes and the general body-size-limit middleware: a
+// configured positive value is honored, and an unset/invalid value falls back to
+// the documented default.
+func TestEffectiveRequestMaxBodyBytesHonorsConfigAndDefault(t *testing.T) {
+	server := newTestServer(t)
+
+	server.cfg.RequestMaxBodyBytes = 12345
+	if got := server.effectiveRequestMaxBodyBytes(); got != 12345 {
+		t.Fatalf("effectiveRequestMaxBodyBytes() = %d, want configured 12345", got)
+	}
+
+	server.cfg.RequestMaxBodyBytes = 0
+	if got := server.effectiveRequestMaxBodyBytes(); got != proxyconfig.DefaultRequestMaxBodyBytes {
+		t.Fatalf("effectiveRequestMaxBodyBytes() = %d, want default %d when unset", got, proxyconfig.DefaultRequestMaxBodyBytes)
+	}
+
+	server.cfg.RequestMaxBodyBytes = -1
+	if got := server.effectiveRequestMaxBodyBytes(); got != proxyconfig.DefaultRequestMaxBodyBytes {
+		t.Fatalf("effectiveRequestMaxBodyBytes() = %d, want default %d when negative", got, proxyconfig.DefaultRequestMaxBodyBytes)
+	}
+}
+
+// TestBodySizeLimitWiringRejectsOversizedNonManagementBodyButExemptsManagement
+// verifies end-to-end that the general body-size-limit middleware registered in
+// NewServer actually enforces cfg.RequestMaxBodyBytes on a non-management route,
+// while the Management API path is exempt from that (smaller) general cap since
+// it is capped separately and more generously (see the mgmt route group's own
+// middleware.BodySizeLimit(config.ManagementRequestMaxBodyBytes)).
+func TestBodySizeLimitWiringRejectsOversizedNonManagementBodyButExemptsManagement(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServerWithOptions(t, WithRouterConfigurator(func(engine *gin.Engine, _ *handlers.BaseAPIHandler, _ *proxyconfig.Config) {
+		echo := func(c *gin.Context) {
+			data, err := io.ReadAll(c.Request.Body)
+			if err != nil {
+				c.String(http.StatusRequestEntityTooLarge, "read error: %v", err)
+				return
+			}
+			c.String(http.StatusOK, "ok:%d", len(data))
+		}
+		engine.POST("/__test/echo", echo)
+		engine.POST("/v0/management/__test/echo", echo)
+	}))
+	server.cfg.RequestMaxBodyBytes = 8 // tiny cap for the general/data-plane path
+
+	oversized := strings.Repeat("a", 64)
+
+	t.Run("non-management route enforces the configured general cap", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/__test/echo", strings.NewReader(oversized))
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+		}
+	})
+
+	t.Run("management-prefixed route is exempt from the general cap", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v0/management/__test/echo", strings.NewReader(oversized))
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (management path must not use the tiny general cap); body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		if rr.Body.String() != "ok:64" {
+			t.Fatalf("body = %q, want ok:64", rr.Body.String())
+		}
+	})
+}
+
+// TestManagementConfigUploadWithinHigherManagementCapSucceeds is an end-to-end
+// check that the real config.yaml upload endpoint - which needs a larger body
+// cap than the general default - still works via the Management API's separate,
+// higher fixed cap (config.ManagementRequestMaxBodyBytes).
+func TestManagementConfigUploadWithinHigherManagementCapSucceeds(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+	server.cfg.RequestMaxBodyBytes = 16 // tiny general cap; must not affect management uploads
+
+	yamlBody := "host: \"\"\nport: 8317\n"
+	req := httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader(yamlBody))
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("management config upload (well within the 128MiB management cap) failed: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestRateLimitDisabledByDefaultNeverThrottlesDataPlane verifies the opt-in rate
+// limiter is a strict no-op unless rate-limit.enabled is set, so pre-existing
+// deployments see no behavior change by default.
+func TestRateLimitDisabledByDefaultNeverThrottlesDataPlane(t *testing.T) {
+	server := newTestServer(t)
+	if server.cfg.RateLimit.Enabled {
+		t.Fatal("expected rate limiting to default to disabled")
+	}
+
+	for i := 0; i < 40; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d: got 429 with rate limiting disabled", i)
+		}
+	}
+}
+
+// TestRateLimitEnabledThrottlesPerAPIKeyAfterBurst verifies that opting in via
+// rate-limit.enabled actually enforces the configured burst per authenticated
+// API key, and that a request without a matching key is rejected by auth before
+// ever reaching the limiter (so it does not consume budget from real keys).
+func TestRateLimitEnabledThrottlesPerAPIKeyAfterBurst(t *testing.T) {
+	server := newTestServer(t)
+	server.cfg.RateLimit.Enabled = true
+	server.cfg.RateLimit.RequestsPerSecond = 1
+	server.cfg.RateLimit.Burst = 3
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("burst request %d: status = %d, want %d; body=%s", i, rr.Code, http.StatusOK, rr.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("request beyond burst: status = %d, want %d; body=%s", rr.Code, http.StatusTooManyRequests, rr.Body.String())
 	}
 }
