@@ -76,6 +76,7 @@
 <script>
 (function () {
   var KEY_NAME = 'cpa_quota_monitor_key';
+  var KEY_TTL_MS = 12 * 60 * 60 * 1000; // remembered key expires after 12h to bound durable exposure
   var ENDPOINT = '/v0/management/model-quota';
   var REFRESH_MS = 15000;
   var els = {};
@@ -87,7 +88,19 @@
   var firstSuccess = false;
   var autoTimer = null;
 
-  function getStoredKey() { return sessionStorage.getItem(KEY_NAME) || localStorage.getItem(KEY_NAME) || ''; }
+  function getRememberedKey() {
+    // The remembered key is stored as {v, exp}; drop it once expired, and drop any
+    // legacy plain-string (unbounded) value so a full-privilege key is never kept indefinitely.
+    var raw = localStorage.getItem(KEY_NAME);
+    if (!raw) return '';
+    try {
+      var o = JSON.parse(raw);
+      if (o && typeof o.v === 'string' && typeof o.exp === 'number' && Date.now() < o.exp) return o.v;
+    } catch (e) {}
+    localStorage.removeItem(KEY_NAME);
+    return '';
+  }
+  function getStoredKey() { return sessionStorage.getItem(KEY_NAME) || getRememberedKey() || ''; }
   function setStatus(msg, kind) { els.status.textContent = msg || ''; els.status.className = kind || ''; }
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
   function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
@@ -119,7 +132,7 @@
     var k = els.key.value.trim();
     if (!k) { setStatus('请填写管理 key', 'err'); return; }
     sessionStorage.setItem(KEY_NAME, k);
-    if (els.remember.checked) { localStorage.setItem(KEY_NAME, k); } else { localStorage.removeItem(KEY_NAME); }
+    if (els.remember.checked) { localStorage.setItem(KEY_NAME, JSON.stringify({ v: k, exp: Date.now() + KEY_TTL_MS })); } else { localStorage.removeItem(KEY_NAME); }
     setStatus('已保存', 'ok');
     fetchData();
   }
@@ -373,7 +386,7 @@
   });
 
   var existing = getStoredKey();
-  if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
+  if (existing) { els.key.value = existing; els.remember.checked = !!getRememberedKey(); fetchData(); }
   else { setStatus('请填写管理 key 后保存', ''); }
   setInterval(function () {          // Refresh countdowns every second.
     if (rowsData.length) paint();

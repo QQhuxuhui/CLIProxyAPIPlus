@@ -80,6 +80,28 @@ func TestQuotaMonitorHTMLRendersPendingVerification(t *testing.T) {
 	}
 }
 
+// TestQuotaMonitorHTMLBoundsRememberedKey guards S20: the full-privilege
+// management key must not be persisted indefinitely in localStorage. The
+// remembered key is stored as a {v, exp} envelope with a TTL and read back
+// through getRememberedKey (which purges expired/legacy entries), so a bare
+// unbounded localStorage.setItem of the raw key must not reappear.
+func TestQuotaMonitorHTMLBoundsRememberedKey(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"KEY_TTL_MS",
+		"function getRememberedKey()",
+		"localStorage.setItem(KEY_NAME, JSON.stringify({ v: k, exp:",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing bounded-key marker %q", marker)
+		}
+	}
+	// The old unbounded persistence (raw key, never expires) must be gone.
+	if strings.Contains(s, "localStorage.setItem(KEY_NAME, k)") {
+		t.Error("embedded page still persists the raw management key to localStorage without a TTL")
+	}
+}
+
 func TestQuotaMonitorHTMLSurfacesSummaryFetchFailure(t *testing.T) {
 	s := string(QuotaMonitorHTML())
 	if !strings.Contains(s, "模型健康汇总加载失败") {
