@@ -101,6 +101,30 @@ func deleteXAIWebsocketIDState(store *xaiWebsocketIDStateStore, sessionID string
 	store.mu.Unlock()
 }
 
+// xaiWebsocketStateSessionID resolves the key used for the process-global
+// downstream<->upstream response-id mapping store (globalXAIWebsocketIDStates).
+//
+// A server-assigned execution session id (a unique per-connection UUID set by the
+// downstream websocket handler) is left unscoped: it is already isolated per
+// connection and is the exact key the cleanup paths (CloseExecutionSession and the
+// per-auth sweep) delete by, so scoping it would leak an id-state entry per
+// connection. A client-derived session id (payload prompt_cache_key, reached only
+// when there is no server execution session) is bound to the authenticated caller
+// so two tenants supplying the same prompt_cache_key cannot read or inject each
+// other's response-id mapping state. No identifiable caller yields "" -> no id
+// mapper -> fail closed (no cross-tenant mapping, at worst no continuity).
+func xaiWebsocketStateSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
+	executionSessionID := executionSessionIDFromOptions(opts)
+	stateSessionID := xaiExecutionSessionID(req, opts)
+	if stateSessionID == "" {
+		stateSessionID = executionSessionID
+	}
+	if executionSessionID == "" {
+		stateSessionID = helps.ScopeSessionKeyToCaller(ctx, stateSessionID)
+	}
+	return stateSessionID
+}
+
 func newXAIWebsocketRequestIDMapper(store *xaiWebsocketIDStateStore, sessionID string, downstreamRequest []byte) *xaiWebsocketRequestIDMapper {
 	state := getXAIWebsocketIDState(store, sessionID)
 	if state == nil {
@@ -393,10 +417,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
 	executionSessionID := executionSessionIDFromOptions(opts)
-	stateSessionID := xaiExecutionSessionID(req, opts)
-	if stateSessionID == "" {
-		stateSessionID = executionSessionID
-	}
+	stateSessionID := xaiWebsocketStateSessionID(ctx, req, opts)
 	idMapper := newXAIWebsocketRequestIDMapper(e.idStore, stateSessionID, req.Payload)
 	if xaiInputHasItemType(req.Payload, "compaction_trigger") {
 		return e.executeCompactionTriggerFromWebsocketContext(ctx, auth, req, opts, idMapper)

@@ -52,7 +52,10 @@ func extractClaudeCodeSessionIDFromPayload(payload []byte) string {
 
 // ClaudeCodePromptCache maps a Claude Code session to a stable upstream prompt_cache_key.
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
-	sessionID := ExtractClaudeCodeSessionID(ctx, payload, headers)
+	// Bind the client-supplied session id to the authenticated caller so a
+	// guessed or reused session id from another tenant cannot cross-read this
+	// prompt cache. An unidentifiable caller fails closed (no shared cache).
+	sessionID := ScopeSessionKeyToCaller(ctx, ExtractClaudeCodeSessionID(ctx, payload, headers))
 	if sessionID == "" {
 		return CodexCache{}, false, nil
 	}

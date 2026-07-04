@@ -879,7 +879,11 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
 		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+			// Scope the client-supplied prompt_cache_key to the authenticated
+			// caller before it is forwarded upstream as prompt_cache_key /
+			// session_id / Conversation_id, isolating tenants on a shared
+			// upstream account. No caller -> empty -> not set.
+			cache.ID = helps.ScopeSessionKeyToCaller(ctx, promptCacheKey.String())
 		}
 	}
 

@@ -61,7 +61,11 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 		},
 	}
 
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	// Execution-session ids are caller-scoped before becoming the upstream
+	// x-grok-conv-id / prompt_cache_key, so drive Execute with a caller context
+	// and expect the scoped value.
+	wantConvID := scopedReplayKey("conv-xai-1")
+	_, err := exec.Execute(codexReplayTestContext(), auth, cliproxyexecutor.Request{
 		Model:   "grok-4.3",
 		Payload: []byte(`{"model":"grok-4.3","input":[{"type":"reasoning","summary":[{"type":"summary_text","text":"test"}],"content":null,"encrypted_content":null},{"type":"reasoning","summary":[{"type":"summary_text","text":"second"}]},{"role":"user","content":"hello"}],"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high"},"tools":[{"type":"tool_search"},{"type":"image_generation"},{"type":"custom","name":"apply_patch"},{"type":"custom","name":"custom_lookup"},{"type":"function","name":"lookup"},{"type":"web_search","external_web_access":true,"search_content_types":["text","image"]},{"type":"namespace","name":"codex_app","description":"Tools in the codex_app namespace.","tools":[{"type":"function","name":"automation_update"},{"type":"custom","name":"namespace_custom"},{"type":"tool_search"}]}]}`),
 	}, cliproxyexecutor.Options{
@@ -81,8 +85,8 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if gotAuth != "Bearer xai-token" {
 		t.Fatalf("Authorization = %q, want Bearer xai-token", gotAuth)
 	}
-	if gotGrokConvID != "conv-xai-1" {
-		t.Fatalf("x-grok-conv-id = %q, want conv-xai-1", gotGrokConvID)
+	if gotGrokConvID != wantConvID {
+		t.Fatalf("x-grok-conv-id = %q, want %q", gotGrokConvID, wantConvID)
 	}
 	if gotOriginator != "" {
 		t.Fatalf("Originator = %q, want empty", gotOriginator)
@@ -90,8 +94,8 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if gotAccountID != "" {
 		t.Fatalf("Chatgpt-Account-Id = %q, want empty", gotAccountID)
 	}
-	if gjson.GetBytes(gotBody, "prompt_cache_key").String() != "conv-xai-1" {
-		t.Fatalf("prompt_cache_key missing from body: %s", string(gotBody))
+	if gjson.GetBytes(gotBody, "prompt_cache_key").String() != wantConvID {
+		t.Fatalf("prompt_cache_key = %q, want %q; body=%s", gjson.GetBytes(gotBody, "prompt_cache_key").String(), wantConvID, string(gotBody))
 	}
 	if !gjson.GetBytes(gotBody, "stream").Bool() {
 		t.Fatalf("stream = false, want true; body=%s", string(gotBody))
@@ -191,16 +195,18 @@ func TestXAIExecutorComposerSessionIsolation(t *testing.T) {
 			payload: []byte(`{"model":"grok-build-0.1","input":"hello"}`),
 		},
 		{
-			name:        "explicit_prompt_cache_key_is_preserved",
+			name:        "explicit_prompt_cache_key_is_caller_scoped",
 			model:       "grok-composer-2.5-fast",
 			payload:     []byte(`{"model":"grok-composer-2.5-fast","prompt_cache_key":"client-session","input":"hello"}`),
-			wantSession: "client-session",
+			wantSession: scopedReplayKey("client-session"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+			// Caller-scoped: the same explicit prompt_cache_key becomes a
+			// caller-specific upstream conversation key.
+			prepared, err := exec.prepareResponsesRequest(codexReplayTestContext(), cliproxyexecutor.Request{
 				Model:   tt.model,
 				Payload: tt.payload,
 			}, cliproxyexecutor.Options{
@@ -1006,11 +1012,14 @@ func TestXAIExecutorComposerReusesClaudeCodeSession(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "grok-composer-2.5-fast", Payload: payload}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: true}
 
-	first, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	// The composer prompt cache key is scoped to the authenticated caller, so
+	// both requests must share one caller for the same session to be reused.
+	ctx := codexReplayTestContext()
+	first, err := exec.prepareResponsesRequest(ctx, req, opts, true)
 	if err != nil {
 		t.Fatalf("prepareResponsesRequest first error: %v", err)
 	}
-	second, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	second, err := exec.prepareResponsesRequest(ctx, req, opts, true)
 	if err != nil {
 		t.Fatalf("prepareResponsesRequest second error: %v", err)
 	}
@@ -1031,6 +1040,47 @@ func TestXAIExecutorComposerReusesClaudeCodeSession(t *testing.T) {
 	applyXAIHeaders(httpReq, auth, "xai-token", true, first.sessionID)
 	if got := httpReq.Header.Get("x-grok-conv-id"); got != firstKey {
 		t.Fatalf("x-grok-conv-id = %q, want %q", got, firstKey)
+	}
+}
+
+// TestXAIResolveComposerSessionIDIsolatesCallers asserts that an explicit
+// client prompt_cache_key becomes a caller-specific upstream conversation id.
+// Reverting the ScopeSessionKeyToCaller wrapper at the xaiExecutionSessionID
+// call site makes both callers return the raw "shared-grok-session" and fails
+// this test.
+func TestXAIResolveComposerSessionIDIsolatesCallers(t *testing.T) {
+	req := cliproxyexecutor.Request{
+		Model:   "grok-composer-2.5-fast",
+		Payload: []byte(`{"model":"grok-composer-2.5-fast","prompt_cache_key":"shared-grok-session","input":"hi"}`),
+	}
+	opts := cliproxyexecutor.Options{}
+
+	a, errA := xaiResolveComposerSessionID(codexReplaySessionOnlyContext("caller-A"), req, opts, "grok-composer-2.5-fast")
+	if errA != nil {
+		t.Fatalf("caller-A error: %v", errA)
+	}
+	b, errB := xaiResolveComposerSessionID(codexReplaySessionOnlyContext("caller-B"), req, opts, "grok-composer-2.5-fast")
+	if errB != nil {
+		t.Fatalf("caller-B error: %v", errB)
+	}
+	if a == "" || b == "" {
+		t.Fatalf("expected non-empty composer session ids, got a=%q b=%q", a, b)
+	}
+	if a == b {
+		t.Fatalf("different callers must not share composer session id: %q", a)
+	}
+
+	again, _ := xaiResolveComposerSessionID(codexReplaySessionOnlyContext("caller-A"), req, opts, "grok-composer-2.5-fast")
+	if again != a {
+		t.Fatalf("same caller must be stable: %q vs %q", again, a)
+	}
+
+	none, errNone := xaiResolveComposerSessionID(context.Background(), req, opts, "grok-composer-2.5-fast")
+	if errNone != nil {
+		t.Fatalf("no-caller error: %v", errNone)
+	}
+	if none != "" {
+		t.Fatalf("no caller must fail closed for an explicit prompt_cache_key, got %q", none)
 	}
 }
 
@@ -1179,7 +1229,7 @@ func TestXAIExecutorReasoningReplayCacheStoresFinalDoneAndInjectsNextClaudeReque
 		Stream:       false,
 	}
 
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	_, err := executor.Execute(codexReplayTestContext(), auth, cliproxyexecutor.Request{
 		Model:   "grok-4.3",
 		Payload: []byte(`{"model":"grok-4.3","metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"xai-session-1\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`),
 	}, opts)
@@ -1187,7 +1237,7 @@ func TestXAIExecutorReasoningReplayCacheStoresFinalDoneAndInjectsNextClaudeReque
 		t.Fatalf("first Execute error: %v", err)
 	}
 
-	_, err = executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	_, err = executor.Execute(codexReplayTestContext(), auth, cliproxyexecutor.Request{
 		Model:   "grok-4.3",
 		Payload: []byte(`{"model":"grok-4.3","metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"xai-session-1\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"next"}]}]}`),
 	}, opts)
@@ -1220,7 +1270,7 @@ func TestApplyXAIReasoningReplayCacheFallsBackWhenReadFails(t *testing.T) {
 	})
 
 	body := []byte(`{"model":"grok-4.3","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
-	updated, scope, err := applyXAIReasoningReplayCacheRequired(context.Background(), sdktranslator.FormatClaude, cliproxyexecutor.Request{
+	updated, scope, err := applyXAIReasoningReplayCacheRequired(codexReplayTestContext(), sdktranslator.FormatClaude, cliproxyexecutor.Request{
 		Model:   "grok-4.3",
 		Payload: body,
 	}, cliproxyexecutor.Options{
@@ -1278,7 +1328,7 @@ func TestXAIExecutorReasoningReplayCacheReplaysFunctionCallForClaudeToolResult(t
 		Stream:       false,
 	}
 
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	_, err := executor.Execute(codexReplayTestContext(), auth, cliproxyexecutor.Request{
 		Model: "grok-4.3",
 		Payload: []byte(`{
 			"model":"grok-4.3",
@@ -1291,7 +1341,7 @@ func TestXAIExecutorReasoningReplayCacheReplaysFunctionCallForClaudeToolResult(t
 		t.Fatalf("first Execute error: %v", err)
 	}
 
-	_, err = executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	_, err = executor.Execute(codexReplayTestContext(), auth, cliproxyexecutor.Request{
 		Model: "grok-4.3",
 		Payload: []byte(`{
 			"model":"grok-4.3",

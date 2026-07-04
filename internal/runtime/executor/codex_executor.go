@@ -300,7 +300,16 @@ func codexClaudeCodeReplaySessionKey(ctx context.Context, payload []byte, header
 	return "claude:" + sessionID
 }
 
+// codexReasoningReplaySessionKey binds the client-derived session key to the
+// authenticated caller so a guessed or reused session id from another tenant
+// maps to a different reasoning replay cache entry. An unidentifiable caller
+// fails closed (empty key => cache disabled for that request).
 func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
+	raw := codexReasoningReplaySessionKeyRaw(ctx, from, req, opts, body)
+	return helps.ScopeSessionKeyToCaller(ctx, raw)
+}
+
+func codexReasoningReplaySessionKeyRaw(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1429,7 +1438,11 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
 		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
 		if promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+			// Scope the client-supplied prompt_cache_key to the authenticated
+			// caller before it is forwarded upstream as prompt_cache_key /
+			// Session_id, so tenants sharing an upstream account cannot share or
+			// hijack each other's continuity key. No caller -> empty -> not set.
+			cache.ID = helps.ScopeSessionKeyToCaller(ctx, promptCacheKey.String())
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAI) {
 		if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {

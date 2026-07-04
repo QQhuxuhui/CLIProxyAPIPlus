@@ -21,6 +21,9 @@ import (
 )
 
 func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *testing.T) {
+	// The execution-session id is caller-scoped before becoming the upstream
+	// x-grok-conv-id / prompt_cache_key.
+	wantConvID := scopedReplayKey("execution-session-1")
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,8 +33,8 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		if got := r.Header.Get("Authorization"); got != "Bearer xai-token" {
 			t.Errorf("Authorization = %q, want Bearer xai-token", got)
 		}
-		if got := r.Header.Get("x-grok-conv-id"); got != "execution-session-1" {
-			t.Errorf("x-grok-conv-id = %q, want execution-session-1", got)
+		if got := r.Header.Get("x-grok-conv-id"); got != wantConvID {
+			t.Errorf("x-grok-conv-id = %q, want %q", got, wantConvID)
 		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -74,7 +77,7 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 			cliproxyexecutor.ExecutionSessionMetadataKey: "execution-session-1",
 		},
 	}
-	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(codexReplayTestContext())
 
 	result, err := exec.ExecuteStream(ctx, auth, req, opts)
 	if err != nil {
@@ -95,8 +98,8 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		if gjson.GetBytes(payload, "instructions").Exists() {
 			t.Fatalf("instructions must be omitted when previous_response_id is set: %s", payload)
 		}
-		if got := gjson.GetBytes(payload, "prompt_cache_key").String(); got != "execution-session-1" {
-			t.Fatalf("prompt_cache_key = %q, want execution-session-1; payload=%s", got, payload)
+		if got := gjson.GetBytes(payload, "prompt_cache_key").String(); got != wantConvID {
+			t.Fatalf("prompt_cache_key = %q, want %q; payload=%s", got, wantConvID, payload)
 		}
 		if got := gjson.GetBytes(payload, "store").Bool(); !got {
 			t.Fatalf("store = false, want true; payload=%s", payload)
@@ -593,6 +596,50 @@ func TestXAIWebsocketsExecuteStreamCompactionTriggerUsesHTTPCompactWithRecordedC
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for post-compaction websocket payload")
+	}
+}
+
+// TestXAIWebsocketStateSessionIDIsolatesCallers asserts that a client-supplied
+// prompt_cache_key (used to key the process-global downstream<->upstream
+// response-id mapping store) is namespaced per authenticated caller, while a
+// server-assigned execution session id is left unscoped (it is already unique
+// per connection). Reverting the ScopeSessionKeyToCaller call makes both callers
+// share the raw "shared-ws-id-session" key and fails this test.
+func TestXAIWebsocketStateSessionIDIsolatesCallers(t *testing.T) {
+	// Client path: payload prompt_cache_key, no server execution session.
+	req := cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","prompt_cache_key":"shared-ws-id-session","input":"hi"}`),
+	}
+	opts := cliproxyexecutor.Options{}
+
+	a := xaiWebsocketStateSessionID(codexReplaySessionOnlyContext("caller-A"), req, opts)
+	b := xaiWebsocketStateSessionID(codexReplaySessionOnlyContext("caller-B"), req, opts)
+	if a == "" || b == "" {
+		t.Fatalf("expected non-empty state session keys, got a=%q b=%q", a, b)
+	}
+	if a == b {
+		t.Fatalf("different callers must not share the idMapper state key: %q", a)
+	}
+
+	again := xaiWebsocketStateSessionID(codexReplaySessionOnlyContext("caller-A"), req, opts)
+	if again != a {
+		t.Fatalf("same caller must be stable: %q vs %q", again, a)
+	}
+
+	none := xaiWebsocketStateSessionID(context.Background(), req, opts)
+	if none != "" {
+		t.Fatalf("no caller must fail closed (empty key => nil id mapper), got %q", none)
+	}
+
+	// Server-assigned execution session id is unique per connection and MUST NOT
+	// be scoped (cleanup paths key by the raw value).
+	serverOpts := cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.ExecutionSessionMetadataKey: "server-execution-session-1",
+	}}
+	server := xaiWebsocketStateSessionID(codexReplaySessionOnlyContext("caller-A"), req, serverOpts)
+	if server != "server-execution-session-1" {
+		t.Fatalf("server-assigned execution session id must not be scoped, got %q", server)
 	}
 }
 

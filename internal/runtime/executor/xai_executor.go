@@ -930,7 +930,12 @@ func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, str
 
 func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (string, error) {
 	if sessionID := xaiExecutionSessionID(req, opts); sessionID != "" {
-		return sessionID, nil
+		// Bind the client-supplied session id (payload prompt_cache_key or
+		// execution metadata) to the authenticated caller before it becomes the
+		// upstream x-grok-conv-id / prompt_cache_key, so a guessed value cannot
+		// join another tenant's server-side composer conversation. No caller ->
+		// empty -> no shared conversation key (fail closed).
+		return helps.ScopeSessionKeyToCaller(ctx, sessionID), nil
 	}
 	if !xaiRequiresIsolatedConversation(baseModel) {
 		return "", nil

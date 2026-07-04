@@ -72,7 +72,9 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_StablePromptCacheKeyFrom
 
 func TestCodexExecutorCacheHelper_ClaudeUsesClaudeCodeSessionID(t *testing.T) {
 	executor := &CodexExecutor{}
-	ctx := context.Background()
+	// Prompt cache keys are scoped to the authenticated caller, so both requests
+	// must share one caller for the same session_id to reuse the cache entry.
+	ctx := codexReplayTestContext()
 	url := "https://example.com/responses"
 	rawJSON := []byte(`{"model":"gpt-5.4","stream":true}`)
 	firstReq := cliproxyexecutor.Request{
@@ -122,6 +124,49 @@ func TestCodexExecutorCacheHelper_ClaudeUsesClaudeCodeSessionID(t *testing.T) {
 	}
 	if gotSession := secondHTTPReq.Header["Session_id"]; len(gotSession) != 1 || gotSession[0] != firstKey {
 		t.Fatalf("second Session_id = %#v, want [%q]", gotSession, firstKey)
+	}
+}
+
+// TestCodexExecutorCacheHelper_OpenAIResponsePromptCacheKeyIsolatesCallers
+// asserts that a client-supplied OpenAI-Responses prompt_cache_key is scoped to
+// the authenticated caller before it is forwarded upstream as Session_id.
+// Reverting the ScopeSessionKeyToCaller call in the cacheHelper OpenAIResponse
+// branch makes both callers forward the raw "shared-openai-response-session"
+// and fails this test. IdentityConfuse is disabled so the passthrough is the
+// only source of the header value.
+func TestCodexExecutorCacheHelper_OpenAIResponsePromptCacheKeyIsolatesCallers(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{}}
+	from := sdktranslator.FromString("openai-response")
+	url := "https://example.com/responses"
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","prompt_cache_key":"shared-openai-response-session"}`),
+	}
+	rawJSON := []byte(`{"model":"gpt-5-codex"}`)
+
+	reqA, _, _, errA := executor.cacheHelper(codexReplaySessionOnlyContext("caller-A"), from, url, nil, req, req.Payload, rawJSON)
+	if errA != nil {
+		t.Fatalf("caller-A cacheHelper error: %v", errA)
+	}
+	reqB, _, _, errB := executor.cacheHelper(codexReplaySessionOnlyContext("caller-B"), from, url, nil, req, req.Payload, rawJSON)
+	if errB != nil {
+		t.Fatalf("caller-B cacheHelper error: %v", errB)
+	}
+	keyA := reqA.Header.Get("Session_id")
+	keyB := reqB.Header.Get("Session_id")
+	if keyA == "" || keyB == "" {
+		t.Fatalf("expected Session_id headers, got a=%q b=%q", keyA, keyB)
+	}
+	if keyA == keyB {
+		t.Fatalf("different callers must not share OpenAIResponse prompt_cache_key: %q", keyA)
+	}
+
+	reqNone, _, _, errNone := executor.cacheHelper(context.Background(), from, url, nil, req, req.Payload, rawJSON)
+	if errNone != nil {
+		t.Fatalf("no-caller cacheHelper error: %v", errNone)
+	}
+	if got := reqNone.Header.Get("Session_id"); got != "" {
+		t.Fatalf("no caller must fail closed (no Session_id), got %q", got)
 	}
 }
 
@@ -268,6 +313,8 @@ func TestCodexExecutorCacheHelper_ClaudeUsesSessionHeader(t *testing.T) {
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	ginCtx.Request.Header.Set(helps.ClaudeCodeSessionHeader, "cache-session-header")
+	// A caller identity is required for the caller-scoped prompt cache.
+	ginCtx.Set("userApiKey", codexReplayTestCaller)
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
 
 	firstReq := cliproxyexecutor.Request{
