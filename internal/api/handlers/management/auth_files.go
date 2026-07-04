@@ -501,6 +501,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	if hint, ok := coreauth.GetAntigravityCreditsHint(auth.ID); ok {
+		if tier := strings.TrimSpace(hint.PaidTierID); tier != "" {
+			entry["paid_tier"] = tier
+		}
+	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}
