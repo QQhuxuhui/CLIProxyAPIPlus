@@ -365,10 +365,6 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
-	// AllowUnverifiedPanelFallback opts in to downloading the management control panel from the
-	// non-GitHub, un-digest-verified fallback origin when the verified GitHub release path fails and
-	// no local copy exists. Default false: the fallback is disabled for supply-chain safety.
-	AllowUnverifiedPanelFallback bool `yaml:"allow-unverified-panel-fallback"`
 }
 
 // RateLimitConfig controls the optional token-bucket rate limiter applied to the

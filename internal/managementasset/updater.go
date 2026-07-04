@@ -38,12 +38,6 @@ const (
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
 
-// unverifiedPanelFallbackDisabledMsg explains why the control panel was not downloaded from the
-// unverified fallback origin and how an operator can proceed safely.
-const unverifiedPanelFallbackDisabledMsg = "management control panel could not be fetched from the verified GitHub release; " +
-	"the unverified fallback download (cpamc.router-for.me) is disabled by default for supply-chain safety. " +
-	"Ship static/management.html manually, or set remote-management.allow-unverified-panel-fallback: true to opt in."
-
 var (
 	lastUpdateCheckMu   sync.Mutex
 	lastUpdateCheckTime time.Time
@@ -95,7 +89,7 @@ func runAutoUpdater(ctx context.Context) {
 
 		configPath, _ := schedulerConfigPath.Load().(string)
 		staticDir := StaticDir(configPath)
-		EnsureLatestManagementHTML(ctx, staticDir, cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository, cfg.RemoteManagement.AllowUnverifiedPanelFallback)
+		EnsureLatestManagementHTML(ctx, staticDir, cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository)
 	}
 
 	runOnce()
@@ -194,7 +188,7 @@ func FilePath(configFilePath string) string {
 
 // EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
 // It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
-func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string, allowUnverifiedFallback bool) bool {
+func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -238,7 +232,57 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 
 		releaseURL := resolveReleaseURL(panelRepository)
 		client := newHTTPClient(proxyURL)
-		syncManagementAsset(ctx, client, releaseURL, defaultManagementFallbackURL, localPath, localFileMissing, allowUnverifiedFallback)
+
+		localHash, err := fileSHA256(localPath)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				log.WithError(err).Debug("failed to read local management asset hash")
+			}
+			localHash = ""
+		}
+
+		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		if err != nil {
+			if localFileMissing {
+				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
+				if ensureFallbackManagementHTML(ctx, client, localPath) {
+					return nil, nil
+				}
+				return nil, nil
+			}
+			log.WithError(err).Warn("failed to fetch latest management release information")
+			return nil, nil
+		}
+
+		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
+			log.Debug("management asset is already up to date")
+			return nil, nil
+		}
+
+		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+		if err != nil {
+			if localFileMissing {
+				log.WithError(err).Warn("failed to download management asset, trying fallback page")
+				if ensureFallbackManagementHTML(ctx, client, localPath) {
+					return nil, nil
+				}
+				return nil, nil
+			}
+			log.WithError(err).Warn("failed to download management asset")
+			return nil, nil
+		}
+
+		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+			log.Errorf("management asset digest mismatch: expected %s got %s — aborting update for safety", remoteHash, downloadedHash)
+			return nil, nil
+		}
+
+		if err = atomicWriteFile(localPath, data); err != nil {
+			log.WithError(err).Warn("failed to update management asset on disk")
+			return nil, nil
+		}
+
+		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
 		return nil, nil
 	})
 
@@ -246,76 +290,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	return err == nil
 }
 
-// syncManagementAsset performs a single management-asset sync attempt against the verified
-// GitHub release path. When the verified path fails and no local copy exists yet, the unverified
-// fallback download is attempted only if allowUnverifiedFallback is true; otherwise a single
-// warning with remediation guidance is logged and nothing is written to disk.
-func syncManagementAsset(ctx context.Context, client httpfetch.Doer, releaseURL, fallbackURL, localPath string, localFileMissing, allowUnverifiedFallback bool) {
-	localHash, err := fileSHA256(localPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.WithError(err).Debug("failed to read local management asset hash")
-		}
-		localHash = ""
-	}
-
-	asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
-	if err != nil {
-		if localFileMissing {
-			if allowUnverifiedFallback {
-				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-				ensureFallbackManagementHTML(ctx, client, fallbackURL, localPath)
-				return
-			}
-			log.WithError(err).Warn(unverifiedPanelFallbackDisabledMsg)
-			return
-		}
-		log.WithError(err).Warn("failed to fetch latest management release information")
-		return
-	}
-
-	if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
-		log.Debug("management asset is already up to date")
-		return
-	}
-
-	data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
-	if err != nil {
-		if localFileMissing {
-			if allowUnverifiedFallback {
-				log.WithError(err).Warn("failed to download management asset, trying fallback page")
-				ensureFallbackManagementHTML(ctx, client, fallbackURL, localPath)
-				return
-			}
-			log.WithError(err).Warn(unverifiedPanelFallbackDisabledMsg)
-			return
-		}
-		log.WithError(err).Warn("failed to download management asset")
-		return
-	}
-
-	if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
-		log.Errorf("management asset digest mismatch: expected %s got %s — aborting update for safety", remoteHash, downloadedHash)
-		return
-	}
-
-	if remoteHash == "" {
-		// The GitHub release provided no digest field, so integrity could not be cross-checked.
-		// The primary github.com path is still TLS-authenticated, so install but warn visibly
-		// rather than skipping verification silently.
-		log.Warnf("management asset installed from the GitHub release WITHOUT digest verification because the release provided no digest field (hash=%s)", downloadedHash)
-	}
-
-	if err = atomicWriteFile(localPath, data); err != nil {
-		log.WithError(err).Warn("failed to update management asset on disk")
-		return
-	}
-
-	log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
-}
-
-func ensureFallbackManagementHTML(ctx context.Context, client httpfetch.Doer, fallbackURL, localPath string) bool {
-	data, downloadedHash, err := downloadAsset(ctx, client, fallbackURL)
+func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
+	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
 		return false
@@ -365,7 +341,7 @@ func resolveReleaseURL(repo string) string {
 	return defaultManagementReleaseURL
 }
 
-func fetchLatestAsset(ctx context.Context, client httpfetch.Doer, releaseURL string) (*releaseAsset, string, error) {
+func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
 	if strings.TrimSpace(releaseURL) == "" {
 		releaseURL = defaultManagementReleaseURL
 	}
@@ -400,7 +376,7 @@ func fetchLatestAsset(ctx context.Context, client httpfetch.Doer, releaseURL str
 	return nil, "", fmt.Errorf("management asset %s not found in latest release", managementAssetName)
 }
 
-func downloadAsset(ctx context.Context, client httpfetch.Doer, downloadURL string) ([]byte, string, error) {
+func downloadAsset(ctx context.Context, client *http.Client, downloadURL string) ([]byte, string, error) {
 	if strings.TrimSpace(downloadURL) == "" {
 		return nil, "", fmt.Errorf("empty download url")
 	}
