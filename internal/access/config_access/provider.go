@@ -2,6 +2,7 @@ package configaccess
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -89,7 +90,19 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		// Compare against every configured key using a constant-time comparison
+		// (crypto/subtle), mirroring the management-password check in
+		// internal/api/server.go. We iterate ALL keys and accumulate the result
+		// without breaking early, so the total comparison time does not depend on
+		// which key (if any) matched — closing the timing side-channel that a plain
+		// map lookup on the secret would leave open.
+		matched := false
+		for k := range p.keys {
+			if subtle.ConstantTimeCompare([]byte(candidate.value), []byte(k)) == 1 {
+				matched = true
+			}
+		}
+		if matched {
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
