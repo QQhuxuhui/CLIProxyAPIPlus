@@ -154,3 +154,10 @@ func TestQuotaMonitorHTMLHasUsageStatsModal(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLHidesUsageStatsModalOnLoad(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	if !strings.Contains(s, `#modal-backdrop[hidden] { display: none; }`) {
+		t.Error("usage-stats modal backdrop must remain hidden when the hidden attribute is present")
+	}
+}
