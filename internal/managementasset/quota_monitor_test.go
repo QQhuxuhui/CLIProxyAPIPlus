@@ -115,3 +115,20 @@ func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLDeletesAccount(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"del-btn",
+		"function deleteAccount(name)",
+		"method: 'DELETE'",
+		`ENDPOINT + '?name=' + encodeURIComponent(name)`,
+		`确定删除认证文件`,
+		`此操作不可恢复`,
+		"window.confirm(",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing delete marker %q", marker)
+		}
+	}
+}

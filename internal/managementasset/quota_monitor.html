@@ -320,10 +320,33 @@
   function td(v) { return '<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>'; }
   function escapeHtml(s) { return s.replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
+  function deleteAccount(name) {
+    var k = getStoredKey();
+    fetch(ENDPOINT + '?name=' + encodeURIComponent(name), { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function (resp) {
+        if (resp.ok) return { ok: true };
+        return readError(resp).then(function (msg) { return { ok: false, msg: msg }; });
+      })
+      .then(function (result) {
+        if (!result.ok) { setStatus('删除失败：' + (result.msg || '请求失败'), 'err'); return; }
+        accountsData = accountsData.filter(function (a) { return a.name !== name; });
+        if (!accountsData.length) { els.table.hidden = true; els.empty.hidden = false; } else { paint(); }
+        setStatus('已删除 "' + name + '"', 'ok');
+      })
+      .catch(function (e) { setStatus('删除失败：网络错误 ' + e, 'err'); });
+  }
+
   els.save.addEventListener('click', saveKey);
   els.clear.addEventListener('click', clearKey);
   els.refresh.addEventListener('click', fetchData);
   els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
+  els.rows.addEventListener('click', function (e) {
+    var delBtn = e.target && e.target.closest ? e.target.closest('.del-btn') : null;
+    if (delBtn) {
+      var name = delBtn.getAttribute('data-name');
+      if (window.confirm('确定删除认证文件 "' + name + '" 吗？此操作不可恢复。')) { deleteAccount(name); }
+    }
+  });
 
   var existing = getStoredKey();
   if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
