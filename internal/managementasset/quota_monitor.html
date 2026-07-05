@@ -18,23 +18,18 @@
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; white-space: nowrap; }
   th { background: rgba(127,127,127,.15); position: sticky; top: 0; }
-  .badge { padding: 1px 6px; border-radius: 4px; font-size: 12px; }
-  .badge.q { background: #c0392b; color: #fff; }
-  .badge.p { background: #e67e22; color: #fff; }
   .muted { color: #888; }
   #empty { padding: 24px; text-align: center; color: #888; }
   #dashboard { margin: 8px 0 18px; }
   .strip { font-size: 13px; line-height: 1.8; margin-bottom: 8px; }
   .strip b { font-weight: 700; }
   .sec { font-size: 13px; color: #888; margin: 16px 0 6px; }
-  .mh tbody tr { cursor: pointer; }
-  .mh tbody tr:hover { background: rgba(127,127,127,.08); }
   .mh .glyph { font-weight: 700; }
   .mh .track { display: inline-flex; width: 120px; height: 12px; background: rgba(127,127,127,.15); border-radius: 4px; overflow: hidden; vertical-align: middle; }
   .mh .seg { height: 12px; }
-  #mh-filter { margin: 8px 0; font-size: 13px; }
-  #mh-filter button { padding: 0 6px; margin-left: 4px; }
   @media (max-width: 700px) { .mh th.wide, .mh td.wide { display: none; } }
+  .acct-name { color: #2f6fb3; background: none; border: none; padding: 0; font-size: 13px; text-decoration: underline; cursor: pointer; }
+  .del-btn { color: #c0392b; }
 </style>
 </head>
 <body>
@@ -62,28 +57,23 @@
     <tbody id="mh-rows"></tbody>
   </table>
 </section>
-<div id="mh-filter" hidden>过滤: <b id="mh-filter-label"></b><button id="mh-filter-clear">✕</button></div>
-<h2 class="sec">冷却明细（账号×模型）</h2>
+<h2 class="sec">账号列表</h2>
 <table id="table" hidden>
   <thead><tr>
-    <th>provider</th><th>账号</th><th>model</th><th>quota</th><th>unavailable</th>
-    <th>status</th><th>reason_code</th><th>upstream_model</th>
-    <th>reset 倒计时</th><th>reset_at</th><th>next_retry_after</th>
+    <th>账号名称</th><th>provider</th><th>套餐</th><th>创建时间</th><th>操作</th><th>状态</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
-<div id="empty" hidden>当前无模型处于配额/冷却</div>
+<div id="empty" hidden>暂无账号</div>
 <script>
 (function () {
   var KEY_NAME = 'cpa_quota_monitor_key';
-  var ENDPOINT = '/v0/management/model-quota';
+  var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
   ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty'].forEach(function (id) { els[id] = document.getElementById(id); });
-  var allRows = [];      // full detail rows (unfiltered)
-  var rowsData = [];     // detail rows currently shown
+  var accountsData = []; // account rows currently rendered (raw auth-files entries)
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
-  var detailFilter = null; // {provider, model} | null
   var firstSuccess = false;
   var autoTimer = null;
 
@@ -92,7 +82,7 @@
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
   function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
   function clearRenderedData() {
-    allRows = []; rowsData = []; modelRows = []; detailFilter = null;
+    accountsData = []; modelRows = [];
     els.rows.innerHTML = '';
     els.table.hidden = true;
     els.empty.hidden = true;
@@ -100,7 +90,6 @@
     document.getElementById('mh-rows').innerHTML = '';
     document.getElementById('strip-models').innerHTML = '';
     document.getElementById('strip-soonest').textContent = '';
-    document.getElementById('mh-filter').hidden = true;
     els.updated.textContent = '';
   }
   function readError(resp) {
@@ -174,7 +163,7 @@
     }).then(function (data) {
       if (!data) return;
       firstSuccess = true; els.auto.disabled = false;
-      render(data.accounts || []);
+      render(data.files || []);
       fetchSummary(k);
       els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
       setStatus('', '');
@@ -295,7 +284,7 @@
       if (m.cooling === 0) { lastCell = '—'; }
       else if (m.last) { lastCell = (m.unknown > 0 ? '≥' : '') + fmtDur(new Date(m.last).getTime() - now) + (m.unknown > 0 ? ' ?×' + m.unknown : ''); }
       else { lastCell = '未知 ?×' + m.unknown; }
-      return '<tr data-provider="' + escapeHtml(m.provider) + '" data-model="' + escapeHtml(m.model) + '">' +
+      return '<tr>' +
         '<td><span class="glyph" style="color:' + tt.color + '">' + tt.glyph + '</span> <span style="color:' + tt.color + '">' + m.tier + '</span></td>' +
         td(m.model) + '<td class="muted">' + escapeHtml(m.provider) + '</td>' +
         '<td>' + cap + '</td><td>' + avail + '</td>' + td(pctCell) + td(m.cooling) +
@@ -303,55 +292,29 @@
     }).join('');
   }
 
-  function applyDetailFilter() {
-    var f = detailFilter;
-    rowsData = f ? allRows.filter(function (r) { return r.provider === f.provider && r.model === f.model; }) : allRows;
-    var chip = document.getElementById('mh-filter');
-    if (f) {
-      document.getElementById('mh-filter-label').textContent = f.provider + '·' + f.model;
-      chip.hidden = false;
-    } else {
-      chip.hidden = true;
-    }
-    if (!rowsData.length) { els.table.hidden = true; els.empty.hidden = false; return; }
+  function fmtCreated(v) {
+    if (!v) return '—';
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return d.toLocaleString();
+  }
+
+  function render(files) {
+    accountsData = files || []; // already sorted by name server-side
+    if (!accountsData.length) { els.table.hidden = true; els.empty.hidden = false; return; }
     els.empty.hidden = true; els.table.hidden = false;
     paint();
   }
 
-  function render(accounts) {
-    var rows = [];
-    accounts.forEach(function (a) {
-      (a.model_states || []).forEach(function (ms) {
-        rows.push({
-          provider: a.provider || '', auth: a.auth_index || a.id || '', email: a.email || a.label || '',
-          model: ms.model || '', quota: !!ms.quota_exceeded, pending: !!ms.pending_verification, unavailable: !!ms.unavailable,
-          status: ms.status || '', status_message: ms.status_message || '',
-          reason: ms.reason_code || '', upstream: ms.upstream_model || '',
-          reset_at: ms.reset_at || '', next: ms.next_retry_after || ''
-        });
-      });
-    });
-    // Soonest-recovery first; rows without a reset time sort last.
-    rows.sort(function (x, y) {
-      var xt = x.reset_at ? new Date(x.reset_at).getTime() : Infinity;
-      var yt = y.reset_at ? new Date(y.reset_at).getTime() : Infinity;
-      if (xt !== yt) return xt - yt;
-      return (x.provider + '|' + x.auth + '|' + x.model).localeCompare(y.provider + '|' + y.auth + '|' + y.model);
-    });
-    allRows = rows;
-    applyDetailFilter();
-  }
-
   function paint() {
-    var now = Date.now();
-    els.rows.innerHTML = rowsData.map(function (r) {
-      var cd = r.pending ? '已到预计恢复时间' : (r.reset_at ? fmtDur(new Date(r.reset_at).getTime() - now) : '');
-      var acc = r.auth + (r.email ? ' (' + r.email + ')' : '');
-      var st = r.status + (r.status_message ? ' / ' + r.status_message : '');
-      return '<tr>' + td(r.provider) + td(acc) + td(r.model) +
-        '<td>' + (r.quota ? '<span class="badge q">exhausted</span>' : (r.pending ? '<span class="badge p">待验证</span>' : '')) + '</td>' +
-        td(r.unavailable ? '是' : '') + td(st) + td(r.reason) + td(r.upstream) +
-        td(cd) + td(r.reset_at) + td(r.next) + '</tr>';
+    els.rows.innerHTML = accountsData.map(function (a) {
+      return '<tr>' +
+        '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
+        td(a.provider) + td(a.paid_tier || '—') +
+        '<td>' + fmtCreated(a.created_at) + '</td>' +
+        '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
+        td(a.status || '—') +
+        '</tr>';
     }).join('');
   }
   function td(v) { return '<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>'; }
@@ -361,22 +324,11 @@
   els.clear.addEventListener('click', clearKey);
   els.refresh.addEventListener('click', fetchData);
   els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
-  document.getElementById('mh-rows').addEventListener('click', function (e) {
-    var tr = e.target && e.target.closest ? e.target.closest('tr') : null;
-    if (!tr) return;
-    detailFilter = { provider: tr.getAttribute('data-provider'), model: tr.getAttribute('data-model') };
-    applyDetailFilter();
-  });
-  document.getElementById('mh-filter-clear').addEventListener('click', function () {
-    detailFilter = null;
-    applyDetailFilter();
-  });
 
   var existing = getStoredKey();
   if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
   else { setStatus('请填写管理 key 后保存', ''); }
-  setInterval(function () {          // Refresh countdowns every second.
-    if (rowsData.length) paint();
+  setInterval(function () {          // Refresh cooldown countdowns every second.
     if (modelRows.length) paintModels();
   }, 1000);
 })();

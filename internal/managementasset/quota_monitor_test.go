@@ -11,8 +11,8 @@ func TestQuotaMonitorHTML(t *testing.T) {
 		t.Fatal("QuotaMonitorHTML() is empty")
 	}
 	s := string(b)
-	if !strings.Contains(s, "/v0/management/model-quota") {
-		t.Error("embedded page missing model-quota endpoint path")
+	if !strings.Contains(s, "/v0/management/auth-files") {
+		t.Error("embedded page missing auth-files endpoint path")
 	}
 	if !strings.Contains(s, "cpa_quota_monitor_key") {
 		t.Error("embedded page missing storage key name")
@@ -34,7 +34,6 @@ func TestQuotaMonitorHTMLHasDashboard(t *testing.T) {
 		`id="dash-strip"`,
 		`id="model-health"`,
 		`id="mh-rows"`,
-		`id="mh-filter"`,
 		"function healthOf",
 		"var HEALTH",
 		"可服务模型全部健康",
@@ -45,6 +44,7 @@ func TestQuotaMonitorHTMLHasDashboard(t *testing.T) {
 	}
 	for _, gone := range []string{
 		`id="dash-donut"`, `id="dash-dist"`, `id="dash-prov"`, `id="dash-cards"`,
+		`id="mh-filter"`,
 	} {
 		if strings.Contains(s, gone) {
 			t.Errorf("embedded page still contains removed widget %q", gone)
@@ -67,19 +67,6 @@ func TestQuotaMonitorHTMLClearsRenderedData(t *testing.T) {
 	}
 }
 
-func TestQuotaMonitorHTMLRendersPendingVerification(t *testing.T) {
-	s := string(QuotaMonitorHTML())
-	for _, marker := range []string{
-		"pending_verification",
-		"待验证",
-		".badge.p",
-	} {
-		if !strings.Contains(s, marker) {
-			t.Errorf("embedded page missing pending-verification marker %q", marker)
-		}
-	}
-}
-
 func TestQuotaMonitorHTMLSurfacesSummaryFetchFailure(t *testing.T) {
 	s := string(QuotaMonitorHTML())
 	if !strings.Contains(s, "模型健康汇总加载失败") {
@@ -87,5 +74,44 @@ func TestQuotaMonitorHTMLSurfacesSummaryFetchFailure(t *testing.T) {
 	}
 	if strings.Contains(s, ".catch(function () {});") {
 		t.Error("fetchSummary still swallows errors silently")
+	}
+}
+
+func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"账号列表",
+		"账号名称",
+		"套餐",
+		"创建时间",
+		"function render(files)",
+		"data.files",
+		"accountsData",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing account-list marker %q", marker)
+		}
+	}
+	// status must be the LAST <th> in the account table's header row.
+	theadStart := strings.Index(s, `<table id="table"`)
+	if theadStart < 0 {
+		t.Fatal("embedded page missing account table")
+	}
+	theadEnd := strings.Index(s[theadStart:], "</tr>")
+	if theadEnd < 0 {
+		t.Fatal("account table header row not found")
+	}
+	headerRow := s[theadStart : theadStart+theadEnd]
+	lastTh := strings.LastIndex(headerRow, "<th>")
+	if lastTh < 0 || !strings.HasPrefix(headerRow[lastTh:], "<th>状态</th>") {
+		t.Errorf("状态 column must be the last <th> in the account table header, got header row: %s", headerRow)
+	}
+	for _, gone := range []string{
+		"冷却明细", "pending_verification", "待验证", ".badge.p", ".badge.q",
+		"detailFilter", "applyDetailFilter", "mh-filter-clear",
+	} {
+		if strings.Contains(s, gone) {
+			t.Errorf("embedded page still contains removed cooldown-detail marker %q", gone)
+		}
 	}
 }
