@@ -132,3 +132,25 @@ func TestQuotaMonitorHTMLDeletesAccount(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLHasUsageStatsModal(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		`id="modal-backdrop"`,
+		`id="range-today"`,
+		`id="range-yesterday"`,
+		`id="range-7d"`,
+		`id="range-custom"`,
+		`id="range-apply"`,
+		"function openUsageModal(name, authIndex)",
+		"+ authIndex + '）'", // modal title must actually use authIndex, not just accept it
+		"function fetchUsage(from, to)",
+		"/v0/management/usage-stats?account=",
+		"未开启用量统计，请在 config.yaml 设置 usage-stats-enabled: true 后重启/重载",
+		"acct-name",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing usage-stats modal marker %q", marker)
+		}
+	}
+}

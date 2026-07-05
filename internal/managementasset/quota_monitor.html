@@ -30,6 +30,15 @@
   @media (max-width: 700px) { .mh th.wide, .mh td.wide { display: none; } }
   .acct-name { color: #2f6fb3; background: none; border: none; padding: 0; font-size: 13px; text-decoration: underline; cursor: pointer; }
   .del-btn { color: #c0392b; }
+  #modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
+  #modal { background: Canvas; color: CanvasText; max-width: 640px; width: 92%; max-height: 80vh; overflow: auto; border-radius: 8px; padding: 16px 20px; }
+  #modal h2 { font-size: 16px; margin: 0 0 8px; }
+  .range-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; align-items: center; }
+  .range-bar button.active { font-weight: 700; text-decoration: underline; }
+  #modal input[type=date] { padding: 3px 6px; }
+  #modal-close { float: right; }
+  #modal-status { font-size: 13px; min-height: 18px; margin-bottom: 8px; }
+  #modal-status.err { color: #c0392b; }
 </style>
 </head>
 <body>
@@ -65,6 +74,27 @@
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" hidden>暂无账号</div>
+<div id="modal-backdrop" hidden>
+  <div id="modal">
+    <button id="modal-close">✕</button>
+    <h2 id="modal-title"></h2>
+    <div class="range-bar">
+      <button id="range-today">今天</button>
+      <button id="range-yesterday">昨天</button>
+      <button id="range-7d">近7天</button>
+      <button id="range-custom">自定义</button>
+      <span id="custom-range" hidden>
+        <input type="date" id="range-from"> ~ <input type="date" id="range-to">
+        <button id="range-apply">查询</button>
+      </span>
+    </div>
+    <div id="modal-status"></div>
+    <table id="modal-table" hidden>
+      <thead><tr><th>模型</th><th>成功</th><th>失败</th><th>合计</th></tr></thead>
+      <tbody id="modal-rows"></tbody>
+    </table>
+  </div>
+</div>
 <script>
 (function () {
   var KEY_NAME = 'cpa_quota_monitor_key';
@@ -336,6 +366,63 @@
       .catch(function (e) { setStatus('删除失败：网络错误 ' + e, 'err'); });
   }
 
+  var modalAccountIndex = null;
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+  function dateStr(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+  function todayStr() { return dateStr(new Date()); }
+  function yesterdayStr() { var d = new Date(); d.setDate(d.getDate() - 1); return dateStr(d); }
+  function daysAgoStr(n) { var d = new Date(); d.setDate(d.getDate() - n); return dateStr(d); }
+
+  function setModalStatus(msg, kind) {
+    var el = document.getElementById('modal-status');
+    el.textContent = msg || ''; el.className = kind || '';
+  }
+  function setActiveRangeButton(id) {
+    ['range-today', 'range-yesterday', 'range-7d', 'range-custom'].forEach(function (bid) {
+      document.getElementById(bid).classList.toggle('active', bid === id);
+    });
+  }
+  function openUsageModal(name, authIndex) {
+    modalAccountIndex = authIndex;
+    document.getElementById('modal-title').textContent = '调用统计 · ' + name + '（' + authIndex + '）';
+    document.getElementById('custom-range').hidden = true;
+    document.getElementById('modal-table').hidden = true;
+    document.getElementById('modal-rows').innerHTML = '';
+    document.getElementById('modal-backdrop').hidden = false;
+    setActiveRangeButton('range-today');
+    fetchUsage(todayStr(), todayStr());
+  }
+  function closeModal() {
+    document.getElementById('modal-backdrop').hidden = true;
+    modalAccountIndex = null;
+  }
+  function fetchUsage(from, to) {
+    var k = getStoredKey();
+    setModalStatus('加载中…', '');
+    document.getElementById('modal-table').hidden = true;
+    fetch('/v0/management/usage-stats?account=' + encodeURIComponent(modalAccountIndex) + '&from=' + from + '&to=' + to, { headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function (resp) {
+        if (resp.status === 503) { setModalStatus('未开启用量统计，请在 config.yaml 设置 usage-stats-enabled: true 后重启/重载', 'err'); return null; }
+        if (!resp.ok) { return readError(resp).then(function (msg) { setModalStatus('加载失败：' + (msg || ('HTTP ' + resp.status)), 'err'); return null; }); }
+        return resp.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        var acc = (data.accounts || [])[0];
+        var models = acc ? acc.models : [];
+        if (!models || !models.length) {
+          setModalStatus('该时间范围内无调用记录', '');
+          return;
+        }
+        setModalStatus('', '');
+        document.getElementById('modal-rows').innerHTML = models.map(function (m) {
+          return '<tr>' + td(m.model) + td(m.success) + td(m.fail) + td(m.total) + '</tr>';
+        }).join('');
+        document.getElementById('modal-table').hidden = false;
+      })
+      .catch(function (e) { setModalStatus('加载失败：网络错误 ' + e, 'err'); });
+  }
+
   els.save.addEventListener('click', saveKey);
   els.clear.addEventListener('click', clearKey);
   els.refresh.addEventListener('click', fetchData);
@@ -345,7 +432,22 @@
     if (delBtn) {
       var name = delBtn.getAttribute('data-name');
       if (window.confirm('确定删除认证文件 "' + name + '" 吗？此操作不可恢复。')) { deleteAccount(name); }
+      return;
     }
+    var nameBtn = e.target && e.target.closest ? e.target.closest('.acct-name') : null;
+    if (nameBtn) { openUsageModal(nameBtn.getAttribute('data-name'), nameBtn.getAttribute('data-index')); }
+  });
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  document.getElementById('modal-backdrop').addEventListener('click', function (e) { if (e.target && e.target.id === 'modal-backdrop') closeModal(); });
+  document.getElementById('range-today').addEventListener('click', function () { setActiveRangeButton('range-today'); document.getElementById('custom-range').hidden = true; fetchUsage(todayStr(), todayStr()); });
+  document.getElementById('range-yesterday').addEventListener('click', function () { setActiveRangeButton('range-yesterday'); document.getElementById('custom-range').hidden = true; fetchUsage(yesterdayStr(), yesterdayStr()); });
+  document.getElementById('range-7d').addEventListener('click', function () { setActiveRangeButton('range-7d'); document.getElementById('custom-range').hidden = true; fetchUsage(daysAgoStr(6), todayStr()); });
+  document.getElementById('range-custom').addEventListener('click', function () { setActiveRangeButton('range-custom'); document.getElementById('custom-range').hidden = false; });
+  document.getElementById('range-apply').addEventListener('click', function () {
+    var from = document.getElementById('range-from').value;
+    var to = document.getElementById('range-to').value;
+    if (!from || !to) { setModalStatus('请选择完整的起止日期', 'err'); return; }
+    fetchUsage(from, to);
   });
 
   var existing = getStoredKey();
