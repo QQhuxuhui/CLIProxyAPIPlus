@@ -329,6 +329,9 @@
     if (isNaN(d.getTime())) return String(v);
     return d.toLocaleString();
   }
+  function accountPlan(a) {
+    return a.paid_tier || (a.id_token && a.id_token.plan_type) || '—';
+  }
 
   function render(files) {
     accountsData = files || []; // already sorted by name server-side
@@ -341,7 +344,7 @@
     els.rows.innerHTML = accountsData.map(function (a) {
       return '<tr>' +
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
-        td(a.provider) + td(a.paid_tier || '—') +
+        td(a.provider) + td(accountPlan(a)) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
         td(a.status || '—') +

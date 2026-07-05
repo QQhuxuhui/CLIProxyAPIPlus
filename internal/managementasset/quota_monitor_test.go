@@ -87,6 +87,9 @@ func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
 		"function render(files)",
 		"data.files",
 		"accountsData",
+		"function accountPlan(a)",
+		"a.id_token && a.id_token.plan_type",
+		"td(accountPlan(a))",
 	} {
 		if !strings.Contains(s, marker) {
 			t.Errorf("embedded page missing account-list marker %q", marker)
