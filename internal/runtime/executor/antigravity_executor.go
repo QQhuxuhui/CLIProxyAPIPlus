@@ -58,6 +58,13 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
+	// antigravityVersionUnsupportedMarker 是 Google 对申报版本过旧的账号返回的固定错误文本。
+	// 该错误以 HTTP 200 返回（内容为该文本、无 usage），不识别就会被当成成功透传。
+	antigravityVersionUnsupportedMarker = "This version of Antigravity is no longer supported"
+	// antigravityVersionErrorCooldown 是命中版本错误后对该账号该模型的冷却时长。
+	// 版本错误按账号持续存在（需重新授权），冷却期内跳过该账号、改用池中健康账号；
+	// 冷却到期后再次尝试，若仍失败会再次冷却，从而自动把坏账号排除出调度。
+	antigravityVersionErrorCooldown = 30 * time.Minute
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
@@ -601,6 +608,30 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
 	return false
 }
 
+// antigravityResponseHasVersionError 检测聚合后的 antigravity 响应是否为 Google 的
+// “版本不再支持”拒绝（antigravityVersionUnsupportedMarker）。该错误以 HTTP 200 返回、
+// 内容为固定错误文本且无 usage，不识别就会被当成 0-token 的“成功”透传给下游。用固定
+// 错误串子串匹配即可——该串是 Google 的系统文案，正常模型补全不会输出。
+func antigravityResponseHasVersionError(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	return bytes.Contains(payload, []byte(antigravityVersionUnsupportedMarker))
+}
+
+// antigravityHandleVersionError 命中版本错误时冷却该账号并返回 429 触发换号重试，
+// 与 quota 冷却路径复用同一套机制。返回的 error 非 nil 表示已判定为版本错误。
+func antigravityHandleVersionError(ctx context.Context, auth *cliproxyauth.Auth, baseModel string, payload []byte) error {
+	if !antigravityResponseHasVersionError(payload) {
+		return nil
+	}
+	if errMark := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), antigravityVersionErrorCooldown); errMark != nil {
+		log.Debugf("antigravity executor: mark version-error cooldown failed for auth %s model %s: %v", auth.ID, baseModel, errMark)
+	}
+	log.Warnf("antigravity executor: auth %s returned Antigravity version-unsupported error for model %s; benching %s and switching auth", auth.ID, baseModel, antigravityVersionErrorCooldown)
+	return statusErr{code: http.StatusTooManyRequests, msg: "antigravity version unsupported, switching auth"}
+}
+
 func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
 	if statusCode == http.StatusTooManyRequests {
@@ -1091,6 +1122,12 @@ attemptLoop:
 			}
 			resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
 
+			// 版本错误以 2xx 返回、内容为固定错误文本且无 usage：bench 该账号并换号重试，
+			// 避免被当成 0-token 的“成功”透传。放在翻译 / usage 上报之前。
+			if errVersion := antigravityHandleVersionError(ctx, auth, baseModel, resp.Payload); errVersion != nil {
+				return resp, errVersion
+			}
+
 			resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
 			reporter.Publish(ctx, helps.ParseAntigravityUsage(resp.Payload))
 			var param any
@@ -1553,6 +1590,23 @@ attemptLoop:
 					payload := helps.JSONPayload(line)
 					if payload == nil {
 						continue
+					}
+
+					// 版本错误在流式下也会以 2xx 出现（内容为固定错误文本）。流已开始无法换号，
+					// 但仍 bench 该账号（(账号,模型) 级冷却，后续 stream/非 stream 请求都会跳过它）
+					// 并以错误结束本流，避免被下游当成 0-token 的“成功”。
+					if antigravityResponseHasVersionError(payload) {
+						if errMark := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), antigravityVersionErrorCooldown); errMark != nil {
+							log.Debugf("antigravity executor: mark version-error cooldown failed for auth %s model %s: %v", auth.ID, baseModel, errMark)
+						}
+						log.Warnf("antigravity executor: auth %s returned Antigravity version-unsupported error in stream for model %s; benching %s and aborting stream", auth.ID, baseModel, antigravityVersionErrorCooldown)
+						verErr := statusErr{code: http.StatusTooManyRequests, msg: "antigravity version unsupported, switching auth"}
+						reporter.PublishFailure(ctx, verErr)
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Err: verErr}:
+						case <-ctx.Done():
+						}
+						return
 					}
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
