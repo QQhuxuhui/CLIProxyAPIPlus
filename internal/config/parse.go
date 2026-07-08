@@ -30,6 +30,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SaveCooldownStatus = false
 	cfg.TransientErrorCooldownSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
+	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
@@ -80,6 +81,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	// Apply the same sanitization pipeline.
 	cfg.SanitizeGeminiKeys()
+	cfg.SanitizeInteractionsKeys()
 	cfg.SanitizeVertexCompatKeys()
 	cfg.SanitizeCodexKeys()
 	cfg.SanitizeCodexHeaderDefaults()
