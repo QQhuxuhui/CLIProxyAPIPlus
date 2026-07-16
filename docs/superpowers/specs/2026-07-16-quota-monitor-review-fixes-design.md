@@ -7,8 +7,9 @@ paths, the current page workflow, or the executor/translator architecture.
 
 ## Antigravity Credits Refresh
 
-The management handler will serialize the `loadCodeAssist` request with the Go
-JSON encoder and use the request context without an `http.Client` timeout. OAuth
+The management handler's existing raw JSON literal has been byte-verified as
+valid and will remain covered by an outbound request regression test. The
+handler will use the request context without an `http.Client` timeout. OAuth
 token acquisition retains its existing credential-acquisition timeout.
 
 Credits response handling will match the executor semantics:

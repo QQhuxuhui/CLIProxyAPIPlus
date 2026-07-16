@@ -5,97 +5,322 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>配额监控 · CLIProxyAPI</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; }
-  h1 { font-size: 18px; margin: 0 0 12px; }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .bar input[type=password] { flex: 1 1 320px; min-width: 220px; padding: 6px 8px; }
-  button { padding: 6px 10px; cursor: pointer; }
-  label { font-size: 13px; }
-  #status { margin: 6px 0 12px; font-size: 13px; min-height: 18px; }
-  #status.err { color: #c0392b; }
-  #status.ok { color: #2e7d32; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; white-space: nowrap; }
-  th { background: rgba(127,127,127,.15); position: sticky; top: 0; }
-  .muted { color: #888; }
-  #empty { padding: 24px; text-align: center; color: #888; }
-  #dashboard { margin: 8px 0 18px; }
-  .strip { font-size: 13px; line-height: 1.8; margin-bottom: 8px; }
-  .strip b { font-weight: 700; }
-  .sec { font-size: 13px; color: #888; margin: 16px 0 6px; }
+  /* Local utility subset keeps this privileged page self-contained. */
+  *, ::before, ::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: #e5e7eb; }
+  html { line-height: 1.5; -webkit-text-size-adjust: 100%; }
+  body, h1, h2, h3, p { margin: 0; }
+  button, input { font: inherit; color: inherit; }
+  button { background: none; cursor: pointer; }
+  input::placeholder { opacity: 1; }
+
+  [class~="block"] { display: block; }
+  [class~="flex"] { display: flex; }
+  [class~="inline-flex"] { display: inline-flex; }
+  [class~="hidden"] { display: none; }
+  [class~="sticky"] { position: sticky; }
+  [class~="top-0"] { top: 0; }
+  [class~="z-30"] { z-index: 30; }
+  [class~="flex-1"] { flex: 1 1 0%; }
+  [class~="flex-wrap"] { flex-wrap: wrap; }
+  [class~="shrink-0"] { flex-shrink: 0; }
+  [class~="items-center"] { align-items: center; }
+  [class~="items-start"] { align-items: flex-start; }
+  [class~="justify-between"] { justify-content: space-between; }
+  [class~="justify-center"] { justify-content: center; }
+  [class~="gap-1.5"] { gap: .375rem; }
+  [class~="gap-2"] { gap: .5rem; }
+  [class~="gap-3"] { gap: .75rem; }
+  [class~="gap-4"] { gap: 1rem; }
+  [class~="gap-6"] { gap: 1.5rem; }
+
+  [class~="h-5"], [class~="w-5"] { width: 1.25rem; height: 1.25rem; }
+  [class~="h-6"], [class~="w-6"] { width: 1.5rem; height: 1.5rem; }
+  [class~="h-8"], [class~="w-8"] { width: 2rem; height: 2rem; }
+  [class~="h-10"], [class~="w-10"] { width: 2.5rem; height: 2.5rem; }
+  [class~="h-16"] { height: 4rem; }
+  [class~="w-full"] { width: 100%; }
+  [class~="min-h-[20px]"] { min-height: 20px; }
+  [class~="min-h-[100dvh]"] { min-height: 100vh; min-height: 100dvh; }
+  [class~="max-h-[80vh]"] { max-height: 80vh; }
+  [class~="max-w-[280px]"] { max-width: 280px; }
+  [class~="max-w-md"] { max-width: 28rem; }
+  [class~="max-w-2xl"] { max-width: 42rem; }
+  [class~="max-w-7xl"] { max-width: 80rem; }
+  [class~="overflow-auto"] { overflow: auto; }
+  [class~="overflow-x-auto"] { overflow-x: auto; }
+
+  [class~="mx-auto"] { margin-left: auto; margin-right: auto; }
+  [class~="-mb-px"] { margin-bottom: -1px; }
+  [class~="mb-1.5"] { margin-bottom: .375rem; }
+  [class~="mb-3"] { margin-bottom: .75rem; }
+  [class~="mb-5"] { margin-bottom: 1.25rem; }
+  [class~="mb-6"] { margin-bottom: 1.5rem; }
+  [class~="mr-2"] { margin-right: .5rem; }
+  [class~="mt-1"] { margin-top: .25rem; }
+  [class~="mt-2"] { margin-top: .5rem; }
+  [class~="mt-3"] { margin-top: .75rem; }
+  [class~="mt-4"] { margin-top: 1rem; }
+  [class~="mt-5"] { margin-top: 1.25rem; }
+  [class~="p-6"] { padding: 1.5rem; }
+  [class~="p-7"] { padding: 1.75rem; }
+  [class~="px-1"] { padding-left: .25rem; padding-right: .25rem; }
+  [class~="px-2"] { padding-left: .5rem; padding-right: .5rem; }
+  [class~="px-3"] { padding-left: .75rem; padding-right: .75rem; }
+  [class~="px-4"] { padding-left: 1rem; padding-right: 1rem; }
+  [class~="px-5"] { padding-left: 1.25rem; padding-right: 1.25rem; }
+  [class~="px-6"] { padding-left: 1.5rem; padding-right: 1.5rem; }
+  [class~="py-1"] { padding-top: .25rem; padding-bottom: .25rem; }
+  [class~="py-1.5"] { padding-top: .375rem; padding-bottom: .375rem; }
+  [class~="py-2"] { padding-top: .5rem; padding-bottom: .5rem; }
+  [class~="py-2.5"] { padding-top: .625rem; padding-bottom: .625rem; }
+  [class~="py-3"] { padding-top: .75rem; padding-bottom: .75rem; }
+  [class~="py-4"] { padding-top: 1rem; padding-bottom: 1rem; }
+  [class~="py-6"] { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+  [class~="py-16"] { padding-top: 4rem; padding-bottom: 4rem; }
+  [class~="space-y-1.5"] > :not([hidden]) ~ :not([hidden]) { margin-top: .375rem; }
+
+  [class~="text-center"] { text-align: center; }
+  [class~="text-xs"] { font-size: .75rem; line-height: 1rem; }
+  [class~="text-sm"] { font-size: .875rem; line-height: 1.25rem; }
+  [class~="text-base"] { font-size: 1rem; line-height: 1.5rem; }
+  [class~="text-lg"] { font-size: 1.125rem; line-height: 1.75rem; }
+  [class~="font-medium"] { font-weight: 500; }
+  [class~="font-semibold"] { font-weight: 600; }
+  [class~="leading-none"] { line-height: 1; }
+  [class~="antialiased"] { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  [class~="truncate"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [class~="select-none"] { user-select: none; }
+
+  [class~="text-white"] { color: #fff; }
+  [class~="text-indigo-600"] { color: #4f46e5; }
+  [class~="text-emerald-600"] { color: #059669; }
+  [class~="text-red-600"] { color: #dc2626; }
+  [class~="text-slate-400"] { color: #94a3b8; }
+  [class~="text-slate-500"] { color: #64748b; }
+  [class~="text-slate-600"] { color: #475569; }
+  [class~="text-slate-700"] { color: #334155; }
+  [class~="text-slate-800"] { color: #1e293b; }
+  [class~="text-slate-900"] { color: #0f172a; }
+  [class~="bg-white"] { background-color: #fff; }
+  [class~="bg-white/90"] { background-color: rgba(255, 255, 255, .9); }
+  [class~="bg-indigo-600"] { background-color: #4f46e5; }
+  [class~="bg-slate-50"] { background-color: #f8fafc; }
+  [class~="placeholder:text-slate-400"]::placeholder { color: #94a3b8; }
+
+  [class~="border"] { border-width: 1px; }
+  [class~="border-b"] { border-bottom-width: 1px; }
+  [class~="border-b-2"] { border-bottom-width: 2px; }
+  [class~="border-t"] { border-top-width: 1px; }
+  [class~="border-transparent"] { border-color: transparent; }
+  [class~="border-indigo-600"] { border-color: #4f46e5; }
+  [class~="border-slate-100"] { border-color: #f1f5f9; }
+  [class~="border-slate-200"] { border-color: #e2e8f0; }
+  [class~="border-slate-300"] { border-color: #cbd5e1; }
+  [class~="rounded"] { border-radius: .25rem; }
+  [class~="rounded-md"] { border-radius: .375rem; }
+  [class~="rounded-lg"] { border-radius: .5rem; }
+  [class~="rounded-xl"] { border-radius: .75rem; }
+  [class~="rounded-2xl"] { border-radius: 1rem; }
+  [class~="shadow-sm"] { box-shadow: 0 1px 2px 0 rgba(15, 23, 42, .06); }
+  [class~="shadow-xl"] { box-shadow: 0 20px 25px -5px rgba(15, 23, 42, .12), 0 8px 10px -6px rgba(15, 23, 42, .08); }
+  [class~="backdrop-blur"] { backdrop-filter: blur(8px); }
+  [class~="transition"] { transition: color .15s, background-color .15s, border-color .15s, transform .15s; }
+
+  [class~="hover:bg-indigo-500"]:hover { background-color: #6366f1; }
+  [class~="hover:bg-red-50"]:hover { background-color: #fef2f2; }
+  [class~="hover:bg-slate-50"]:hover { background-color: #f8fafc; }
+  [class~="hover:text-indigo-600"]:hover { color: #4f46e5; }
+  [class~="hover:text-red-600"]:hover { color: #dc2626; }
+  [class~="hover:text-slate-700"]:hover { color: #334155; }
+  [class~="hover:text-slate-800"]:hover { color: #1e293b; }
+  [class~="focus:outline-none"]:focus { outline: 2px solid transparent; outline-offset: 2px; }
+  [class~="focus:border-indigo-500"]:focus { border-color: #6366f1; }
+  [class~="focus:ring-2"]:focus { box-shadow: 0 0 0 2px rgba(99, 102, 241, .45); }
+  [class~="focus:ring-indigo-500"]:focus { --focus-ring-color: #6366f1; }
+  [class~="active:translate-y-px"]:active { transform: translateY(1px); }
+
+  @media (min-width: 640px) {
+    [class~="sm:inline"] { display: inline; }
+    [class~="sm:px-6"] { padding-left: 1.5rem; padding-right: 1.5rem; }
+  }
+
+  /* Structural CSS keeps table and health markup stable. */
+  [hidden] { display: none !important; }
+  #modal-backdrop[hidden] { display: none; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .muted { color: #94a3b8; }
+
+  /* Shared white-SaaS data table look. Account-table headers stay plain <th>. */
+  .data-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+  .data-table th, .data-table td { padding: 10px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid #eef2f6; }
+  .data-table thead th { background: #f8fafc; color: #64748b; font-weight: 600; font-size: 12px; letter-spacing: .01em; position: sticky; top: 0; z-index: 1; }
+  .data-table tbody tr:hover { background: #f8fafc; }
+  .data-table tbody tr:last-child td { border-bottom: 0; }
+
+  /* Account-row inline controls */
+  .acct-name { color: #4f46e5; background: none; border: none; padding: 0; font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; }
+  .acct-name:hover { text-decoration: underline; }
+  .del-btn { color: #dc2626; background: none; border: none; padding: 0; font-size: 13px; cursor: pointer; }
+  .del-btn:hover { text-decoration: underline; }
+  .refresh-credits { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 8px; font-size: 11px; line-height: 1.6; color: #4f46e5; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 9999px; cursor: pointer; }
+  .refresh-credits:hover { background: #e0e7ff; }
+  .refresh-credits[disabled] { opacity: .5; cursor: default; }
+
+  /* Model-health table specifics (unchanged behavior) */
   .mh .glyph { font-weight: 700; }
-  .mh .track { display: inline-flex; width: 120px; height: 12px; background: rgba(127,127,127,.15); border-radius: 4px; overflow: hidden; vertical-align: middle; }
+  .mh .track { display: inline-flex; width: 120px; height: 12px; background: #eef2f6; border-radius: 6px; overflow: hidden; vertical-align: middle; }
   .mh .seg { height: 12px; }
   @media (max-width: 700px) { .mh th.wide, .mh td.wide { display: none; } }
-  .acct-name { color: #2f6fb3; background: none; border: none; padding: 0; font-size: 13px; text-decoration: underline; cursor: pointer; }
-  .del-btn { color: #c0392b; }
-  #modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
-  #modal-backdrop[hidden] { display: none; }
-  #modal { background: Canvas; color: CanvasText; max-width: 640px; width: 92%; max-height: 80vh; overflow: auto; border-radius: 8px; padding: 16px 20px; }
-  #modal h2 { font-size: 16px; margin: 0 0 8px; }
-  .range-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; align-items: center; }
-  .range-bar button.active { font-weight: 700; text-decoration: underline; }
-  #modal input[type=date] { padding: 3px 6px; }
-  #modal-close { float: right; }
-  #modal-status { font-size: 13px; min-height: 18px; margin-bottom: 8px; }
-  #modal-status.err { color: #c0392b; }
+
+  /* Usage-stats modal */
+  #modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+  .range-bar button.active { color: #4f46e5; font-weight: 600; }
 </style>
 </head>
-<body>
-<h1>模型配额监控</h1>
-<div class="bar">
-  <input id="key" type="password" placeholder="管理 key（remote-management.secret-key 或 MANAGEMENT_PASSWORD）" autocomplete="off">
-  <label><input id="remember" type="checkbox"> 记住 key</label>
-  <button id="save">保存</button>
-  <button id="clear">清除 key</button>
-  <button id="refresh">刷新</button>
-  <label><input id="auto" type="checkbox" disabled> 自动刷新(15s)</label>
-  <span id="updated" class="muted"></span>
-</div>
-<div id="status"></div>
-<section id="dashboard" hidden>
-  <div id="dash-strip" class="strip">
-    <div id="strip-models"></div>
-    <div id="strip-soonest" class="muted"></div>
+<body class="bg-slate-50 text-slate-800 antialiased">
+
+<!-- ============ LOGIN VIEW ============ -->
+<div id="login-view" class="min-h-[100dvh] flex items-center justify-center px-4">
+  <div class="w-full max-w-md">
+    <div class="flex items-center gap-3 justify-center mb-6">
+      <div class="h-10 w-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-sm">
+        <svg viewBox="0 0 24 24" fill="none" class="h-6 w-6 text-white"><path d="M12 3l7 4v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="text-lg font-semibold text-slate-900">配额监控</div>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-7">
+      <h1 class="text-base font-semibold text-slate-900">请输入管理 key</h1>
+      <p class="mt-1 text-sm text-slate-500">验证通过后进入账号统计页面。</p>
+      <div class="mt-5">
+        <label for="key" class="block text-sm font-medium text-slate-700 mb-1.5">管理 key</label>
+        <input id="key" type="password" autocomplete="off"
+               placeholder="remote-management.secret-key 或 MANAGEMENT_PASSWORD"
+               class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+      </div>
+      <label class="mt-3 flex items-center gap-2 text-sm text-slate-600 select-none">
+        <input id="remember" type="checkbox" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"> 在本机记住 key
+      </label>
+      <button id="save" class="mt-5 w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:translate-y-px transition">进入</button>
+      <div id="status" class="mt-3 text-sm text-slate-500 min-h-[20px]"></div>
+    </div>
+    <p class="mt-4 text-center text-xs text-slate-400">CLIProxyAPI · 自研配额监控面板</p>
   </div>
-  <table id="model-health" class="mh">
-    <thead><tr>
-      <th>状态</th><th>模型</th><th>provider</th><th>容量</th>
-      <th>可用/服务</th><th>可用%</th><th>冷却</th><th>最快恢复</th><th class="wide">全部恢复</th>
-    </tr></thead>
-    <tbody id="mh-rows"></tbody>
-  </table>
-</section>
-<h2 class="sec">账号列表</h2>
-<table id="table" hidden>
-  <thead><tr>
-    <th>账号名称</th><th>provider</th><th>套餐</th><th>创建时间</th><th>操作</th><th>状态</th>
-  </tr></thead>
-  <tbody id="rows"></tbody>
-</table>
-<div id="empty" hidden>暂无账号</div>
+</div>
+
+<!-- ============ APP VIEW ============ -->
+<div id="app-view" hidden>
+  <header class="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-slate-200">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
+      <div class="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+        <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5 text-white"><path d="M12 3l7 4v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="font-semibold text-slate-900 mr-2">配额监控</div>
+      <span id="updated" class="muted text-xs hidden sm:inline"></span>
+      <div class="flex-1"></div>
+      <span id="app-status" class="text-xs text-slate-500 hidden sm:inline max-w-[280px] truncate"></span>
+      <label class="flex items-center gap-1.5 text-xs text-slate-600 select-none">
+        <input id="auto" type="checkbox" disabled class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"> 自动刷新
+      </label>
+      <button id="refresh" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">刷新</button>
+      <button id="clear" class="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 transition">退出</button>
+    </div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6">
+      <nav class="flex items-center gap-6 border-t border-slate-100">
+        <button id="tabbtn-accounts" data-tab="accounts" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-indigo-600 border-indigo-600">账号统计</button>
+        <button id="tabbtn-health" data-tab="health" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">模型健康</button>
+        <button id="tabbtn-proxy" data-tab="proxy" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">代理设置</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+
+    <!-- Tab: 账号统计 -->
+    <section id="tab-accounts">
+      <h2 class="text-sm font-semibold text-slate-900 mb-3">账号列表</h2>
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto">
+        <table id="table" class="data-table" hidden>
+          <thead><tr>
+            <th>账号名称</th><th>provider</th><th>套餐</th><th>创建时间</th><th>操作</th><th>状态</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div id="empty" class="px-6 py-16 text-center text-sm text-slate-400" hidden>暂无账号</div>
+      </div>
+    </section>
+
+    <!-- Tab: 模型健康 -->
+    <section id="tab-health" hidden>
+      <section id="dashboard" class="mb-5" hidden>
+        <div id="dash-strip" class="bg-white border border-slate-200 rounded-xl shadow-sm px-5 py-4 space-y-1.5">
+          <div id="strip-models" class="text-sm text-slate-700"></div>
+          <div id="strip-soonest" class="muted text-xs"></div>
+        </div>
+      </section>
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto">
+        <table id="model-health" class="mh data-table">
+          <thead><tr>
+            <th>状态</th><th>模型</th><th>provider</th><th>容量</th>
+            <th>可用/服务</th><th>可用%</th><th>冷却</th><th>最快恢复</th><th class="wide">全部恢复</th>
+          </tr></thead>
+          <tbody id="mh-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Tab: 代理设置 -->
+    <section id="tab-proxy" hidden>
+      <div class="max-w-2xl">
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+          <h3 class="text-sm font-semibold text-slate-900">代理设置</h3>
+          <p class="mt-1 text-sm text-slate-500">支持 <code class="text-slate-600">http://</code>、<code class="text-slate-600">https://</code>、<code class="text-slate-600">socks5://</code>。留空表示直连。保存后自动热加载生效。</p>
+          <div class="mt-5">
+            <label for="proxy-url" class="block text-sm font-medium text-slate-700 mb-1.5">代理地址</label>
+            <input id="proxy-url" type="text" spellcheck="false" placeholder="例如 socks5://127.0.0.1:1080（留空 = 直连）"
+                   class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+          </div>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <button id="proxy-save" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:translate-y-px transition">保存并生效</button>
+            <button id="proxy-test" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">测试连通性</button>
+          </div>
+          <div id="proxy-result" class="mt-4 text-sm text-slate-500 min-h-[20px]"></div>
+          <p class="mt-2 text-xs text-slate-400">连通性测试会经过所填代理访问 Google 探测端点，返回 HTTP 状态与耗时。</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ Usage-stats modal ============ -->
 <div id="modal-backdrop" hidden>
-  <div id="modal">
-    <button id="modal-close">✕</button>
-    <h2 id="modal-title"></h2>
-    <div class="range-bar">
-      <button id="range-today">今天</button>
-      <button id="range-yesterday">昨天</button>
-      <button id="range-7d">近7天</button>
-      <button id="range-custom">自定义</button>
-      <span id="custom-range" hidden>
-        <input type="date" id="range-from"> ~ <input type="date" id="range-to">
-        <button id="range-apply">查询</button>
+  <div id="modal" class="bg-white w-full max-w-2xl max-h-[80vh] overflow-auto rounded-2xl shadow-xl border border-slate-200 p-6">
+    <div class="flex items-start justify-between gap-4">
+      <h2 id="modal-title" class="text-base font-semibold text-slate-900"></h2>
+      <button id="modal-close" class="text-slate-400 hover:text-slate-700 text-lg leading-none">✕</button>
+    </div>
+    <div class="range-bar mt-4 flex flex-wrap items-center gap-3 text-sm">
+      <button id="range-today" class="text-slate-600 hover:text-indigo-600">今天</button>
+      <button id="range-yesterday" class="text-slate-600 hover:text-indigo-600">昨天</button>
+      <button id="range-7d" class="text-slate-600 hover:text-indigo-600">近7天</button>
+      <button id="range-custom" class="text-slate-600 hover:text-indigo-600">自定义</button>
+      <span id="custom-range" class="flex items-center gap-1.5" hidden>
+        <input type="date" id="range-from" class="rounded-md border border-slate-300 px-2 py-1 text-sm">
+        <span class="text-slate-400">~</span>
+        <input type="date" id="range-to" class="rounded-md border border-slate-300 px-2 py-1 text-sm">
+        <button id="range-apply" class="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500">查询</button>
       </span>
     </div>
-    <div id="modal-status"></div>
-    <table id="modal-table" hidden>
-      <thead><tr><th>模型</th><th>成功</th><th>失败</th><th>合计</th></tr></thead>
-      <tbody id="modal-rows"></tbody>
-    </table>
+    <div id="modal-status" class="mt-3 text-sm text-slate-500 min-h-[20px]"></div>
+    <div class="mt-2 overflow-x-auto">
+      <table id="modal-table" class="data-table" hidden>
+        <thead><tr><th>模型</th><th>成功</th><th>失败</th><th>合计</th></tr></thead>
+        <tbody id="modal-rows"></tbody>
+      </table>
+    </div>
   </div>
 </div>
+
 <script>
 (function () {
   var KEY_NAME = 'cpa_quota_monitor_key';
@@ -107,11 +332,29 @@
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
   var firstSuccess = false;
   var autoTimer = null;
+  var creditsAutoAttempted = {}; // auth_index -> true, so auto-refresh only fires once per account per session.
 
   function getStoredKey() { return sessionStorage.getItem(KEY_NAME) || localStorage.getItem(KEY_NAME) || ''; }
-  function setStatus(msg, kind) { els.status.textContent = msg || ''; els.status.className = kind || ''; }
+  function setStatus(msg, kind) {
+    var cls = kind === 'err' ? 'text-red-600' : (kind === 'ok' ? 'text-emerald-600' : 'text-slate-500');
+    var login = document.getElementById('status');
+    if (login) { login.textContent = msg || ''; login.className = 'mt-3 text-sm min-h-[20px] ' + cls; }
+    var app = document.getElementById('app-status');
+    if (app) { app.textContent = msg || ''; app.className = 'text-xs hidden sm:inline max-w-[280px] truncate ' + cls; }
+  }
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
   function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
+
+  function showApp() {
+    document.getElementById('login-view').hidden = true;
+    document.getElementById('app-view').hidden = false;
+    loadProxyOnce();
+  }
+  function showLogin() {
+    document.getElementById('app-view').hidden = true;
+    document.getElementById('login-view').hidden = false;
+  }
+
   function clearRenderedData() {
     accountsData = []; modelRows = [];
     els.rows.innerHTML = '';
@@ -140,13 +383,15 @@
     if (!k) { setStatus('请填写管理 key', 'err'); return; }
     sessionStorage.setItem(KEY_NAME, k);
     if (els.remember.checked) { localStorage.setItem(KEY_NAME, k); } else { localStorage.removeItem(KEY_NAME); }
-    setStatus('已保存', 'ok');
+    setStatus('验证中…', '');
     fetchData();
   }
   function clearKey() {
     sessionStorage.removeItem(KEY_NAME); localStorage.removeItem(KEY_NAME);
     els.key.value = ''; stopAuto(); firstSuccess = false; els.auto.disabled = true;
+    creditsAutoAttempted = {};
     clearRenderedData();
+    showLogin();
     setStatus('key 已清除', '');
   }
 
@@ -160,11 +405,11 @@
 
   function fetchData() {
     var k = getStoredKey();
-    if (!k) { setStatus('请填写管理 key 后保存', 'err'); return; }   // Never send requests without a key to avoid failed-attempt bans.
+    if (!k) { setStatus('请填写管理 key 后进入', 'err'); return; }   // Never send requests without a key to avoid failed-attempt bans.
     fetch(ENDPOINT, { headers: { 'Authorization': 'Bearer ' + k } }).then(function (resp) {
       if (resp.status === 401) {
         stopAuto(); els.auto.disabled = true; firstSuccess = false;
-        clearRenderedData();
+        clearRenderedData(); showLogin();
         return readError(resp).then(function (msg) {
           setStatus('管理 key 无效或缺失，请重新填写' + (msg ? '：' + msg : ''), 'err');
           els.key.focus();
@@ -173,7 +418,7 @@
       }
       if (resp.status === 403) {
         stopAuto(); els.auto.disabled = true; firstSuccess = false;
-        clearRenderedData();
+        clearRenderedData(); showLogin();
         return readError(resp).then(function (msg) {
           var lower = msg.toLowerCase();
           if (lower.indexOf('banned') >= 0 || lower.indexOf('too many failed') >= 0) {
@@ -188,12 +433,13 @@
           return null;
         });
       }
-      if (resp.status === 404) { stopAuto(); els.auto.disabled = true; firstSuccess = false; clearRenderedData(); setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
+      if (resp.status === 404) { stopAuto(); els.auto.disabled = true; firstSuccess = false; clearRenderedData(); showLogin(); setStatus('管理 API 未启用：请先配置 remote-management.secret-key（或 MANAGEMENT_PASSWORD）后重试', 'err'); return null; }
       if (!resp.ok) { setStatus('请求失败：HTTP ' + resp.status, 'err'); return null; }
       return resp.json();
     }).then(function (data) {
       if (!data) return;
       firstSuccess = true; els.auto.disabled = false;
+      showApp();
       render(data.files || []);
       fetchSummary(k);
       els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
@@ -201,18 +447,18 @@
     }).catch(function (e) { setStatus('网络错误：' + e, 'err'); });
   }
 
-  var COLORS = { available: '#2e7d32', cooling: '#c0392b', disabled: '#888' };
+  var COLORS = { available: '#16a34a', cooling: '#dc2626', disabled: '#94a3b8' };
   // Health tiers derived from round-robin load math: survivors absorb serving/available x
   // their normal share. <60% -> >1.67x (WARN); <20% -> >=5x, cascade imminent (CRIT);
   // a single surviving account in a multi-account pool is a SPOF (CRIT).
   var HEALTH = {
     pctCrit: 20, pctWarn: 60,
     tiers: {
-      DOWN: { glyph: '○', color: '#c0392b', rank: 0 },
-      CRIT: { glyph: '◔', color: '#c0392b', rank: 1 },
-      WARN: { glyph: '◑', color: '#e67e22', rank: 2 },
-      OK:   { glyph: '●', color: '#2e7d32', rank: 3 },
-      OFF:  { glyph: '◌', color: '#888',    rank: 4 }
+      DOWN: { glyph: '○', color: '#dc2626', rank: 0 },
+      CRIT: { glyph: '◔', color: '#dc2626', rank: 1 },
+      WARN: { glyph: '◑', color: '#ea580c', rank: 2 },
+      OK:   { glyph: '●', color: '#16a34a', rank: 3 },
+      OFF:  { glyph: '◌', color: '#94a3b8', rank: 4 }
     }
   };
   function healthOf(m) {
@@ -256,7 +502,7 @@
     var counts = { DOWN: 0, CRIT: 0, WARN: 0, OK: 0, OFF: 0 };
     modelRows.forEach(function (m) { counts[m.tier]++; });
     var unhealthy = counts.DOWN + counts.CRIT + counts.WARN;
-    var resTxt = '资源 <b>' + (p.available || 0) + '/' + (p.total || 0) + '</b> 可用 · 冷却 ' + (p.cooling || 0) + ' · 禁用 ' + (p.disabled || 0);
+    var resTxt = '资源 <b class="font-semibold text-slate-900">' + (p.available || 0) + '/' + (p.total || 0) + '</b> 可用 · 冷却 ' + (p.cooling || 0) + ' · 禁用 ' + (p.disabled || 0);
     if (unhealthy === 0) {
       var okCount = modelRows.length - counts.OFF;
       document.getElementById('strip-models').innerHTML = (counts.OFF > 0
@@ -332,19 +578,30 @@
   function accountPlan(a) {
     return a.paid_tier || (a.id_token && a.id_token.plan_type) || '—';
   }
+  function isAntigravity(a) { return String(a && a.provider || '').toLowerCase() === 'antigravity'; }
+  // Antigravity accounts carry a manual "刷新额度" control because their 套餐/credits
+  // are only fetched lazily by the executor; non-antigravity rows show plain text.
+  function planCell(a) {
+    if (isAntigravity(a)) {
+      return '<td>' + escapeHtml(accountPlan(a)) +
+        '<button type="button" class="refresh-credits" data-index="' + escapeHtml(a.auth_index || '') + '">刷新额度</button></td>';
+    }
+    return td(accountPlan(a));
+  }
 
   function render(files) {
     accountsData = files || []; // already sorted by name server-side
     if (!accountsData.length) { els.table.hidden = true; els.empty.hidden = false; return; }
     els.empty.hidden = true; els.table.hidden = false;
     paint();
+    autoFillCredits();
   }
 
   function paint() {
     els.rows.innerHTML = accountsData.map(function (a) {
       return '<tr>' +
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
-        td(a.provider) + td(accountPlan(a)) +
+        td(a.provider) + planCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
         td(a.status || '—') +
@@ -353,6 +610,43 @@
   }
   function td(v) { return '<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>'; }
   function escapeHtml(s) { return s.replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  // Auto-fill 套餐 for antigravity accounts that have none yet, once per account.
+  function autoFillCredits() {
+    accountsData.forEach(function (a) {
+      if (!isAntigravity(a)) return;
+      var idx = a.auth_index || '';
+      if (!idx || creditsAutoAttempted[idx]) return;
+      if (accountPlan(a) !== '—') return;
+      creditsAutoAttempted[idx] = true;
+      refreshCredits(idx, true);
+    });
+  }
+
+  function refreshCredits(authIndex, silent) {
+    var k = getStoredKey();
+    if (!k || !authIndex) return;
+    var btn = els.rows.querySelector('.refresh-credits[data-index="' + (window.CSS && CSS.escape ? CSS.escape(authIndex) : authIndex) + '"]');
+    if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; }
+    fetch('/v0/management/antigravity-credits/refresh', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auth_index: authIndex })
+    }).then(function (resp) {
+      if (!resp.ok) { return readError(resp).then(function (msg) { return { ok: false, msg: msg }; }); }
+      return resp.json().then(function (d) { return { ok: true, data: d }; });
+    }).then(function (result) {
+      if (!result) return;
+      if (!result.ok) { if (!silent) setStatus('刷新额度失败：' + (result.msg || '请求失败'), 'err'); if (btn) { btn.disabled = false; btn.textContent = '刷新额度'; } return; }
+      var tier = result.data && result.data.paid_tier;
+      accountsData.forEach(function (a) { if ((a.auth_index || '') === authIndex && tier) { a.paid_tier = tier; } });
+      paint();
+      if (!silent) setStatus('额度已刷新', 'ok');
+    }).catch(function (e) {
+      if (!silent) setStatus('刷新额度失败：网络错误 ' + e, 'err');
+      if (btn) { btn.disabled = false; btn.textContent = '刷新额度'; }
+    });
+  }
 
   function deleteAccount(name) {
     var k = getStoredKey();
@@ -370,6 +664,73 @@
       .catch(function (e) { setStatus('删除失败：网络错误 ' + e, 'err'); });
   }
 
+  // ---- Tabs ----
+  function tabBtnClass(active) {
+    return 'px-1 py-3 text-sm font-medium border-b-2 -mb-px transition ' +
+      (active ? 'text-indigo-600 border-indigo-600' : 'text-slate-500 border-transparent hover:text-slate-800');
+  }
+  function switchTab(name) {
+    ['accounts', 'health', 'proxy'].forEach(function (n) {
+      var panel = document.getElementById('tab-' + n);
+      var btn = document.getElementById('tabbtn-' + n);
+      if (panel) panel.hidden = (n !== name);
+      if (btn) btn.className = tabBtnClass(n === name);
+    });
+    if (name === 'proxy') loadProxyOnce();
+  }
+
+  // ---- Proxy settings ----
+  var proxyLoaded = false;
+  function setProxyResult(msg, kind) {
+    var el = document.getElementById('proxy-result');
+    if (!el) return;
+    var cls = kind === 'err' ? 'text-red-600' : (kind === 'ok' ? 'text-emerald-600' : 'text-slate-500');
+    el.textContent = msg || '';
+    el.className = 'mt-4 text-sm min-h-[20px] ' + cls;
+  }
+  function loadProxyOnce() { if (proxyLoaded) return; proxyLoaded = true; loadProxy(); }
+  function loadProxy() {
+    var k = getStoredKey();
+    if (!k) return;
+    fetch('/v0/management/proxy-url', { headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (d) { if (d) { var el = document.getElementById('proxy-url'); if (el) el.value = d['proxy-url'] || ''; } })
+      .catch(function () { /* best-effort: proxy prefill is optional */ });
+  }
+  function saveProxy() {
+    var k = getStoredKey();
+    if (!k) { setProxyResult('请先登录', 'err'); return; }
+    var v = document.getElementById('proxy-url').value.trim();
+    setProxyResult('保存中…', '');
+    fetch('/v0/management/proxy-url', {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: v })
+    }).then(function (resp) {
+      if (resp.ok) { setProxyResult('已保存并热加载生效' + (v ? '' : '（已切换为直连）'), 'ok'); return; }
+      return readError(resp).then(function (m) { setProxyResult('保存失败：' + (m || ('HTTP ' + resp.status)), 'err'); });
+    }).catch(function (e) { setProxyResult('保存失败：网络错误 ' + e, 'err'); });
+  }
+  function testProxy() {
+    var k = getStoredKey();
+    if (!k) { setProxyResult('请先登录', 'err'); return; }
+    var v = document.getElementById('proxy-url').value.trim();
+    setProxyResult('测试中…（经' + (v ? '代理' : '直连') + '访问 Google）', '');
+    fetch('/v0/management/proxy-test', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 'proxy-url': v })
+    }).then(function (resp) {
+      if (!resp.ok) { return readError(resp).then(function (m) { setProxyResult('测试失败：' + (m || ('HTTP ' + resp.status)), 'err'); return null; }); }
+      return resp.json();
+    }).then(function (d) {
+      if (!d) return;
+      if (d.ok) { setProxyResult('连通正常 · HTTP ' + d.http_status + ' · ' + d.latency_ms + 'ms' + (v ? '（经代理）' : '（直连）'), 'ok'); }
+      else { setProxyResult('连通失败：' + (d.error || ('HTTP ' + d.http_status)) + ' · ' + d.latency_ms + 'ms', 'err'); }
+    }).catch(function (e) { setProxyResult('测试失败：网络错误 ' + e, 'err'); });
+  }
+
+  // ---- Usage-stats modal ----
   var modalAccountIndex = null;
   function pad2(n) { return n < 10 ? '0' + n : String(n); }
   function dateStr(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
@@ -379,7 +740,8 @@
 
   function setModalStatus(msg, kind) {
     var el = document.getElementById('modal-status');
-    el.textContent = msg || ''; el.className = kind || '';
+    el.textContent = msg || '';
+    el.className = 'mt-3 text-sm min-h-[20px] ' + (kind === 'err' ? 'text-red-600' : 'text-slate-500');
   }
   function setActiveRangeButton(id) {
     ['range-today', 'range-yesterday', 'range-7d', 'range-custom'].forEach(function (bid) {
@@ -427,10 +789,18 @@
       .catch(function (e) { setModalStatus('加载失败：网络错误 ' + e, 'err'); });
   }
 
+  // ---- Wiring ----
   els.save.addEventListener('click', saveKey);
+  els.key.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveKey(); });
   els.clear.addEventListener('click', clearKey);
   els.refresh.addEventListener('click', fetchData);
   els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
+  ['accounts', 'health', 'proxy'].forEach(function (n) {
+    var b = document.getElementById('tabbtn-' + n);
+    if (b) b.addEventListener('click', function () { switchTab(n); });
+  });
+  document.getElementById('proxy-save').addEventListener('click', saveProxy);
+  document.getElementById('proxy-test').addEventListener('click', testProxy);
   els.rows.addEventListener('click', function (e) {
     var delBtn = e.target && e.target.closest ? e.target.closest('.del-btn') : null;
     if (delBtn) {
@@ -438,6 +808,8 @@
       if (window.confirm('确定删除认证文件 "' + name + '" 吗？此操作不可恢复。')) { deleteAccount(name); }
       return;
     }
+    var creditBtn = e.target && e.target.closest ? e.target.closest('.refresh-credits') : null;
+    if (creditBtn) { refreshCredits(creditBtn.getAttribute('data-index'), false); return; }
     var nameBtn = e.target && e.target.closest ? e.target.closest('.acct-name') : null;
     if (nameBtn) { openUsageModal(nameBtn.getAttribute('data-name'), nameBtn.getAttribute('data-index')); }
   });
@@ -456,7 +828,7 @@
 
   var existing = getStoredKey();
   if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
-  else { setStatus('请填写管理 key 后保存', ''); }
+  else { setStatus('请填写管理 key 后进入', ''); }
   setInterval(function () {          // Refresh cooldown countdowns every second.
     if (modelRows.length) paintModels();
   }, 1000);

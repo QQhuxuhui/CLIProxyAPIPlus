@@ -164,3 +164,10 @@ func TestQuotaMonitorHTMLHidesUsageStatsModalOnLoad(t *testing.T) {
 		t.Error("usage-stats modal backdrop must remain hidden when the hidden attribute is present")
 	}
 }
+
+func TestQuotaMonitorHTMLHasNoRemoteScripts(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	if strings.Contains(s, `<script src=`) || strings.Contains(s, "cdn.tailwindcss.com") {
+		t.Fatal("quota monitor must not execute remote scripts")
+	}
+}

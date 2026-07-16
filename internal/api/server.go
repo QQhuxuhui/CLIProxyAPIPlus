@@ -726,6 +726,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
+		mgmt.POST("/proxy-test", s.mgmt.TestProxy)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
@@ -737,6 +738,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
+		mgmt.POST("/antigravity-credits/refresh", s.mgmt.RefreshAntigravityCredits)
 		mgmt.GET("/model-quota", s.mgmt.GetModelQuota)
 		mgmt.GET("/quota-summary", s.mgmt.GetQuotaSummary)
 
