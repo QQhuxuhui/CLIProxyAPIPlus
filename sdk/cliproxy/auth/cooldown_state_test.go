@@ -272,6 +272,14 @@ func TestManager_RestoreCooldownStates(t *testing.T) {
 				LastError: &Error{Message: "rate limited", HTTPStatus: 429},
 				UpdatedAt: nextRetry.Add(-time.Minute),
 			},
+			{
+				Provider:       "xai",
+				AuthID:         "auth-1",
+				Model:          "expired-model",
+				Status:         "cooling",
+				NextRetryAfter: time.Now().Add(-time.Minute),
+				UpdatedAt:      time.Now().Add(-time.Hour),
+			},
 		},
 	}
 	manager := NewManager(nil, nil, nil)
@@ -297,6 +305,9 @@ func TestManager_RestoreCooldownStates(t *testing.T) {
 	}
 	if state.LastError == nil || state.LastError.HTTPStatus != 429 {
 		t.Fatalf("restored last error = %+v, want HTTP 429", state.LastError)
+	}
+	if _, okExpired := auth.ModelStates["expired-model"]; okExpired {
+		t.Fatal("expired model state should not be restored")
 	}
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("restore cleanup saved cooldown state %d times, want 1", got)

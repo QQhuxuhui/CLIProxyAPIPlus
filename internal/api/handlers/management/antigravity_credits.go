@@ -70,6 +70,9 @@ func (h *Handler) RefreshAntigravityCredits(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh credits: %v", errRefresh)})
 		return
 	}
+	if strings.TrimSpace(hint.PaidTierID) != "" {
+		coreauth.SetAntigravityDisplayPlan(strings.TrimSpace(auth.ID), hint.PaidTierID, hint.UpdatedAt)
+	}
 	if cacheable {
 		coreauth.SetAntigravityCreditsHint(strings.TrimSpace(auth.ID), hint)
 	}

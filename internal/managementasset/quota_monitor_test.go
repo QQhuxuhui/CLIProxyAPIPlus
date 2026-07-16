@@ -119,6 +119,35 @@ func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
 	}
 }
 
+func TestQuotaMonitorHTMLHasAccountFiltersAndPagination(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		`id="account-name-filter"`,
+		`id="account-plan-filter"`,
+		`id="account-created-from"`,
+		`id="account-created-to"`,
+		`id="account-status-filter"`,
+		`id="account-page-size"`,
+		`id="account-page-prev"`,
+		`id="account-page-next"`,
+		`id="account-page-info"`,
+		"var AccountViewLogic",
+		"function renderAccountView(options)",
+		"status_message",
+		"title=",
+		"/v0/management/antigravity-credits/refresh",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing account-view marker %q", marker)
+		}
+	}
+	for _, removed := range []string{"autoFillCredits", "creditsAutoAttempted"} {
+		if strings.Contains(s, removed) {
+			t.Errorf("embedded page still contains page-open credits refresh marker %q", removed)
+		}
+	}
+}
+
 func TestQuotaMonitorHTMLDeletesAccount(t *testing.T) {
 	s := string(QuotaMonitorHTML())
 	for _, marker := range []string{

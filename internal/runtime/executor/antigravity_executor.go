@@ -2191,6 +2191,9 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 
 	authID := strings.TrimSpace(auth.ID)
 	paidTierID := strings.TrimSpace(gjson.GetBytes(bodyBytes, "paidTier.id").String())
+	if paidTierID != "" {
+		cliproxyauth.SetAntigravityDisplayPlan(authID, paidTierID, time.Now())
+	}
 
 	credits := gjson.GetBytes(bodyBytes, "paidTier.availableCredits")
 	if !credits.IsArray() {

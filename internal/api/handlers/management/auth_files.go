@@ -501,10 +501,17 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	paidTierID := ""
 	if hint, ok := coreauth.GetAntigravityCreditsHint(auth.ID); ok {
-		if tier := strings.TrimSpace(hint.PaidTierID); tier != "" {
-			entry["paid_tier"] = tier
+		paidTierID = strings.TrimSpace(hint.PaidTierID)
+	}
+	if paidTierID == "" {
+		if record, ok := coreauth.GetAntigravityDisplayPlan(auth.ID); ok {
+			paidTierID = strings.TrimSpace(record.PaidTierID)
 		}
+	}
+	if paidTierID != "" {
+		entry["paid_tier"] = paidTierID
 	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt

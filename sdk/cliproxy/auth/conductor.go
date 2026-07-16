@@ -2249,6 +2249,9 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 		}
 	}
 	m.mu.Unlock()
+	if strings.EqualFold(provider, "antigravity") {
+		DeleteAntigravityAuthState(id)
+	}
 
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()

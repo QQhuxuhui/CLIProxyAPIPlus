@@ -87,6 +87,26 @@ func TestExtractAccessToken(t *testing.T) {
 	}
 }
 
+func TestFileTokenStoreListIgnoresAntigravityPlanSnapshot(t *testing.T) {
+	baseDir := t.TempDir()
+	planStore := cliproxyauth.NewFileAntigravityPlanStore(baseDir)
+	if errSave := planStore.Save(context.Background(), map[string]cliproxyauth.AntigravityPlanRecord{
+		"auth-1": {PaidTierID: "pro"},
+	}); errSave != nil {
+		t.Fatalf("save plan snapshot: %v", errSave)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() returned error: %v", errList)
+	}
+	if len(auths) != 0 {
+		t.Fatalf("List() returned plan snapshot as auths: %#v", auths)
+	}
+}
+
 func TestFileTokenStoreListExpandsPluginMultiAuths(t *testing.T) {
 	baseDir := t.TempDir()
 	path := filepath.Join(baseDir, "geminicli.json")
