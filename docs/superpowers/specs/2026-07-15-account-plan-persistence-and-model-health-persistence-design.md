@@ -48,8 +48,8 @@ Mirror the existing `CooldownStateStore` architecture (injectable interface + fi
 
 - New interface in `sdk/cliproxy/auth` (e.g. `AntigravityPlanStore`) with `Load(ctx) (map[string]AntigravityPlanRecord, error)` and `Save(ctx, authID string, rec AntigravityPlanRecord) error`.
 - `AntigravityPlanRecord`: `{ PaidTierID string; UpdatedAt time.Time }`.
-- File impl: one atomic JSON file `antigravity-plans.json` under the auth/data dir (temp-write + `os.Rename`, matching `.cds`/`usagestats` idioms). A single map file (not per-auth) is sufficient — plan data is tiny.
-- A package-level injected store (`SetAntigravityPlanStore`, nil by default) plus an in-memory `map[authID]PaidTierID` populated on startup load. Guarded by a mutex/`sync.Map`.
+- File impl: one atomic JSON file `antigravity-plans.json` in the **auth dir** (the same directory `.cds` files live in, resolved the same way as `FileCooldownStateStore`), temp-write + `os.Rename`, matching `.cds`/`usagestats` idioms. A single map file (not per-auth) is sufficient — plan data is tiny.
+- A package-level injected store (`SetAntigravityPlanStore`, nil by default) plus an in-memory `map[authID]PaidTierID` populated on startup load, guarded by a dedicated `sync.RWMutex`.
 
 ### 3.3 Persist at the single choke point
 
