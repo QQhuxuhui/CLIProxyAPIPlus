@@ -21,10 +21,10 @@ import (
 )
 
 func resetAntigravityCreditsRetryState() {
-	antigravityCreditsFailureByAuth = sync.Map{}
-	antigravityShortCooldownByAuth = sync.Map{}
-	antigravityCreditsBalanceByAuth = sync.Map{}
-	antigravityCreditsHintRefreshByID = sync.Map{}
+	antigravityCreditsFailureByAuth.Clear()
+	antigravityShortCooldownByAuth.Clear()
+	antigravityCreditsBalanceByAuth.Clear()
+	antigravityCreditsHintRefreshByID.Clear()
 }
 
 type fakeAntigravityKVClient struct {
@@ -704,6 +704,34 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
 	}))
 
 	exec.updateAntigravityCreditsBalance(ctx, auth, "token")
+}
+
+func TestUpdateAntigravityCreditsBalanceCapturesPlanForUnmatchedCredits(t *testing.T) {
+	if errConfigure := cliproxyauth.ConfigureAntigravityPlanStore(context.Background(), cliproxyauth.NewFileAntigravityPlanStore(t.TempDir())); errConfigure != nil {
+		t.Fatalf("configure plan store: %v", errConfigure)
+	}
+	t.Cleanup(func() {
+		_ = cliproxyauth.ConfigureAntigravityPlanStore(context.Background(), nil)
+	})
+
+	exec := NewAntigravityExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "executor-unmatched-display-plan"}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"paidTier":{"id":"pro","availableCredits":[{"creditType":"OTHER","creditAmount":"10","minimumCreditAmountForUsage":"1"}]}}`)),
+		}, nil
+	}))
+
+	exec.updateAntigravityCreditsBalance(ctx, auth, "token")
+
+	if hint, ok := cliproxyauth.GetAntigravityCreditsHint(auth.ID); ok {
+		t.Fatalf("unexpected cached hint: %+v", hint)
+	}
+	if record, ok := cliproxyauth.GetAntigravityDisplayPlan(auth.ID); !ok || record.PaidTierID != "pro" {
+		t.Fatalf("display plan = %#v, %t; want pro", record, ok)
+	}
 }
 
 func TestParseMetaFloat(t *testing.T) {

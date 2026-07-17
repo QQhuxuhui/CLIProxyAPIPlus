@@ -27,6 +27,49 @@ func TestManager_Remove_DeletesRuntimeAuth(t *testing.T) {
 	}
 }
 
+func TestManager_Remove_DeletesAntigravityDisplayPlan(t *testing.T) {
+	store := &recordingAntigravityPlanStore{}
+	if errConfigure := ConfigureAntigravityPlanStore(context.Background(), store); errConfigure != nil {
+		t.Fatalf("configure plan store: %v", errConfigure)
+	}
+	t.Cleanup(func() {
+		_ = ConfigureAntigravityPlanStore(context.Background(), nil)
+	})
+
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "remove-antigravity-plan", Provider: "antigravity", Status: StatusActive}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	SetAntigravityCreditsHint(auth.ID, AntigravityCreditsHint{
+		Known:      true,
+		Available:  true,
+		PaidTierID: "pro",
+		UpdatedAt:  time.Now(),
+	})
+
+	manager.Remove(context.Background(), auth.ID)
+
+	if _, ok := GetAntigravityDisplayPlan(auth.ID); ok {
+		t.Fatal("antigravity display plan survived auth removal")
+	}
+	if hint, ok := GetAntigravityCreditsHint(auth.ID); ok {
+		t.Fatalf("antigravity credits hint survived auth removal: %#v", hint)
+	}
+	snapshot, _ := store.snapshot()
+	if _, ok := snapshot[auth.ID]; ok {
+		t.Fatalf("persisted snapshot retained removed auth: %#v", snapshot)
+	}
+
+	reimported := &Auth{ID: auth.ID, Provider: "antigravity", Status: StatusActive}
+	if _, errRegister := manager.Register(context.Background(), reimported); errRegister != nil {
+		t.Fatalf("re-register auth: %v", errRegister)
+	}
+	if antigravityCreditsAvailableForModel(reimported, "claude-sonnet-4-6") {
+		t.Fatal("re-imported auth inherited stale credits routing state")
+	}
+}
+
 func TestManager_Update_MissingAuthIsNoOp(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	ctx := context.Background()

@@ -9,7 +9,7 @@
   *, ::before, ::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: #e5e7eb; }
   html { line-height: 1.5; -webkit-text-size-adjust: 100%; }
   body, h1, h2, h3, p { margin: 0; }
-  button, input { font: inherit; color: inherit; }
+  button, input, select { font: inherit; color: inherit; }
   button { background: none; cursor: pointer; }
   input::placeholder { opacity: 1; }
 
@@ -165,6 +165,26 @@
   .refresh-credits { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 8px; font-size: 11px; line-height: 1.6; color: #4f46e5; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 9999px; cursor: pointer; }
   .refresh-credits:hover { background: #e0e7ff; }
   .refresh-credits[disabled] { opacity: .5; cursor: default; }
+  .account-filters { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(130px, .8fr) minmax(145px, .9fr) minmax(145px, .9fr) minmax(130px, .8fr); gap: 10px; margin-bottom: 12px; }
+  .account-filter label { display: block; margin-bottom: 4px; color: #64748b; font-size: 12px; font-weight: 500; }
+  .account-filter input, .account-filter select, .account-page-size { width: 100%; height: 36px; padding: 0 10px; color: #334155; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
+  .account-filter input:focus, .account-filter select:focus, .account-page-size:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,.16); }
+  .account-pagination { min-height: 52px; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #eef2f6; }
+  .account-page-controls { display: flex; align-items: center; gap: 8px; }
+  .account-page-size { width: 76px; }
+  .account-page-button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 6px; color: #475569; background: #fff; }
+  .account-page-button:hover:not(:disabled) { background: #f8fafc; color: #0f172a; }
+  .account-page-button:disabled { opacity: .4; cursor: default; }
+  .status-error { color: #dc2626; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+  /* Fixed-position tooltip driven by delegated JS: native title tooltips get
+     cancelled every time the 15s auto-refresh rebuilds the table rows. */
+  #hover-tip { position: fixed; z-index: 60; max-width: 360px; padding: 6px 10px; font-size: 12px; line-height: 1.5; color: #fff; background: #1f2937; border-radius: 6px; box-shadow: 0 4px 12px rgba(15,23,42,.25); white-space: pre-wrap; word-break: break-all; pointer-events: none; }
+  @media (max-width: 900px) { .account-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 560px) {
+    .account-filters { grid-template-columns: minmax(0, 1fr); }
+    .account-pagination { align-items: flex-start; flex-direction: column; }
+    .account-page-controls { width: 100%; justify-content: space-between; }
+  }
 
   /* Model-health table specifics (unchanged behavior) */
   .mh .glyph { font-weight: 700; }
@@ -238,6 +258,13 @@
     <!-- Tab: 账号统计 -->
     <section id="tab-accounts">
       <h2 class="text-sm font-semibold text-slate-900 mb-3">账号列表</h2>
+      <div class="account-filters">
+        <div class="account-filter"><label for="account-name-filter">账号名称</label><input id="account-name-filter" type="search" placeholder="搜索账号名称"></div>
+        <div class="account-filter"><label for="account-plan-filter">套餐</label><select id="account-plan-filter"><option value="">全部</option></select></div>
+        <div class="account-filter"><label for="account-created-from">创建时间（从）</label><input id="account-created-from" type="date"></div>
+        <div class="account-filter"><label for="account-created-to">创建时间（到）</label><input id="account-created-to" type="date"></div>
+        <div class="account-filter"><label for="account-status-filter">状态</label><select id="account-status-filter"><option value="">全部</option></select></div>
+      </div>
       <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto">
         <table id="table" class="data-table" hidden>
           <thead><tr>
@@ -246,6 +273,15 @@
           <tbody id="rows"></tbody>
         </table>
         <div id="empty" class="px-6 py-16 text-center text-sm text-slate-400" hidden>暂无账号</div>
+        <div id="account-pagination" class="account-pagination" hidden>
+          <span id="account-page-info" class="text-xs text-slate-500">第 1 / 1 页 · 共 0 条</span>
+          <div class="account-page-controls">
+            <label class="text-xs text-slate-500" for="account-page-size">每页</label>
+            <select id="account-page-size" class="account-page-size" aria-label="每页账号数"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select>
+            <button id="account-page-prev" class="account-page-button" type="button" title="上一页" aria-label="上一页">‹</button>
+            <button id="account-page-next" class="account-page-button" type="button" title="下一页" aria-label="下一页">›</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -320,6 +356,7 @@
     </div>
   </div>
 </div>
+<div id="hover-tip" hidden></div>
 
 <script>
 (function () {
@@ -327,12 +364,12 @@
   var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
-  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty'].forEach(function (id) { els[id] = document.getElementById(id); });
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination'].forEach(function (id) { els[id] = document.getElementById(id); });
   var accountsData = []; // account rows currently rendered (raw auth-files entries)
+  var accountPage = 1;
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
   var firstSuccess = false;
   var autoTimer = null;
-  var creditsAutoAttempted = {}; // auth_index -> true, so auto-refresh only fires once per account per session.
 
   function getStoredKey() { return sessionStorage.getItem(KEY_NAME) || localStorage.getItem(KEY_NAME) || ''; }
   function setStatus(msg, kind) {
@@ -356,10 +393,11 @@
   }
 
   function clearRenderedData() {
-    accountsData = []; modelRows = [];
+    accountsData = []; modelRows = []; accountPage = 1;
     els.rows.innerHTML = '';
     els.table.hidden = true;
     els.empty.hidden = true;
+    els['account-pagination'].hidden = true;
     document.getElementById('dashboard').hidden = true;
     document.getElementById('mh-rows').innerHTML = '';
     document.getElementById('strip-models').innerHTML = '';
@@ -389,7 +427,6 @@
   function clearKey() {
     sessionStorage.removeItem(KEY_NAME); localStorage.removeItem(KEY_NAME);
     els.key.value = ''; stopAuto(); firstSuccess = false; els.auto.disabled = true;
-    creditsAutoAttempted = {};
     clearRenderedData();
     showLogin();
     setStatus('key 已清除', '');
@@ -575,9 +612,61 @@
     if (isNaN(d.getTime())) return String(v);
     return d.toLocaleString();
   }
-  function accountPlan(a) {
-    return a.paid_tier || (a.id_token && a.id_token.plan_type) || '—';
-  }
+  /* ACCOUNT_VIEW_LOGIC_START */
+  var AccountViewLogic = (function () {
+    function accountPlan(a) {
+      return a && (a.paid_tier || (a.id_token && a.id_token.plan_type)) || '—';
+    }
+    function localDateKey(value) {
+      if (!value) return '';
+      var date = new Date(value);
+      if (isNaN(date.getTime())) return '';
+      function pad(value) { return value < 10 ? '0' + value : String(value); }
+      return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+    }
+    function filterAccounts(entries, filters) {
+      filters = filters || {};
+      var name = String(filters.name || '').toLowerCase();
+      var plan = String(filters.plan || '');
+      var status = String(filters.status || '');
+      var from = String(filters.from || '');
+      var to = String(filters.to || '');
+      return (entries || []).filter(function (entry) {
+        if (name && String(entry && entry.name || '').toLowerCase().indexOf(name) === -1) return false;
+        if (plan && accountPlan(entry) !== plan) return false;
+        if (status && String(entry && entry.status || '') !== status) return false;
+        if (from || to) {
+          var created = localDateKey(entry && entry.created_at);
+          if (!created || (from && created < from) || (to && created > to)) return false;
+        }
+        return true;
+      });
+    }
+    function paginate(entries, page, pageSize) {
+      var rows = entries || [];
+      var size = Math.max(1, Number(pageSize) || 20);
+      var totalPages = Math.max(1, Math.ceil(rows.length / size));
+      var safePage = Math.min(totalPages, Math.max(1, Number(page) || 1));
+      var start = (safePage - 1) * size;
+      return {
+        items: rows.slice(start, start + size),
+        page: safePage,
+        pageSize: size,
+        total: rows.length,
+        totalPages: totalPages
+      };
+    }
+    function preserveSelectedOption(values, selected, preserveMissing) {
+      var options = (values || []).slice();
+      if (preserveMissing && selected && options.indexOf(selected) < 0) options.push(selected);
+      options.sort();
+      return options;
+    }
+    return { accountPlan: accountPlan, localDateKey: localDateKey, filterAccounts: filterAccounts, paginate: paginate, preserveSelectedOption: preserveSelectedOption };
+  })();
+  /* ACCOUNT_VIEW_LOGIC_END */
+
+  function accountPlan(a) { return AccountViewLogic.accountPlan(a); }
   function isAntigravity(a) { return String(a && a.provider || '').toLowerCase() === 'antigravity'; }
   // Antigravity accounts carry a manual "刷新额度" control because their 套餐/credits
   // are only fetched lazily by the executor; non-antigravity rows show plain text.
@@ -591,37 +680,89 @@
 
   function render(files) {
     accountsData = files || []; // already sorted by name server-side
-    if (!accountsData.length) { els.table.hidden = true; els.empty.hidden = false; return; }
-    els.empty.hidden = true; els.table.hidden = false;
-    paint();
-    autoFillCredits();
+    renderAccountView({ resetPage: false, rebuildOptions: true });
   }
 
-  function paint() {
-    els.rows.innerHTML = accountsData.map(function (a) {
+  function currentAccountFilters() {
+    return {
+      name: els['account-name-filter'].value.trim(),
+      plan: els['account-plan-filter'].value,
+      from: els['account-created-from'].value,
+      to: els['account-created-to'].value,
+      status: els['account-status-filter'].value
+    };
+  }
+
+  function replaceFilterOptions(select, values, labelForValue) {
+    var selected = select.value;
+    select.innerHTML = '';
+    var all = document.createElement('option');
+    all.value = ''; all.textContent = '全部'; select.appendChild(all);
+    values.forEach(function (value) {
+      var option = document.createElement('option');
+      option.value = value;
+      option.textContent = labelForValue ? labelForValue(value) : value;
+      select.appendChild(option);
+    });
+    select.value = values.indexOf(selected) >= 0 ? selected : '';
+  }
+
+  function rebuildAccountFilterOptions(preserveMissingPlan) {
+    var plans = [];
+    var statuses = [];
+    accountsData.forEach(function (entry) {
+      var plan = accountPlan(entry);
+      var status = String(entry && entry.status || '');
+      if (plans.indexOf(plan) < 0) plans.push(plan);
+      if (status && statuses.indexOf(status) < 0) statuses.push(status);
+    });
+    plans = AccountViewLogic.preserveSelectedOption(plans, els['account-plan-filter'].value, preserveMissingPlan);
+    statuses.sort();
+    replaceFilterOptions(els['account-plan-filter'], plans, function (value) { return value === '—' ? '— / 未知' : value; });
+    replaceFilterOptions(els['account-status-filter'], statuses);
+  }
+
+  function renderAccountView(options) {
+    options = options || {};
+    if (options.rebuildOptions) rebuildAccountFilterOptions(!!options.preserveMissingPlan);
+    if (options.resetPage) accountPage = 1;
+    var filtered = AccountViewLogic.filterAccounts(accountsData, currentAccountFilters());
+    var page = AccountViewLogic.paginate(filtered, accountPage, els['account-page-size'].value);
+    accountPage = page.page;
+    paint(page.items);
+
+    var hasSource = accountsData.length > 0;
+    var hasMatches = page.total > 0;
+    els.table.hidden = !hasMatches;
+    els.empty.hidden = hasMatches;
+    els.empty.textContent = hasSource ? '无匹配账号' : '暂无账号';
+    els['account-pagination'].hidden = !hasSource;
+    els['account-page-info'].textContent = '第 ' + page.page + ' / ' + page.totalPages + ' 页 · 共 ' + page.total + ' 条';
+    els['account-page-prev'].disabled = page.page <= 1;
+    els['account-page-next'].disabled = page.page >= page.totalPages;
+  }
+
+  function statusCell(a) {
+    var status = a.status || '—';
+    if (String(a.status || '').toLowerCase() === 'error' && a.status_message) {
+      return '<td><span class="status-error" data-tip="' + escapeHtml(String(a.status_message)) + '">' + escapeHtml(status) + '</span></td>';
+    }
+    return td(status);
+  }
+
+  function paint(rows) {
+    els.rows.innerHTML = rows.map(function (a) {
       return '<tr>' +
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
         td(a.provider) + planCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
-        td(a.status || '—') +
+        statusCell(a) +
         '</tr>';
     }).join('');
   }
   function td(v) { return '<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>'; }
-  function escapeHtml(s) { return s.replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-
-  // Auto-fill 套餐 for antigravity accounts that have none yet, once per account.
-  function autoFillCredits() {
-    accountsData.forEach(function (a) {
-      if (!isAntigravity(a)) return;
-      var idx = a.auth_index || '';
-      if (!idx || creditsAutoAttempted[idx]) return;
-      if (accountPlan(a) !== '—') return;
-      creditsAutoAttempted[idx] = true;
-      refreshCredits(idx, true);
-    });
-  }
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
   function refreshCredits(authIndex, silent) {
     var k = getStoredKey();
@@ -640,7 +781,7 @@
       if (!result.ok) { if (!silent) setStatus('刷新额度失败：' + (result.msg || '请求失败'), 'err'); if (btn) { btn.disabled = false; btn.textContent = '刷新额度'; } return; }
       var tier = result.data && result.data.paid_tier;
       accountsData.forEach(function (a) { if ((a.auth_index || '') === authIndex && tier) { a.paid_tier = tier; } });
-      paint();
+      renderAccountView({ resetPage: false, rebuildOptions: true, preserveMissingPlan: true });
       if (!silent) setStatus('额度已刷新', 'ok');
     }).catch(function (e) {
       if (!silent) setStatus('刷新额度失败：网络错误 ' + e, 'err');
@@ -658,7 +799,7 @@
       .then(function (result) {
         if (!result.ok) { setStatus('删除失败：' + (result.msg || '请求失败'), 'err'); return; }
         accountsData = accountsData.filter(function (a) { return a.name !== name; });
-        if (!accountsData.length) { els.table.hidden = true; els.empty.hidden = false; } else { paint(); }
+        renderAccountView({ resetPage: false, rebuildOptions: true });
         setStatus('已删除 "' + name + '"', 'ok');
       })
       .catch(function (e) { setStatus('删除失败：网络错误 ' + e, 'err'); });
@@ -795,6 +936,17 @@
   els.clear.addEventListener('click', clearKey);
   els.refresh.addEventListener('click', fetchData);
   els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
+  ['account-name-filter', 'account-created-from', 'account-created-to'].forEach(function (id) {
+    els[id].addEventListener(id === 'account-name-filter' ? 'input' : 'change', function () {
+      renderAccountView({ resetPage: true, rebuildOptions: false });
+    });
+  });
+  ['account-plan-filter', 'account-status-filter'].forEach(function (id) {
+    els[id].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
+  });
+  els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
+  els['account-page-prev'].addEventListener('click', function () { accountPage--; renderAccountView({ resetPage: false, rebuildOptions: false }); });
+  els['account-page-next'].addEventListener('click', function () { accountPage++; renderAccountView({ resetPage: false, rebuildOptions: false }); });
   ['accounts', 'health', 'proxy'].forEach(function (n) {
     var b = document.getElementById('tabbtn-' + n);
     if (b) b.addEventListener('click', function () { switchTab(n); });
@@ -812,6 +964,24 @@
     if (creditBtn) { refreshCredits(creditBtn.getAttribute('data-index'), false); return; }
     var nameBtn = e.target && e.target.closest ? e.target.closest('.acct-name') : null;
     if (nameBtn) { openUsageModal(nameBtn.getAttribute('data-name'), nameBtn.getAttribute('data-index')); }
+  });
+  // Delegated hover tooltip: listener lives on document so it survives the
+  // periodic innerHTML rebuild that destroys the hovered row nodes.
+  var hoverTip = document.getElementById('hover-tip');
+  document.addEventListener('mouseover', function (e) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
+    var text = el ? String(el.getAttribute('data-tip') || '') : '';
+    if (!text) { hoverTip.hidden = true; return; }
+    hoverTip.textContent = text;
+    hoverTip.style.left = '0px';   // Reset before measuring so a stale left
+    hoverTip.style.top = '0px';    // offset cannot squeeze the shrink-to-fit width.
+    hoverTip.hidden = false;
+    var rect = el.getBoundingClientRect();
+    var left = Math.max(8, Math.min(rect.left, window.innerWidth - hoverTip.offsetWidth - 8));
+    var top = rect.bottom + 6;
+    if (top + hoverTip.offsetHeight > window.innerHeight - 8) top = rect.top - hoverTip.offsetHeight - 6;
+    hoverTip.style.left = left + 'px';
+    hoverTip.style.top = top + 'px';
   });
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('modal-backdrop').addEventListener('click', function (e) { if (e.target && e.target.id === 'modal-backdrop') closeModal(); });

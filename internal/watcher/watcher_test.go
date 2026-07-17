@@ -1289,6 +1289,20 @@ func TestLoadFileClientsWalkError(t *testing.T) {
 	}
 }
 
+func TestLoadFileClientsIgnoresAntigravityPlanSnapshot(t *testing.T) {
+	authDir := t.TempDir()
+	if errWrite := os.WriteFile(filepath.Join(authDir, "antigravity-plans.aps"), []byte(`{"version":1,"plans":{}}`), 0o600); errWrite != nil {
+		t.Fatalf("write plan snapshot: %v", errWrite)
+	}
+	cfg := &config.Config{AuthDir: authDir}
+	w := &Watcher{}
+	w.SetConfig(cfg)
+
+	if count := w.loadFileClients(cfg); count != 0 {
+		t.Fatalf("loadFileClients() count = %d, want 0 for .aps snapshot", count)
+	}
+}
+
 func TestReloadConfigIfChangedHandlesMissingAndEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")

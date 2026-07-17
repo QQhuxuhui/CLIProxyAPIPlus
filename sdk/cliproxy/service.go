@@ -789,6 +789,31 @@ func (s *Service) configureCooldownStateStore(cfg *config.Config) {
 	s.coreManager.SetCooldownStateStore(coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir))
 }
 
+func (s *Service) configureAntigravityPlanStore(ctx context.Context, cfg *config.Config) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cfg == nil || cfg.Home.Enabled {
+		if errClear := coreauth.ConfigureAntigravityPlanStore(ctx, nil); errClear != nil {
+			log.Warnf("failed to clear antigravity plan store: %v", errClear)
+		}
+		return
+	}
+	authDir, errResolve := resolveCooldownStateAuthDir(cfg)
+	if errResolve != nil || authDir == "" {
+		if errClear := coreauth.ConfigureAntigravityPlanStore(ctx, nil); errClear != nil {
+			log.Warnf("failed to clear antigravity plan store: %v", errClear)
+		}
+		if errResolve != nil {
+			log.Warnf("failed to resolve antigravity plan directory: %v", errResolve)
+		}
+		return
+	}
+	if errConfigure := coreauth.ConfigureAntigravityPlanStore(ctx, coreauth.NewFileAntigravityPlanStore(authDir)); errConfigure != nil {
+		log.Warnf("failed to load antigravity display plans: %v", errConfigure)
+	}
+}
+
 func resolveCooldownStateAuthDir(cfg *config.Config) (string, error) {
 	if cfg == nil {
 		return "", nil
@@ -1323,6 +1348,7 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 
 	s.applyRetryConfig(newCfg)
 	s.configureCooldownStateStore(newCfg)
+	s.configureAntigravityPlanStore(context.Background(), newCfg)
 	applyUsageStatsConfig(newCfg)
 	s.applyPprofConfig(newCfg)
 	if s.server != nil {
@@ -1648,6 +1674,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.applyRetryConfig(s.cfg)
 	s.configureCooldownStateStore(s.cfg)
+	if homeEnabled {
+		s.configureAntigravityPlanStore(ctx, s.cfg)
+	}
 	usagestats.Init("usage-stats")
 	applyUsageStatsConfig(s.cfg)
 
@@ -1662,6 +1691,9 @@ func (s *Service) Run(ctx context.Context) error {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
 			}
 		}
+	}
+	if !homeEnabled {
+		s.configureAntigravityPlanStore(ctx, s.cfg)
 	}
 
 	if !homeEnabled {
@@ -1825,6 +1857,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.homeLogForwarder = nil
 		}
 		home.ClearCurrent()
+		s.configureAntigravityPlanStore(ctx, nil)
 
 		// legacy refresh loop removed; only stopping core auth manager below
 

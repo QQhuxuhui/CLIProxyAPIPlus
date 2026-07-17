@@ -121,6 +121,12 @@ func TestParseAntigravityCredits(t *testing.T) {
 
 func TestRefreshAntigravityCredits_DoesNotCacheUnmatchedCredits(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
+	if errConfigure := coreauth.ConfigureAntigravityPlanStore(context.Background(), coreauth.NewFileAntigravityPlanStore(t.TempDir())); errConfigure != nil {
+		t.Fatalf("configure plan store: %v", errConfigure)
+	}
+	t.Cleanup(func() {
+		_ = coreauth.ConfigureAntigravityPlanStore(context.Background(), nil)
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -159,5 +165,8 @@ func TestRefreshAntigravityCredits_DoesNotCacheUnmatchedCredits(t *testing.T) {
 	}
 	if hint, ok := coreauth.GetAntigravityCreditsHint(auth.ID); ok {
 		t.Fatalf("unexpected cached hint: %+v", hint)
+	}
+	if record, ok := coreauth.GetAntigravityDisplayPlan(auth.ID); !ok || record.PaidTierID != "pro" {
+		t.Fatalf("display plan = %#v, %t; want pro", record, ok)
 	}
 }

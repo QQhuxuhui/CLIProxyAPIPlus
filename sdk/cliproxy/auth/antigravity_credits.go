@@ -47,6 +47,9 @@ func SetAntigravityCreditsHint(authID string, hint AntigravityCreditsHint) {
 	if hint.UpdatedAt.IsZero() {
 		hint.UpdatedAt = time.Now()
 	}
+	if strings.TrimSpace(hint.PaidTierID) != "" {
+		SetAntigravityDisplayPlan(authID, hint.PaidTierID, hint.UpdatedAt)
+	}
 	if _, homeMode, _ := homekv.CurrentKVClient(); homeMode {
 		homekv.KVSetJSONBestEffort(context.Background(), antigravityCreditsHintKey(authID), hint, 30*time.Minute)
 		return
@@ -90,6 +93,17 @@ func GetAntigravityCreditsHintRequired(ctx context.Context, authID string) (Anti
 func HasKnownAntigravityCreditsHint(authID string) bool {
 	hint, ok := GetAntigravityCreditsHint(authID)
 	return ok && hint.Known
+}
+
+// DeleteAntigravityAuthState removes volatile credits state and the persisted display plan.
+func DeleteAntigravityAuthState(authID string) {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	antigravityCreditsHintByAuth.Delete(authID)
+	homekv.KVDelBestEffort(context.Background(), antigravityCreditsHintKey(authID))
+	DeleteAntigravityDisplayPlan(authID)
 }
 
 func antigravityCreditsHintKey(authID string) string {
