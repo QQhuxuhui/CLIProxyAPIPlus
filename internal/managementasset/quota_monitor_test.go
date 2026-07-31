@@ -95,7 +95,7 @@ func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
 			t.Errorf("embedded page missing account-list marker %q", marker)
 		}
 	}
-	// status must be the LAST <th> in the account table's header row.
+	// Status and error detail must be the last two columns in the account table header.
 	theadStart := strings.Index(s, `<table id="table"`)
 	if theadStart < 0 {
 		t.Fatal("embedded page missing account table")
@@ -105,9 +105,8 @@ func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
 		t.Fatal("account table header row not found")
 	}
 	headerRow := s[theadStart : theadStart+theadEnd]
-	lastTh := strings.LastIndex(headerRow, "<th>")
-	if lastTh < 0 || !strings.HasPrefix(headerRow[lastTh:], "<th>状态</th>") {
-		t.Errorf("状态 column must be the last <th> in the account table header, got header row: %s", headerRow)
+	if !strings.HasSuffix(strings.TrimSpace(headerRow), "<th>状态</th><th>错误</th>") {
+		t.Errorf("状态 followed by 错误 must be the last columns in the account table header, got header row: %s", headerRow)
 	}
 	for _, gone := range []string{
 		"冷却明细", "pending_verification", "待验证", ".badge.p", ".badge.q",
@@ -149,6 +148,33 @@ func TestQuotaMonitorHTMLHasAccountFiltersAndPagination(t *testing.T) {
 	}
 }
 
+func TestQuotaMonitorHTMLHasErrorAndRequestColumns(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"<th>请求数</th><th>成功率</th>",
+		"<th>状态</th><th>错误</th>",
+		"function errorCell(a)",
+		"function requestCells(a)",
+		"AccountViewLogic.statusError",
+		"AccountViewLogic.requestStats",
+		"AccountViewLogic.formatSuccessRate",
+		"function parseErrorBody(message)",
+		"error_description",
+		`class="error-detail"`,
+		`class="request-count"`,
+		".error-detail {",
+		".request-count {",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing account error/request marker %q", marker)
+		}
+	}
+	// The error column reuses the delegated tooltip rather than a native title.
+	if strings.Contains(s, `class="error-detail" title=`) {
+		t.Error("error column must use data-tip, not a native title attribute")
+	}
+}
+
 func TestQuotaMonitorHTMLDeletesAccount(t *testing.T) {
 	s := string(QuotaMonitorHTML())
 	for _, marker := range []string{
@@ -177,7 +203,8 @@ func TestQuotaMonitorHTMLHasUsageStatsModal(t *testing.T) {
 		`id="range-apply"`,
 		"function openUsageModal(name, authIndex)",
 		"+ authIndex + '）'", // modal title must actually use authIndex, not just accept it
-		"function fetchUsage(from, to)",
+		"function fetchUsage(range)",
+		"preset: 'today'",
 		"/v0/management/usage-stats?account=",
 		"未开启用量统计，请在 config.yaml 设置 usage-stats-enabled: true 后重启/重载",
 		"acct-name",
@@ -185,6 +212,116 @@ func TestQuotaMonitorHTMLHasUsageStatsModal(t *testing.T) {
 		if !strings.Contains(s, marker) {
 			t.Errorf("embedded page missing usage-stats modal marker %q", marker)
 		}
+	}
+}
+
+func TestQuotaMonitorHTMLCancelsStaleUsageModalRequests(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	start := strings.Index(s, "// ---- Usage-stats modal ----")
+	if start < 0 {
+		t.Fatal("usage-stats modal section missing")
+	}
+	end := strings.Index(s[start:], "// ---- Wiring ----")
+	if end < 0 {
+		t.Fatal("usage-stats modal section end missing")
+	}
+	section := s[start : start+end]
+	for _, marker := range []string{
+		"var modalGeneration = 0",
+		"var modalController = null",
+		"function cancelModalRequest()",
+		"modalGeneration = ModelStatsLogic.nextGeneration(modalGeneration)",
+		"modalController.abort()",
+		"ModelStatsLogic.isCurrentGeneration(generation, modalGeneration)",
+		"options.signal = controller.signal",
+	} {
+		if !strings.Contains(section, marker) {
+			t.Errorf("usage-stats modal missing stale-request guard %q", marker)
+		}
+	}
+}
+
+func TestQuotaMonitorHTMLHasModelStatsChart(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		`id="tabbtn-stats"`,
+		`id="tab-stats"`,
+		`id="stats-range-today"`,
+		`id="stats-range-yesterday"`,
+		`id="stats-range-7d"`,
+		`id="stats-range-custom"`,
+		`id="stats-range-apply"`,
+		`id="stats-status"`,
+		`id="stats-range-summary"`,
+		`id="stats-chart-body"`,
+		`id="stats-rows"`,
+		"stats-track",
+		"stats-segment-success",
+		"stats-segment-fail",
+		"function renderModelStats(data)",
+		"escapeHtml(row.model)",
+		"escapeHtml(tip)",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing model-stats marker %q", marker)
+		}
+	}
+}
+
+func TestQuotaMonitorHTMLHasRaceSafeModelStatsLifecycle(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"var refreshMs = 60000",
+		"function requestModelStats()",
+		"function maybeAutoRefreshModelStats()",
+		"function resetModelStatsState()",
+		"ModelStatsLogic.nextGeneration",
+		"ModelStatsLogic.isCurrentGeneration",
+		"new AbortController()",
+		"/v0/management/usage-stats?",
+		"preset=",
+		"仍显示 ",
+		"statsState.lastSuccessRange",
+		"reason === 'auto'",
+		"reason === 'manual'",
+		"reason === 'login'",
+		"document.addEventListener('focusin'",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing model-stats lifecycle marker %q", marker)
+		}
+	}
+	if strings.Contains(s, "function todayStr()") || strings.Contains(s, "function yesterdayStr()") {
+		t.Error("usage presets must no longer use browser-calendar helper functions")
+	}
+}
+
+func TestQuotaMonitorHTMLTracksSuccessfulModelStatsAgeSeparately(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"lastSuccessAt: 0",
+		"statsState.lastSuccessAt = 0",
+		"statsState.lastSuccessAt = Date.now()",
+		"ModelStatsLogic.shouldRefreshOnActivate(statsState.lastSuccessAt, Date.now())",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing successful-result age marker %q", marker)
+		}
+	}
+	if strings.Contains(s, "ModelStatsLogic.shouldRefreshOnActivate(statsState.lastRequestAt, Date.now())") {
+		t.Error("tab activation must use the last successful result time, not the last request time")
+	}
+}
+
+func TestQuotaMonitorHTMLClearsModelStatsState(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	start := strings.Index(s, "function clearRenderedData()")
+	if start < 0 {
+		t.Fatal("clearRenderedData missing")
+	}
+	end := strings.Index(s[start:], "\n  }")
+	if end < 0 || !strings.Contains(s[start:start+end], "resetModelStatsState();") {
+		t.Error("clearRenderedData must reset model statistics state")
 	}
 }
 

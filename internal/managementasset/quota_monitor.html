@@ -176,6 +176,9 @@
   .account-page-button:hover:not(:disabled) { background: #f8fafc; color: #0f172a; }
   .account-page-button:disabled { opacity: .4; cursor: default; }
   .status-error { color: #dc2626; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+  /* Raw upstream bodies can be long; the cell truncates and the hover tip carries the full text. */
+  .error-detail { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; color: #dc2626; font-variant-numeric: tabular-nums; cursor: help; }
+  .request-count { font-variant-numeric: tabular-nums; cursor: help; }
   /* Fixed-position tooltip driven by delegated JS: native title tooltips get
      cancelled every time the 15s auto-refresh rebuilds the table rows. */
   #hover-tip { position: fixed; z-index: 60; max-width: 360px; padding: 6px 10px; font-size: 12px; line-height: 1.5; color: #fff; background: #1f2937; border-radius: 6px; box-shadow: 0 4px 12px rgba(15,23,42,.25); white-space: pre-wrap; word-break: break-all; pointer-events: none; }
@@ -195,6 +198,46 @@
   /* Usage-stats modal */
   #modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
   .range-bar button.active { color: #4f46e5; font-weight: 600; }
+
+  /* Model call statistics */
+  .stats-card { overflow: hidden; }
+  .stats-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 10px; }
+  .stats-legend { display: flex; align-items: center; gap: 14px; color: #475569; font-size: 12px; }
+  .stats-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .stats-swatch { width: 9px; height: 9px; border-radius: 2px; }
+  .stats-swatch-success { background: #16a34a; }
+  .stats-swatch-fail { background: #dc2626; }
+  .stats-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 20px 12px; }
+  .stats-controls > button { min-height: 32px; padding: 5px 10px; border: 1px solid transparent; border-radius: 6px; color: #475569; font-size: 13px; }
+  .stats-controls > button:hover { color: #4f46e5; background: #f8fafc; }
+  .stats-controls > button.active { color: #4338ca; background: #eef2ff; border-color: #c7d2fe; font-weight: 600; }
+  .stats-custom-range { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 6px; }
+  .stats-custom-range input { height: 32px; min-width: 0; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 6px; color: #334155; }
+  .stats-custom-range button { height: 32px; padding: 0 12px; border-radius: 6px; color: #fff; background: #4f46e5; font-weight: 600; }
+  .stats-status { min-height: 30px; padding: 4px 20px 8px; }
+  .stats-rows { max-height: 560px; overflow-y: auto; border-top: 1px solid #eef2f6; }
+  .stats-row { display: grid; grid-template-columns: minmax(140px, 220px) minmax(160px, 1fr) minmax(150px, auto); align-items: center; gap: 16px; min-height: 54px; padding: 10px 20px; border-bottom: 1px solid #eef2f6; }
+  .stats-row:last-child { border-bottom: 0; }
+  .stats-model { display: block; overflow: hidden; color: #334155; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .stats-model:focus, .stats-bar:focus { outline: 2px solid rgba(99,102,241,.45); outline-offset: 2px; }
+  .stats-track { width: 100%; height: 14px; overflow: hidden; background: #eef2f6; border-radius: 4px; }
+  .stats-fill { display: flex; height: 100%; overflow: hidden; border-radius: 4px; }
+  .stats-segment-success { height: 100%; background: #16a34a; }
+  .stats-segment-fail { height: 100%; background: #dc2626; }
+  .stats-counts { text-align: right; }
+  .stats-total { display: block; color: #0f172a; font-size: 13px; font-weight: 600; }
+  .stats-breakdown { display: block; margin-top: 2px; color: #64748b; font-size: 11px; white-space: nowrap; }
+  @media (max-width: 640px) {
+    .stats-header { align-items: flex-start; flex-direction: column; }
+    .stats-controls { align-items: stretch; }
+    .stats-custom-range { width: 100%; margin: 4px 0 0; }
+    .stats-custom-range input { flex: 1 1 120px; }
+    .stats-row { grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; }
+    .stats-bar { grid-column: 1 / -1; grid-row: 2; }
+    .stats-counts { display: contents; }
+    .stats-total { grid-column: 2; grid-row: 1; text-align: right; }
+    .stats-breakdown { grid-column: 1 / -1; grid-row: 3; margin-top: 0; text-align: left; }
+  }
 </style>
 </head>
 <body class="bg-slate-50 text-slate-800 antialiased">
@@ -247,6 +290,7 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6">
       <nav class="flex items-center gap-6 border-t border-slate-100">
         <button id="tabbtn-accounts" data-tab="accounts" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-indigo-600 border-indigo-600">账号统计</button>
+        <button id="tabbtn-stats" data-tab="stats" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">调用统计</button>
         <button id="tabbtn-health" data-tab="health" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">模型健康</button>
         <button id="tabbtn-proxy" data-tab="proxy" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">代理设置</button>
       </nav>
@@ -268,7 +312,7 @@
       <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto">
         <table id="table" class="data-table" hidden>
           <thead><tr>
-            <th>账号名称</th><th>provider</th><th>套餐</th><th>创建时间</th><th>操作</th><th>状态</th>
+            <th>账号名称</th><th>provider</th><th>套餐</th><th>创建时间</th><th>请求数</th><th>成功率</th><th>操作</th><th>状态</th><th>错误</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -281,6 +325,39 @@
             <button id="account-page-prev" class="account-page-button" type="button" title="上一页" aria-label="上一页">‹</button>
             <button id="account-page-next" class="account-page-button" type="button" title="下一页" aria-label="下一页">›</button>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: 调用统计 -->
+    <section id="tab-stats" hidden>
+      <div class="stats-card bg-white border border-slate-200 rounded-xl shadow-sm">
+        <div class="stats-header">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-900">模型调用统计</h2>
+            <div id="stats-range-summary" class="mt-1 text-xs text-slate-500"></div>
+          </div>
+          <div id="stats-legend" class="stats-legend" aria-label="图例">
+            <span><i class="stats-swatch stats-swatch-success"></i>成功</span>
+            <span><i class="stats-swatch stats-swatch-fail"></i>失败</span>
+          </div>
+        </div>
+        <div class="stats-controls" role="group" aria-label="统计时间范围">
+          <button id="stats-range-today" type="button" aria-pressed="false">今天</button>
+          <button id="stats-range-yesterday" type="button" aria-pressed="false">昨天</button>
+          <button id="stats-range-7d" type="button" class="active" aria-pressed="true">近7天</button>
+          <button id="stats-range-custom" type="button" aria-pressed="false">自定义</button>
+          <span id="stats-custom-range" class="stats-custom-range" hidden>
+            <span class="text-xs text-slate-500">按服务端日期</span>
+            <input id="stats-range-from" type="date" aria-label="统计开始日期">
+            <span class="text-slate-400">~</span>
+            <input id="stats-range-to" type="date" aria-label="统计结束日期">
+            <button id="stats-range-apply" type="button">应用</button>
+          </span>
+        </div>
+        <div id="stats-status" class="stats-status text-sm text-slate-500" role="status" aria-live="polite"></div>
+        <div id="stats-chart-body" hidden>
+          <div id="stats-rows" class="stats-rows"></div>
         </div>
       </div>
     </section>
@@ -341,6 +418,7 @@
       <button id="range-7d" class="text-slate-600 hover:text-indigo-600">近7天</button>
       <button id="range-custom" class="text-slate-600 hover:text-indigo-600">自定义</button>
       <span id="custom-range" class="flex items-center gap-1.5" hidden>
+        <span class="text-xs text-slate-500">按服务端日期</span>
         <input type="date" id="range-from" class="rounded-md border border-slate-300 px-2 py-1 text-sm">
         <span class="text-slate-400">~</span>
         <input type="date" id="range-to" class="rounded-md border border-slate-300 px-2 py-1 text-sm">
@@ -370,6 +448,17 @@
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
   var firstSuccess = false;
   var autoTimer = null;
+  var currentTab = 'accounts';
+  var statsState = {
+    range: { preset: '7d', from: '', to: '' },
+    serverToday: '',
+    lastRequestAt: 0,
+    lastSuccessAt: 0,
+    lastSuccessRange: null,
+    loaded: false,
+    generation: 0,
+    controller: null
+  };
 
   function getStoredKey() { return sessionStorage.getItem(KEY_NAME) || localStorage.getItem(KEY_NAME) || ''; }
   function setStatus(msg, kind) {
@@ -380,7 +469,10 @@
     if (app) { app.textContent = msg || ''; app.className = 'text-xs hidden sm:inline max-w-[280px] truncate ' + cls; }
   }
   function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
-  function startAuto() { if (autoTimer) return; autoTimer = setInterval(fetchData, REFRESH_MS); }
+  function startAuto() {
+    if (autoTimer) return;
+    autoTimer = setInterval(function () { fetchData('auto'); }, REFRESH_MS);
+  }
 
   function showApp() {
     document.getElementById('login-view').hidden = true;
@@ -402,6 +494,7 @@
     document.getElementById('mh-rows').innerHTML = '';
     document.getElementById('strip-models').innerHTML = '';
     document.getElementById('strip-soonest').textContent = '';
+    resetModelStatsState();
     els.updated.textContent = '';
   }
   function readError(resp) {
@@ -416,13 +509,31 @@
     });
   }
 
+  function usageRangeQuery(range) {
+    range = range || {};
+    if (range.preset && range.preset !== 'custom') return 'preset=' + encodeURIComponent(range.preset);
+    return 'from=' + encodeURIComponent(range.from || '') + '&to=' + encodeURIComponent(range.to || '');
+  }
+  function setStatsActiveRange(id) {
+    ['stats-range-today', 'stats-range-yesterday', 'stats-range-7d', 'stats-range-custom'].forEach(function (buttonID) {
+      var active = buttonID === id;
+      var button = document.getElementById(buttonID);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+  function staleStatsSuffix() {
+    var range = statsState.lastSuccessRange;
+    return range ? '；仍显示 ' + range.from + ' 至 ' + range.to + ' 的上次结果' : '';
+  }
+
   function saveKey() {
     var k = els.key.value.trim();
     if (!k) { setStatus('请填写管理 key', 'err'); return; }
     sessionStorage.setItem(KEY_NAME, k);
     if (els.remember.checked) { localStorage.setItem(KEY_NAME, k); } else { localStorage.removeItem(KEY_NAME); }
     setStatus('验证中…', '');
-    fetchData();
+    fetchData('login');
   }
   function clearKey() {
     sessionStorage.removeItem(KEY_NAME); localStorage.removeItem(KEY_NAME);
@@ -440,7 +551,7 @@
     return out;
   }
 
-  function fetchData() {
+  function fetchData(reason) {
     var k = getStoredKey();
     if (!k) { setStatus('请填写管理 key 后进入', 'err'); return; }   // Never send requests without a key to avoid failed-attempt bans.
     fetch(ENDPOINT, { headers: { 'Authorization': 'Bearer ' + k } }).then(function (resp) {
@@ -479,6 +590,10 @@
       showApp();
       render(data.files || []);
       fetchSummary(k);
+      if (currentTab === 'stats') {
+        if (reason === 'manual' || reason === 'login') requestModelStats();
+        else if (reason === 'auto') maybeAutoRefreshModelStats();
+      }
       els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
       setStatus('', '');
     }).catch(function (e) { setStatus('网络错误：' + e, 'err'); });
@@ -662,9 +777,149 @@
       options.sort();
       return options;
     }
-    return { accountPlan: accountPlan, localDateKey: localDateKey, filterAccounts: filterAccounts, paginate: paginate, preserveSelectedOption: preserveSelectedOption };
+    // status_message is either a normalized short label the conductor assigns
+    // ("invalid_grant", "quota exhausted", …) or the raw upstream error body,
+    // sometimes with a prefix such as "... status 429: {json}". Raw bodies come
+    // in two shapes: flat OAuth errors and Google-style nested errors.
+    function parseErrorBody(message) {
+      var text = String(message == null ? '' : message).trim();
+      if (!text) return null;
+      var candidates = [text];
+      var brace = text.indexOf('{');
+      if (brace > 0) candidates.push(text.slice(brace));
+      for (var i = 0; i < candidates.length; i++) {
+        var parsed = null;
+        try { parsed = JSON.parse(candidates[i]); } catch (parseErr) { parsed = null; }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      }
+      return null;
+    }
+    // Returns { text, tip }: text is the compact cell label, tip the full detail.
+    function statusError(entry) {
+      var message = String(entry && entry.status_message || '').trim();
+      if (!message) return { text: '', tip: '' };
+      var body = parseErrorBody(message);
+      var error = body ? body.error : null;
+      if (error && typeof error === 'object' && !Array.isArray(error)) {
+        var status = String(error.status == null ? '' : error.status).trim();
+        var code = error.code;
+        var hasCode = typeof code === 'number' ? isFinite(code) : String(code == null ? '' : code).trim() !== '';
+        var detail = String(error.message == null ? '' : error.message).trim();
+        return {
+          text: hasCode ? String(code) : (status || 'error'),
+          tip: detail || status || message
+        };
+      }
+      if (typeof error === 'string' && error.trim()) {
+        var reason = error.trim();
+        var description = String(body.error_description == null ? '' : body.error_description).trim();
+        return { text: reason, tip: description ? reason + ': ' + description : reason };
+      }
+      return { text: message, tip: message };
+    }
+    function requestCount(value) {
+      var number = Number(value);
+      return isFinite(number) && number > 0 ? Math.floor(number) : 0;
+    }
+    // success/failed ride along in the auth-files payload as in-process counters,
+    // so no extra request is needed. They reset when the server restarts.
+    function requestStats(entry) {
+      var success = requestCount(entry && entry.success);
+      var failed = requestCount(entry && entry.failed);
+      return { success: success, failed: failed, total: success + failed };
+    }
+    function formatSuccessRate(stats) {
+      if (!stats || !stats.total) return '—';
+      var rounded = Math.round(1000 * stats.success / stats.total) / 10;
+      // Never let rounding claim a clean 100% (or 0%) when the opposite outcome occurred.
+      if (rounded >= 100 && stats.success < stats.total) rounded = 99.9;
+      if (rounded <= 0 && stats.success > 0) rounded = 0.1;
+      return (rounded === Math.floor(rounded) ? String(rounded) : rounded.toFixed(1)) + '%';
+    }
+    return {
+      accountPlan: accountPlan, localDateKey: localDateKey, filterAccounts: filterAccounts,
+      paginate: paginate, preserveSelectedOption: preserveSelectedOption,
+      statusError: statusError, requestStats: requestStats, formatSuccessRate: formatSuccessRate
+    };
   })();
   /* ACCOUNT_VIEW_LOGIC_END */
+
+  /* MODEL_STATS_LOGIC_START */
+  var ModelStatsLogic = (function () {
+    var refreshMs = 60000;
+    function count(value) {
+      var number = Number(value);
+      return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+    }
+    function aggregate(accounts) {
+      var byModel = Object.create(null);
+      (accounts || []).forEach(function (account) {
+        ((account && account.models) || []).forEach(function (entry) {
+          var model = String(entry && entry.model || 'unknown');
+          var current = byModel[model];
+          if (!current) current = byModel[model] = { model: model, success: 0, fail: 0, total: 0 };
+          current.success += count(entry && entry.success);
+          current.fail += count(entry && entry.fail);
+          current.total = current.success + current.fail;
+        });
+      });
+      return Object.keys(byModel).map(function (model) { return byModel[model]; })
+        .filter(function (row) { return row.total > 0; })
+        .sort(function (a, b) {
+          if (a.total !== b.total) return b.total - a.total;
+          return a.model < b.model ? -1 : (a.model > b.model ? 1 : 0);
+        });
+    }
+    function scale(rows) {
+      var source = rows || [];
+      var maxTotal = source.reduce(function (max, row) { return Math.max(max, row.total || 0); }, 0);
+      return source.map(function (row) {
+        var total = row.total || 0;
+        return {
+          model: row.model,
+          success: row.success,
+          fail: row.fail,
+          total: total,
+          outerPct: maxTotal > 0 ? 100 * total / maxTotal : 0,
+          successPct: total > 0 ? 100 * row.success / total : 0,
+          failPct: total > 0 ? 100 * row.fail / total : 0
+        };
+      });
+    }
+    function nextGeneration(current) { return (Number(current) || 0) + 1; }
+    function isCurrentGeneration(candidate, current) { return Number(candidate) === Number(current); }
+    function loadedAfterResult(current, kind) {
+      if (kind === 'ok') return true;
+      if (kind === 'disabled') return false;
+      return !!current;
+    }
+    function rangeIncludesToday(range, serverToday) {
+      range = range || {};
+      if (range.preset === 'today' || range.preset === '7d') return true;
+      if (range.preset === 'yesterday') return false;
+      return !!serverToday && !!range.from && !!range.to && range.from <= serverToday && serverToday <= range.to;
+    }
+    function shouldRefreshOnActivate(lastRequestAt, nowMs) {
+      return !lastRequestAt || Number(nowMs) - Number(lastRequestAt) >= refreshMs;
+    }
+    function shouldAutoRefresh(options) {
+      options = options || {};
+      return !!options.autoEnabled && !!options.tabActive &&
+        rangeIncludesToday(options.range, options.serverToday) &&
+        shouldRefreshOnActivate(options.lastRequestAt, options.nowMs);
+    }
+    return {
+      aggregate: aggregate,
+      scale: scale,
+      nextGeneration: nextGeneration,
+      isCurrentGeneration: isCurrentGeneration,
+      loadedAfterResult: loadedAfterResult,
+      rangeIncludesToday: rangeIncludesToday,
+      shouldAutoRefresh: shouldAutoRefresh,
+      shouldRefreshOnActivate: shouldRefreshOnActivate
+    };
+  })();
+  /* MODEL_STATS_LOGIC_END */
 
   function accountPlan(a) { return AccountViewLogic.accountPlan(a); }
   function isAntigravity(a) { return String(a && a.provider || '').toLowerCase() === 'antigravity'; }
@@ -750,19 +1005,155 @@
     return td(status);
   }
 
+  // Compact error label next to 状态: the error code for structured upstream
+  // bodies, the OAuth reason for flat ones, the raw text otherwise.
+  function errorCell(a) {
+    var detail = AccountViewLogic.statusError(a);
+    if (!detail.text) return '<td></td>';
+    return '<td><span class="error-detail" tabindex="0" data-tip="' + escapeHtml(detail.tip) + '">' +
+      escapeHtml(detail.text) + '</span></td>';
+  }
+
+  function requestCells(a) {
+    var stats = AccountViewLogic.requestStats(a);
+    var tip = '成功 ' + formatCount(stats.success) + ' · 失败 ' + formatCount(stats.failed) + '（服务端启动以来）';
+    return '<td><span class="request-count" tabindex="0" data-tip="' + escapeHtml(tip) + '">' + formatCount(stats.total) + '</span></td>' +
+      '<td>' + escapeHtml(AccountViewLogic.formatSuccessRate(stats)) + '</td>';
+  }
+
   function paint(rows) {
     els.rows.innerHTML = rows.map(function (a) {
       return '<tr>' +
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
         td(a.provider) + planCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
+        requestCells(a) +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
-        statusCell(a) +
+        statusCell(a) + errorCell(a) +
         '</tr>';
     }).join('');
   }
   function td(v) { return '<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>'; }
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  function formatCount(value) { return Number(value || 0).toLocaleString(); }
+  function setStatsStatus(message, kind) {
+    var element = document.getElementById('stats-status');
+    element.textContent = message || '';
+    element.className = 'stats-status text-sm ' + (kind === 'err' ? 'text-red-600' : 'text-slate-500');
+  }
+  function clearModelStatsChart() {
+    document.getElementById('stats-rows').innerHTML = '';
+    document.getElementById('stats-chart-body').hidden = true;
+    document.getElementById('stats-range-summary').textContent = '';
+  }
+  function renderModelStats(data) {
+    data = data || {};
+    var rows = ModelStatsLogic.scale(ModelStatsLogic.aggregate(data.accounts || []));
+    var rowsElement = document.getElementById('stats-rows');
+    var body = document.getElementById('stats-chart-body');
+    var summary = document.getElementById('stats-range-summary');
+    summary.textContent = (data.from || '') + ' 至 ' + (data.to || '') +
+      (data.server_utc_offset ? ' · 服务端 UTC' + data.server_utc_offset : '');
+    if (!rows.length) {
+      rowsElement.innerHTML = '';
+      body.hidden = true;
+      return 0;
+    }
+    rowsElement.innerHTML = rows.map(function (row) {
+      var tip = '成功 ' + formatCount(row.success) + ' · 失败 ' + formatCount(row.fail) + ' · 合计 ' + formatCount(row.total);
+      return '<div class="stats-row">' +
+        '<span class="stats-model" tabindex="0" data-tip="' + escapeHtml(row.model) + '">' + escapeHtml(row.model) + '</span>' +
+        '<div class="stats-bar" tabindex="0" role="img" aria-label="' + escapeHtml(tip) + '" data-tip="' + escapeHtml(tip) + '">' +
+          '<div class="stats-track"><div class="stats-fill" style="width:' + row.outerPct + '%">' +
+            '<span class="stats-segment-success" style="width:' + row.successPct + '%"></span>' +
+            '<span class="stats-segment-fail" style="width:' + row.failPct + '%"></span>' +
+          '</div></div>' +
+        '</div>' +
+        '<div class="stats-counts"><span class="stats-total">' + formatCount(row.total) + '</span>' +
+          '<span class="stats-breakdown">成功 ' + formatCount(row.success) + ' · 失败 ' + formatCount(row.fail) + '</span></div>' +
+      '</div>';
+    }).join('');
+    body.hidden = false;
+    return rows.length;
+  }
+
+  function resetModelStatsState() {
+    statsState.generation = ModelStatsLogic.nextGeneration(statsState.generation);
+    if (statsState.controller) statsState.controller.abort();
+    statsState.range = { preset: '7d', from: '', to: '' };
+    statsState.serverToday = '';
+    statsState.lastRequestAt = 0;
+    statsState.lastSuccessAt = 0;
+    statsState.lastSuccessRange = null;
+    statsState.loaded = false;
+    statsState.controller = null;
+    clearModelStatsChart();
+    setStatsStatus('', '');
+    setStatsActiveRange('stats-range-7d');
+    document.getElementById('stats-custom-range').hidden = true;
+  }
+  function requestModelStats() {
+    var key = getStoredKey();
+    if (!key) return;
+    var generation = ModelStatsLogic.nextGeneration(statsState.generation);
+    statsState.generation = generation;
+    if (statsState.controller) statsState.controller.abort();
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    statsState.controller = controller;
+    statsState.lastRequestAt = Date.now();
+    setStatsStatus('加载中...', '');
+    var options = { headers: { 'Authorization': 'Bearer ' + key } };
+    if (controller) options.signal = controller.signal;
+    return fetch('/v0/management/usage-stats?' + usageRangeQuery(statsState.range), options)
+      .then(function (response) {
+        if (response.status === 503) return { kind: 'disabled' };
+        if (!response.ok) {
+          return readError(response).then(function (message) {
+            return { kind: 'error', status: response.status, message: message || ('HTTP ' + response.status) };
+          });
+        }
+        return response.json().then(function (data) { return { kind: 'ok', data: data }; });
+      })
+      .then(function (result) {
+        if (!ModelStatsLogic.isCurrentGeneration(generation, statsState.generation)) return;
+        statsState.controller = null;
+        statsState.loaded = ModelStatsLogic.loadedAfterResult(statsState.loaded, result.kind);
+        if (result.kind === 'disabled') {
+          statsState.lastSuccessAt = 0;
+          statsState.lastSuccessRange = null;
+          clearModelStatsChart();
+          setStatsStatus('未开启用量统计，请在 config.yaml 设置 usage-stats-enabled: true 后重启/重载', 'err');
+          return;
+        }
+        if (result.kind === 'error') {
+          setStatsStatus('加载失败：' + result.message + staleStatsSuffix(), 'err');
+          return;
+        }
+        var data = result.data || {};
+        statsState.serverToday = data.server_today || '';
+        statsState.lastSuccessAt = Date.now();
+        statsState.lastSuccessRange = { from: data.from || '', to: data.to || '' };
+        var rowCount = renderModelStats(data);
+        setStatsStatus(rowCount ? '' : '该时间段无调用记录', '');
+      })
+      .catch(function (error) {
+        if (!ModelStatsLogic.isCurrentGeneration(generation, statsState.generation)) return;
+        if (error && error.name === 'AbortError') return;
+        statsState.controller = null;
+        setStatsStatus('加载失败：网络错误 ' + error + staleStatsSuffix(), 'err');
+      });
+  }
+  function maybeAutoRefreshModelStats() {
+    if (ModelStatsLogic.shouldAutoRefresh({
+      autoEnabled: els.auto.checked,
+      tabActive: currentTab === 'stats',
+      range: statsState.range,
+      serverToday: statsState.serverToday,
+      lastRequestAt: statsState.lastRequestAt,
+      nowMs: Date.now()
+    })) requestModelStats();
+  }
 
   function refreshCredits(authIndex, silent) {
     var k = getStoredKey();
@@ -811,13 +1202,15 @@
       (active ? 'text-indigo-600 border-indigo-600' : 'text-slate-500 border-transparent hover:text-slate-800');
   }
   function switchTab(name) {
-    ['accounts', 'health', 'proxy'].forEach(function (n) {
-      var panel = document.getElementById('tab-' + n);
-      var btn = document.getElementById('tabbtn-' + n);
-      if (panel) panel.hidden = (n !== name);
-      if (btn) btn.className = tabBtnClass(n === name);
+    currentTab = name;
+    ['accounts', 'stats', 'health', 'proxy'].forEach(function (tabName) {
+      var panel = document.getElementById('tab-' + tabName);
+      var button = document.getElementById('tabbtn-' + tabName);
+      if (panel) panel.hidden = tabName !== name;
+      if (button) button.className = tabBtnClass(tabName === name);
     });
     if (name === 'proxy') loadProxyOnce();
+    if (name === 'stats' && (!statsState.loaded || ModelStatsLogic.shouldRefreshOnActivate(statsState.lastSuccessAt, Date.now()))) requestModelStats();
   }
 
   // ---- Proxy settings ----
@@ -873,11 +1266,14 @@
 
   // ---- Usage-stats modal ----
   var modalAccountIndex = null;
-  function pad2(n) { return n < 10 ? '0' + n : String(n); }
-  function dateStr(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
-  function todayStr() { return dateStr(new Date()); }
-  function yesterdayStr() { var d = new Date(); d.setDate(d.getDate() - 1); return dateStr(d); }
-  function daysAgoStr(n) { var d = new Date(); d.setDate(d.getDate() - n); return dateStr(d); }
+  var modalGeneration = 0;
+  var modalController = null;
+
+  function cancelModalRequest() {
+    modalGeneration = ModelStatsLogic.nextGeneration(modalGeneration);
+    if (modalController) modalController.abort();
+    modalController = null;
+  }
 
   function setModalStatus(msg, kind) {
     var el = document.getElementById('modal-status');
@@ -897,44 +1293,71 @@
     document.getElementById('modal-rows').innerHTML = '';
     document.getElementById('modal-backdrop').hidden = false;
     setActiveRangeButton('range-today');
-    fetchUsage(todayStr(), todayStr());
+    fetchUsage({ preset: 'today', from: '', to: '' });
   }
   function closeModal() {
+    cancelModalRequest();
     document.getElementById('modal-backdrop').hidden = true;
     modalAccountIndex = null;
   }
-  function fetchUsage(from, to) {
-    var k = getStoredKey();
+  function fetchUsage(range) {
+    var key = getStoredKey();
+    var accountIndex = modalAccountIndex;
+    cancelModalRequest();
+    var generation = modalGeneration;
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    modalController = controller;
     setModalStatus('加载中…', '');
     document.getElementById('modal-table').hidden = true;
-    fetch('/v0/management/usage-stats?account=' + encodeURIComponent(modalAccountIndex) + '&from=' + from + '&to=' + to, { headers: { 'Authorization': 'Bearer ' + k } })
-      .then(function (resp) {
-        if (resp.status === 503) { setModalStatus('未开启用量统计，请在 config.yaml 设置 usage-stats-enabled: true 后重启/重载', 'err'); return null; }
-        if (!resp.ok) { return readError(resp).then(function (msg) { setModalStatus('加载失败：' + (msg || ('HTTP ' + resp.status)), 'err'); return null; }); }
-        return resp.json();
+    var options = { headers: { 'Authorization': 'Bearer ' + key } };
+    if (controller) options.signal = controller.signal;
+    fetch('/v0/management/usage-stats?account=' + encodeURIComponent(accountIndex) + '&' + usageRangeQuery(range), options)
+      .then(function (response) {
+        if (response.status === 503) return { kind: 'disabled' };
+        if (!response.ok) {
+          return readError(response).then(function (message) {
+            return { kind: 'error', status: response.status, message: message || ('HTTP ' + response.status) };
+          });
+        }
+        return response.json().then(function (data) { return { kind: 'ok', data: data }; });
       })
-      .then(function (data) {
-        if (!data) return;
-        var acc = (data.accounts || [])[0];
-        var models = acc ? acc.models : [];
+      .then(function (result) {
+        if (!ModelStatsLogic.isCurrentGeneration(generation, modalGeneration)) return;
+        modalController = null;
+        if (result.kind === 'disabled') {
+          setModalStatus('未开启用量统计，请在 config.yaml 设置 usage-stats-enabled: true 后重启/重载', 'err');
+          return;
+        }
+        if (result.kind === 'error') {
+          setModalStatus('加载失败：' + result.message, 'err');
+          return;
+        }
+        var data = result.data || {};
+        var account = (data.accounts || [])[0];
+        var models = account ? account.models : [];
         if (!models || !models.length) {
           setModalStatus('该时间范围内无调用记录', '');
           return;
         }
         setModalStatus('', '');
-        document.getElementById('modal-rows').innerHTML = models.map(function (m) {
-          return '<tr>' + td(m.model) + td(m.success) + td(m.fail) + td(m.total) + '</tr>';
+        document.getElementById('modal-rows').innerHTML = models.map(function (model) {
+          return '<tr>' + td(model.model) + td(model.success) + td(model.fail) + td(model.total) + '</tr>';
         }).join('');
         document.getElementById('modal-table').hidden = false;
       })
-      .catch(function (e) { setModalStatus('加载失败：网络错误 ' + e, 'err'); });
+      .catch(function (error) {
+        if (!ModelStatsLogic.isCurrentGeneration(generation, modalGeneration)) return;
+        if (error && error.name === 'AbortError') return;
+        modalController = null;
+        setModalStatus('加载失败：网络错误 ' + error, 'err');
+      });
   }
 
   // ---- Wiring ----
   els.save.addEventListener('click', saveKey);
   els.key.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveKey(); });
   els.clear.addEventListener('click', clearKey);
-  els.refresh.addEventListener('click', fetchData);
+  els.refresh.addEventListener('click', function () { fetchData('manual'); });
   els.auto.addEventListener('change', function () { if (els.auto.checked && firstSuccess) { startAuto(); } else { stopAuto(); } });
   ['account-name-filter', 'account-created-from', 'account-created-to'].forEach(function (id) {
     els[id].addEventListener(id === 'account-name-filter' ? 'input' : 'change', function () {
@@ -947,7 +1370,7 @@
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   els['account-page-prev'].addEventListener('click', function () { accountPage--; renderAccountView({ resetPage: false, rebuildOptions: false }); });
   els['account-page-next'].addEventListener('click', function () { accountPage++; renderAccountView({ resetPage: false, rebuildOptions: false }); });
-  ['accounts', 'health', 'proxy'].forEach(function (n) {
+  ['accounts', 'stats', 'health', 'proxy'].forEach(function (n) {
     var b = document.getElementById('tabbtn-' + n);
     if (b) b.addEventListener('click', function () { switchTab(n); });
   });
@@ -968,36 +1391,63 @@
   // Delegated hover tooltip: listener lives on document so it survives the
   // periodic innerHTML rebuild that destroys the hovered row nodes.
   var hoverTip = document.getElementById('hover-tip');
-  document.addEventListener('mouseover', function (e) {
-    var el = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
-    var text = el ? String(el.getAttribute('data-tip') || '') : '';
-    if (!text) { hoverTip.hidden = true; return; }
-    hoverTip.textContent = text;
-    hoverTip.style.left = '0px';   // Reset before measuring so a stale left
-    hoverTip.style.top = '0px';    // offset cannot squeeze the shrink-to-fit width.
+  function showHoverTip(target) {
+    var element = target && target.closest ? target.closest('[data-tip]') : null;
+    var message = element ? String(element.getAttribute('data-tip') || '') : '';
+    if (!message) { hoverTip.hidden = true; return; }
+    hoverTip.textContent = message;
+    hoverTip.style.left = '0px';
+    hoverTip.style.top = '0px';
     hoverTip.hidden = false;
-    var rect = el.getBoundingClientRect();
+    var rect = element.getBoundingClientRect();
     var left = Math.max(8, Math.min(rect.left, window.innerWidth - hoverTip.offsetWidth - 8));
     var top = rect.bottom + 6;
     if (top + hoverTip.offsetHeight > window.innerHeight - 8) top = rect.top - hoverTip.offsetHeight - 6;
     hoverTip.style.left = left + 'px';
     hoverTip.style.top = top + 'px';
+  }
+  document.addEventListener('mouseover', function (event) { showHoverTip(event.target); });
+  document.addEventListener('focusin', function (event) { showHoverTip(event.target); });
+  document.addEventListener('mouseout', function (event) {
+    if (!event.relatedTarget || !event.relatedTarget.closest || !event.relatedTarget.closest('[data-tip]')) hoverTip.hidden = true;
   });
+  document.addEventListener('focusout', function () { hoverTip.hidden = true; });
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('modal-backdrop').addEventListener('click', function (e) { if (e.target && e.target.id === 'modal-backdrop') closeModal(); });
-  document.getElementById('range-today').addEventListener('click', function () { setActiveRangeButton('range-today'); document.getElementById('custom-range').hidden = true; fetchUsage(todayStr(), todayStr()); });
-  document.getElementById('range-yesterday').addEventListener('click', function () { setActiveRangeButton('range-yesterday'); document.getElementById('custom-range').hidden = true; fetchUsage(yesterdayStr(), yesterdayStr()); });
-  document.getElementById('range-7d').addEventListener('click', function () { setActiveRangeButton('range-7d'); document.getElementById('custom-range').hidden = true; fetchUsage(daysAgoStr(6), todayStr()); });
+  [['stats-range-today', 'today'], ['stats-range-yesterday', 'yesterday'], ['stats-range-7d', '7d']].forEach(function (entry) {
+    document.getElementById(entry[0]).addEventListener('click', function () {
+      statsState.range = { preset: entry[1], from: '', to: '' };
+      document.getElementById('stats-custom-range').hidden = true;
+      setStatsActiveRange(entry[0]);
+      requestModelStats();
+    });
+  });
+  document.getElementById('stats-range-custom').addEventListener('click', function () {
+    setStatsActiveRange('stats-range-custom');
+    document.getElementById('stats-custom-range').hidden = false;
+  });
+  document.getElementById('stats-range-apply').addEventListener('click', function () {
+    var from = document.getElementById('stats-range-from').value;
+    var to = document.getElementById('stats-range-to').value;
+    if (!from || !to) { setStatsStatus('请选择完整的起止日期', 'err'); return; }
+    if (from > to) { setStatsStatus('结束日期不能早于开始日期', 'err'); return; }
+    statsState.range = { preset: 'custom', from: from, to: to };
+    requestModelStats();
+  });
+  document.getElementById('range-today').addEventListener('click', function () { setActiveRangeButton('range-today'); document.getElementById('custom-range').hidden = true; fetchUsage({ preset: 'today', from: '', to: '' }); });
+  document.getElementById('range-yesterday').addEventListener('click', function () { setActiveRangeButton('range-yesterday'); document.getElementById('custom-range').hidden = true; fetchUsage({ preset: 'yesterday', from: '', to: '' }); });
+  document.getElementById('range-7d').addEventListener('click', function () { setActiveRangeButton('range-7d'); document.getElementById('custom-range').hidden = true; fetchUsage({ preset: '7d', from: '', to: '' }); });
   document.getElementById('range-custom').addEventListener('click', function () { setActiveRangeButton('range-custom'); document.getElementById('custom-range').hidden = false; });
   document.getElementById('range-apply').addEventListener('click', function () {
     var from = document.getElementById('range-from').value;
     var to = document.getElementById('range-to').value;
     if (!from || !to) { setModalStatus('请选择完整的起止日期', 'err'); return; }
-    fetchUsage(from, to);
+    if (from > to) { setModalStatus('结束日期不能早于开始日期', 'err'); return; }
+    fetchUsage({ preset: 'custom', from: from, to: to });
   });
 
   var existing = getStoredKey();
-  if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData(); }
+  if (existing) { els.key.value = existing; els.remember.checked = !!localStorage.getItem(KEY_NAME); fetchData('login'); }
   else { setStatus('请填写管理 key 后进入', ''); }
   setInterval(function () {          // Refresh cooldown countdowns every second.
     if (modelRows.length) paintModels();

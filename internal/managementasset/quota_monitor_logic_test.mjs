@@ -4,17 +4,22 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('./quota_monitor.html', import.meta.url), 'utf8');
-const startMarker = '/* ACCOUNT_VIEW_LOGIC_START */';
-const endMarker = '/* ACCOUNT_VIEW_LOGIC_END */';
-const start = html.indexOf(startMarker);
-const end = html.indexOf(endMarker);
+function logicBlock(name) {
+  const startMarker = '/* ' + name + '_START */';
+  const endMarker = '/* ' + name + '_END */';
+  const start = html.indexOf(startMarker);
+  const end = html.indexOf(endMarker);
+  assert.notEqual(start, -1, name + ' start marker is missing');
+  assert.notEqual(end, -1, name + ' end marker is missing');
+  assert.ok(end > start, name + ' markers are out of order');
+  return html.slice(start + startMarker.length, end);
+}
 
-assert.notEqual(start, -1, 'account-view logic start marker is missing');
-assert.notEqual(end, -1, 'account-view logic end marker is missing');
-assert.ok(end > start, 'account-view logic markers are out of order');
-
-const context = vm.createContext({ Date, Math, String, Number, Array, Object, isNaN });
-vm.runInContext(html.slice(start + startMarker.length, end), context);
+const context = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+// Values built inside the vm realm carry its prototypes, which strict deepEqual
+// rejects; round-tripping through JSON compares them structurally instead.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+vm.runInContext(logicBlock('ACCOUNT_VIEW_LOGIC'), context);
 const logic = context.AccountViewLogic;
 
 test('accountPlan uses paid tier then Codex token plan then unknown', () => {
@@ -68,4 +73,152 @@ test('manual plan refresh preserves a selected plan that now has zero matches', 
 
   assert.equal(rows.length, 0);
   assert.deepEqual(Array.from(options), ['pro', 'ultra']);
+});
+
+test('statusError shows the error code for structured upstream bodies', () => {
+  const body = JSON.stringify({
+    error: {
+      code: 429,
+      message: 'Individual quota reached. Resets in 3h2m14s.',
+      status: 'RESOURCE_EXHAUSTED',
+      details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'QUOTA_EXHAUSTED' }],
+    },
+  });
+  assert.deepEqual(plain(logic.statusError({ status_message: body })), {
+    text: '429',
+    tip: 'Individual quota reached. Resets in 3h2m14s.',
+  });
+});
+
+test('statusError shows the reason for flat OAuth bodies', () => {
+  const body = JSON.stringify({ error: 'invalid_grant', error_description: 'Bad Request' });
+  assert.deepEqual(plain(logic.statusError({ status_message: body })), {
+    text: 'invalid_grant',
+    tip: 'invalid_grant: Bad Request',
+  });
+  assert.deepEqual(plain(logic.statusError({ status_message: JSON.stringify({ error: 'invalid_grant' }) })), {
+    text: 'invalid_grant',
+    tip: 'invalid_grant',
+  });
+});
+
+test('statusError parses a body carrying an upstream prefix', () => {
+  const body = 'upstream returned status 429: ' + JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } });
+  assert.deepEqual(plain(logic.statusError({ status_message: body })), {
+    text: '429',
+    tip: 'RESOURCE_EXHAUSTED',
+  });
+});
+
+test('statusError falls back to the raw text for plain conductor labels', () => {
+  assert.deepEqual(plain(logic.statusError({ status_message: 'quota exhausted' })), {
+    text: 'quota exhausted',
+    tip: 'quota exhausted',
+  });
+  assert.deepEqual(plain(logic.statusError({ status_message: '  ' })), { text: '', tip: '' });
+  assert.deepEqual(plain(logic.statusError({})), { text: '', tip: '' });
+  assert.deepEqual(plain(logic.statusError({ status_message: '[1,2]' })), { text: '[1,2]', tip: '[1,2]' });
+});
+
+test('statusError falls back to status when the structured body carries no code', () => {
+  const body = JSON.stringify({ error: { status: 'UNAVAILABLE' } });
+  assert.deepEqual(plain(logic.statusError({ status_message: body })), { text: 'UNAVAILABLE', tip: 'UNAVAILABLE' });
+  assert.deepEqual(plain(logic.statusError({ status_message: JSON.stringify({ error: {} }) })), {
+    text: 'error',
+    tip: JSON.stringify({ error: {} }),
+  });
+});
+
+test('requestStats sums the in-process counters and ignores junk', () => {
+  assert.deepEqual(plain(logic.requestStats({ success: 97, failed: 3 })), { success: 97, failed: 3, total: 100 });
+  assert.deepEqual(plain(logic.requestStats({ success: -5, failed: 'x' })), { success: 0, failed: 0, total: 0 });
+  assert.deepEqual(plain(logic.requestStats(null)), { success: 0, failed: 0, total: 0 });
+});
+
+test('formatSuccessRate never rounds a partial result to a clean 100% or 0%', () => {
+  assert.equal(logic.formatSuccessRate({ success: 0, failed: 0, total: 0 }), '—');
+  assert.equal(logic.formatSuccessRate({ success: 100, failed: 0, total: 100 }), '100%');
+  assert.equal(logic.formatSuccessRate({ success: 0, failed: 4, total: 4 }), '0%');
+  assert.equal(logic.formatSuccessRate({ success: 197, failed: 3, total: 200 }), '98.5%');
+  assert.equal(logic.formatSuccessRate({ success: 9999, failed: 1, total: 10000 }), '99.9%');
+  assert.equal(logic.formatSuccessRate({ success: 1, failed: 9999, total: 10000 }), '0.1%');
+});
+
+vm.runInContext(logicBlock('MODEL_STATS_LOGIC'), context);
+const modelLogic = context.ModelStatsLogic;
+
+test('aggregate merges exact model names across accounts and sorts stable ties', () => {
+  const rows = modelLogic.aggregate([
+    { account: 'a', models: [
+      { model: 'z-model', success: 2, fail: 1 },
+      { model: 'a-model', success: 3, fail: 0 },
+      { model: 'shared', success: 4, fail: 1 },
+    ] },
+    { account: 'b', models: [
+      { model: 'shared', success: 2, fail: 3 },
+      { model: 'shared(high)', success: 1, fail: 0 },
+    ] },
+  ]);
+  assert.deepEqual(plain(rows), [
+    { model: 'shared', success: 6, fail: 4, total: 10 },
+    { model: 'a-model', success: 3, fail: 0, total: 3 },
+    { model: 'z-model', success: 2, fail: 1, total: 3 },
+    { model: 'shared(high)', success: 1, fail: 0, total: 1 },
+  ]);
+});
+
+test('aggregate removes zero rows and retains fail-only counts', () => {
+  const rows = modelLogic.aggregate([{ models: [
+    { model: 'zero', success: 0, fail: 0 },
+    { model: 'failed', success: 0, fail: 7 },
+  ] }]);
+  assert.deepEqual(plain(rows), [{ model: 'failed', success: 0, fail: 7, total: 7 }]);
+  assert.deepEqual(plain(modelLogic.aggregate([])), []);
+});
+
+test('scale uses global totals and row-local segment proportions', () => {
+  const rows = modelLogic.scale([
+    { model: 'large', success: 75, fail: 25, total: 100 },
+    { model: 'small', success: 10, fail: 10, total: 20 },
+  ]);
+  assert.equal(rows[0].outerPct, 100);
+  assert.equal(rows[0].successPct, 75);
+  assert.equal(rows[0].failPct, 25);
+  assert.equal(rows[1].outerPct, 20);
+  assert.equal(rows[1].successPct, 50);
+  assert.equal(rows[1].failPct, 50);
+});
+
+test('generation gate rejects stale responses', () => {
+  const first = modelLogic.nextGeneration(0);
+  const second = modelLogic.nextGeneration(first);
+  assert.equal(modelLogic.isCurrentGeneration(first, second), false);
+  assert.equal(modelLogic.isCurrentGeneration(second, second), true);
+});
+
+test('loaded state requires a successful result and resets when disabled', () => {
+  assert.equal(typeof modelLogic.loadedAfterResult, 'function', 'loadedAfterResult must be exposed');
+  assert.equal(modelLogic.loadedAfterResult(false, 'error'), false);
+  assert.equal(modelLogic.loadedAfterResult(true, 'error'), true);
+  assert.equal(modelLogic.loadedAfterResult(false, 'ok'), true);
+  assert.equal(modelLogic.loadedAfterResult(true, 'disabled'), false);
+});
+
+test('refresh policy requires active current range and sixty seconds', () => {
+  const base = {
+    autoEnabled: true,
+    tabActive: true,
+    range: { preset: '7d', from: '', to: '' },
+    serverToday: '2026-07-17',
+    lastRequestAt: 1000,
+    nowMs: 61000,
+  };
+  assert.equal(modelLogic.shouldAutoRefresh(base), true);
+  assert.equal(modelLogic.shouldAutoRefresh({ ...base, tabActive: false }), false);
+  assert.equal(modelLogic.shouldAutoRefresh({ ...base, range: { preset: 'yesterday', from: '', to: '' } }), false);
+  assert.equal(modelLogic.shouldAutoRefresh({ ...base, lastRequestAt: 2000 }), false);
+  assert.equal(modelLogic.rangeIncludesToday({ preset: 'custom', from: '2026-07-10', to: '2026-07-17' }, '2026-07-17'), true);
+  assert.equal(modelLogic.rangeIncludesToday({ preset: 'custom', from: '2026-07-10', to: '2026-07-16' }, '2026-07-17'), false);
+  assert.equal(modelLogic.shouldRefreshOnActivate(1000, 61000), true);
+  assert.equal(modelLogic.shouldRefreshOnActivate(2000, 61000), false);
 });
