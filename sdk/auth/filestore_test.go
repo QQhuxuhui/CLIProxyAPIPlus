@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -211,4 +212,53 @@ func (f fileStoreMultiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthP
 
 func (f fileStoreMultiAuthParserFunc) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
 	return f(ctx, req)
+}
+
+func TestFileTokenStoreImportTimeSurvivesRewrite(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "codex.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","email":"a@example.com"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+	imported := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	if errTouch := os.Chtimes(path, imported, imported); errTouch != nil {
+		t.Fatalf("set mtime: %v", errTouch)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() returned error: %v", errList)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("List() returned %d auths, want 1", len(auths))
+	}
+	if !auths[0].CreatedAt.Equal(imported) {
+		t.Fatalf("first load CreatedAt = %v, want the file mtime %v", auths[0].CreatedAt, imported)
+	}
+
+	// A token refresh rewrites the file through Save, which persists the seeded
+	// import time; the bumped mtime must no longer drive CreatedAt.
+	if _, errSave := store.Save(context.Background(), auths[0]); errSave != nil {
+		t.Fatalf("Save() returned error: %v", errSave)
+	}
+	refreshed := imported.Add(240 * time.Hour)
+	if errTouch := os.Chtimes(path, refreshed, refreshed); errTouch != nil {
+		t.Fatalf("bump mtime: %v", errTouch)
+	}
+
+	reloaded, errReload := store.List(context.Background())
+	if errReload != nil {
+		t.Fatalf("reload returned error: %v", errReload)
+	}
+	if len(reloaded) != 1 {
+		t.Fatalf("reload returned %d auths, want 1", len(reloaded))
+	}
+	if !reloaded[0].CreatedAt.Equal(imported) {
+		t.Errorf("CreatedAt drifted to %v after a rewrite, want the original import time %v", reloaded[0].CreatedAt, imported)
+	}
+	if !reloaded[0].UpdatedAt.Equal(refreshed) {
+		t.Errorf("UpdatedAt = %v, want the new mtime %v", reloaded[0].UpdatedAt, refreshed)
+	}
 }

@@ -101,7 +101,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 				if len(auths) > 1 {
 					coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
 				}
-				auth.CreatedAt = now
+				auth.CreatedAt = coreauth.ResolveImportedAt(auth.Metadata, now)
 				auth.UpdatedAt = now
 				if auth.Attributes == nil {
 					auth.Attributes = make(map[string]string)
@@ -172,7 +172,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		},
 		ProxyURL:  proxyURL,
 		Metadata:  metadata,
-		CreatedAt: now,
+		CreatedAt: coreauth.ResolveImportedAt(metadata, now),
 		UpdatedAt: now,
 	}
 	// Read priority from auth file.

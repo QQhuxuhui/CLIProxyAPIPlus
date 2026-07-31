@@ -83,7 +83,7 @@ func TestQuotaMonitorHTMLHasAccountList(t *testing.T) {
 		"账号列表",
 		"账号名称",
 		"套餐",
-		"创建时间",
+		"导入时间",
 		"function render(files)",
 		"data.files",
 		"accountsData",
@@ -172,6 +172,44 @@ func TestQuotaMonitorHTMLHasErrorAndRequestColumns(t *testing.T) {
 	// The error column reuses the delegated tooltip rather than a native title.
 	if strings.Contains(s, `class="error-detail" title=`) {
 		t.Error("error column must use data-tip, not a native title attribute")
+	}
+}
+
+func TestQuotaMonitorHTMLFiltersByErrorAndBatchDeletes(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		`id="account-error-filter"`,
+		`id="account-select-all"`,
+		`id="account-bulk-bar"`,
+		`id="account-bulk-count"`,
+		`id="account-bulk-clear"`,
+		`id="account-bulk-delete"`,
+		`class="row-select"`,
+		"function selectCell(a)",
+		"function paintSelectionControls(filtered)",
+		"function deleteSelectedAccounts(names)",
+		"AccountViewLogic.pruneSelection",
+		"AccountViewLogic.selectionState",
+		"AccountViewLogic.toggleSelection",
+		"JSON.stringify({ names: names })",
+		"确定删除选中的 ",
+		"此操作不可恢复",
+		"个不在当前筛选结果中",
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("embedded page missing account selection marker %q", marker)
+		}
+	}
+	// The checkbox column must lead the row so the account name stays first among data columns.
+	theadStart := strings.Index(s, `<table id="table"`)
+	if theadStart < 0 {
+		t.Fatal("embedded page missing account table")
+	}
+	headerRow := s[theadStart : theadStart+strings.Index(s[theadStart:], "</tr>")]
+	selectCol := strings.Index(headerRow, `class="select-col"`)
+	nameCol := strings.Index(headerRow, "<th>账号名称</th>")
+	if selectCol < 0 || nameCol < 0 || selectCol > nameCol {
+		t.Errorf("select-col must be the first column in the account table header, got header row: %s", headerRow)
 	}
 }
 

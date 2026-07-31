@@ -317,7 +317,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			Status:           cliproxyauth.StatusActive,
 			Attributes:       attr,
 			Metadata:         metadata,
-			CreatedAt:        createdAt,
+			CreatedAt:        cliproxyauth.ResolveImportedAt(metadata, createdAt),
 			UpdatedAt:        updatedAt,
 			LastRefreshedAt:  time.Time{},
 			NextRefreshAfter: time.Time{},

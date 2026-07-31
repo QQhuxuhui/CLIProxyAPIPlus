@@ -129,6 +129,58 @@ test('statusError falls back to status when the structured body carries no code'
   });
 });
 
+test('filterAccounts narrows to one parsed error label', () => {
+  const quota = JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } });
+  const fixtures = [
+    { name: 'quota-a', status: 'error', status_message: quota },
+    { name: 'quota-b', status: 'error', status_message: quota },
+    { name: 'grant', status: 'error', status_message: JSON.stringify({ error: 'invalid_grant' }) },
+    { name: 'healthy', status: 'active' },
+  ];
+  assert.deepEqual(Array.from(logic.filterAccounts(fixtures, { error: '429' }), (row) => row.name), ['quota-a', 'quota-b']);
+  assert.deepEqual(Array.from(logic.filterAccounts(fixtures, { error: 'invalid_grant' }), (row) => row.name), ['grant']);
+  assert.equal(logic.filterAccounts(fixtures, { error: '' }).length, 4);
+});
+
+test('filterAccounts combines the error filter with the other filters', () => {
+  const fixtures = [
+    { name: 'alpha', status: 'error', status_message: JSON.stringify({ error: { code: 429 } }) },
+    { name: 'beta', status: 'error', status_message: JSON.stringify({ error: { code: 429 } }) },
+  ];
+  assert.deepEqual(
+    Array.from(logic.filterAccounts(fixtures, { name: 'alp', status: 'error', error: '429' }), (row) => row.name),
+    ['alpha'],
+  );
+  assert.equal(logic.filterAccounts(fixtures, { name: 'alp', error: '401' }).length, 0);
+});
+
+test('pruneSelection drops names that no longer exist upstream', () => {
+  const entries = [{ name: 'keep' }, { name: 'also-keep' }];
+  assert.deepEqual(plain(logic.pruneSelection(['keep', 'gone', 'also-keep'], entries)), ['keep', 'also-keep']);
+  assert.deepEqual(plain(logic.pruneSelection(['keep'], [])), []);
+  assert.deepEqual(plain(logic.pruneSelection(null, entries)), []);
+});
+
+test('selectionState reports the header checkbox tri-state over filtered rows', () => {
+  const rows = [{ name: 'a' }, { name: 'b' }, { name: 'c' }];
+  assert.deepEqual(plain(logic.selectionState([], rows)), { total: 3, selected: 0, all: false, some: false });
+  assert.deepEqual(plain(logic.selectionState(['a'], rows)), { total: 3, selected: 1, all: false, some: true });
+  assert.deepEqual(plain(logic.selectionState(['a', 'b', 'c'], rows)), { total: 3, selected: 3, all: true, some: false });
+  // A selection held outside the current filter must not tick the header box.
+  assert.deepEqual(plain(logic.selectionState(['hidden'], rows)), { total: 3, selected: 0, all: false, some: false });
+  assert.deepEqual(plain(logic.selectionState(['a'], [])), { total: 0, selected: 0, all: false, some: false });
+});
+
+test('toggleSelection only adds or removes the rows it was given', () => {
+  const rows = [{ name: 'a' }, { name: 'b' }];
+  // Selecting all keeps a name chosen under a previous filter.
+  assert.deepEqual(plain(logic.toggleSelection(['other'], rows, true)), ['other', 'a', 'b']);
+  assert.deepEqual(plain(logic.toggleSelection(['a', 'other'], rows, true)), ['a', 'other', 'b']);
+  // Clearing all leaves names outside the current filter untouched.
+  assert.deepEqual(plain(logic.toggleSelection(['a', 'b', 'other'], rows, false)), ['other']);
+  assert.deepEqual(plain(logic.toggleSelection(['other'], [], true)), ['other']);
+});
+
 test('requestStats sums the in-process counters and ignores junk', () => {
   assert.deepEqual(plain(logic.requestStats({ success: 97, failed: 3 })), { success: 97, failed: 3, total: 100 });
   assert.deepEqual(plain(logic.requestStats({ success: -5, failed: 'x' })), { success: 0, failed: 0, total: 0 });

@@ -602,7 +602,7 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 		Status:           cliproxyauth.StatusActive,
 		Attributes:       attr,
 		Metadata:         metadata,
-		CreatedAt:        info.ModTime(),
+		CreatedAt:        cliproxyauth.ResolveImportedAt(metadata, info.ModTime()),
 		UpdatedAt:        info.ModTime(),
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},

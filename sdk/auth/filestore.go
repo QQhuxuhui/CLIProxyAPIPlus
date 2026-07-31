@@ -261,7 +261,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 				if len(auths) > 1 {
 					cliproxyauth.MarkPluginVirtualAuth(auth, path, index)
 				}
-				auth.CreatedAt = info.ModTime()
+				auth.CreatedAt = cliproxyauth.ResolveImportedAt(auth.Metadata, info.ModTime())
 				auth.UpdatedAt = info.ModTime()
 				if auth.Attributes == nil {
 					auth.Attributes = make(map[string]string)
@@ -321,7 +321,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceFile,
 		},
 		Metadata:         metadata,
-		CreatedAt:        info.ModTime(),
+		CreatedAt:        cliproxyauth.ResolveImportedAt(metadata, info.ModTime()),
 		UpdatedAt:        info.ModTime(),
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},

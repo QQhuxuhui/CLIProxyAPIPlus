@@ -165,7 +165,7 @@
   .refresh-credits { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 8px; font-size: 11px; line-height: 1.6; color: #4f46e5; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 9999px; cursor: pointer; }
   .refresh-credits:hover { background: #e0e7ff; }
   .refresh-credits[disabled] { opacity: .5; cursor: default; }
-  .account-filters { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(130px, .8fr) minmax(145px, .9fr) minmax(145px, .9fr) minmax(130px, .8fr); gap: 10px; margin-bottom: 12px; }
+  .account-filters { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(130px, .8fr) minmax(145px, .9fr) minmax(145px, .9fr) minmax(130px, .8fr) minmax(130px, .8fr); gap: 10px; margin-bottom: 12px; }
   .account-filter label { display: block; margin-bottom: 4px; color: #64748b; font-size: 12px; font-weight: 500; }
   .account-filter input, .account-filter select, .account-page-size { width: 100%; height: 36px; padding: 0 10px; color: #334155; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
   .account-filter input:focus, .account-filter select:focus, .account-page-size:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,.16); }
@@ -179,6 +179,17 @@
   /* Raw upstream bodies can be long; the cell truncates and the hover tip carries the full text. */
   .error-detail { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; color: #dc2626; font-variant-numeric: tabular-nums; cursor: help; }
   .request-count { font-variant-numeric: tabular-nums; cursor: help; }
+
+  /* Multi-select + batch delete */
+  .data-table th.select-col, .data-table td.select-col { width: 36px; padding-right: 0; }
+  .row-select, #account-select-all { width: 14px; height: 14px; accent-color: #4f46e5; cursor: pointer; vertical-align: middle; }
+  .account-bulk-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; margin-bottom: 12px; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 8px; }
+  .account-bulk-actions { display: flex; align-items: center; gap: 8px; }
+  .account-bulk-button { padding: 4px 12px; font-size: 12px; color: #475569; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer; }
+  .account-bulk-button:hover:not(:disabled) { background: #f8fafc; color: #0f172a; }
+  .account-bulk-button.danger { color: #dc2626; border-color: #fecaca; }
+  .account-bulk-button.danger:hover:not(:disabled) { background: #fef2f2; }
+  .account-bulk-button:disabled { opacity: .5; cursor: default; }
   /* Fixed-position tooltip driven by delegated JS: native title tooltips get
      cancelled every time the 15s auto-refresh rebuilds the table rows. */
   #hover-tip { position: fixed; z-index: 60; max-width: 360px; padding: 6px 10px; font-size: 12px; line-height: 1.5; color: #fff; background: #1f2937; border-radius: 6px; box-shadow: 0 4px 12px rgba(15,23,42,.25); white-space: pre-wrap; word-break: break-all; pointer-events: none; }
@@ -305,14 +316,23 @@
       <div class="account-filters">
         <div class="account-filter"><label for="account-name-filter">账号名称</label><input id="account-name-filter" type="search" placeholder="搜索账号名称"></div>
         <div class="account-filter"><label for="account-plan-filter">套餐</label><select id="account-plan-filter"><option value="">全部</option></select></div>
-        <div class="account-filter"><label for="account-created-from">创建时间（从）</label><input id="account-created-from" type="date"></div>
-        <div class="account-filter"><label for="account-created-to">创建时间（到）</label><input id="account-created-to" type="date"></div>
+        <div class="account-filter"><label for="account-created-from">导入时间（从）</label><input id="account-created-from" type="date"></div>
+        <div class="account-filter"><label for="account-created-to">导入时间（到）</label><input id="account-created-to" type="date"></div>
         <div class="account-filter"><label for="account-status-filter">状态</label><select id="account-status-filter"><option value="">全部</option></select></div>
+        <div class="account-filter"><label for="account-error-filter">错误</label><select id="account-error-filter"><option value="">全部</option></select></div>
+      </div>
+      <div id="account-bulk-bar" class="account-bulk-bar" hidden>
+        <span id="account-bulk-count" class="text-xs text-slate-600"></span>
+        <div class="account-bulk-actions">
+          <button id="account-bulk-clear" type="button" class="account-bulk-button">清除选择</button>
+          <button id="account-bulk-delete" type="button" class="account-bulk-button danger">批量删除</button>
+        </div>
       </div>
       <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto">
         <table id="table" class="data-table" hidden>
           <thead><tr>
-            <th>账号名称</th><th>provider</th><th>套餐</th><th>创建时间</th><th>请求数</th><th>成功率</th><th>操作</th><th>状态</th><th>错误</th>
+            <th class="select-col"><input id="account-select-all" type="checkbox" data-tip="全选当前筛选结果" aria-label="全选当前筛选结果"></th>
+            <th>账号名称</th><th>provider</th><th>套餐</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>操作</th><th>状态</th><th>错误</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -442,9 +462,10 @@
   var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
-  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination'].forEach(function (id) { els[id] = document.getElementById(id); });
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
   var accountsData = []; // account rows currently rendered (raw auth-files entries)
   var accountPage = 1;
+  var selectedAccounts = []; // account names ticked for batch delete, kept across refreshes
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
   var firstSuccess = false;
   var autoTimer = null;
@@ -485,7 +506,10 @@
   }
 
   function clearRenderedData() {
-    accountsData = []; modelRows = []; accountPage = 1;
+    accountsData = []; modelRows = []; accountPage = 1; selectedAccounts = [];
+    els['account-bulk-bar'].hidden = true;
+    els['account-select-all'].checked = false;
+    els['account-select-all'].indeterminate = false;
     els.rows.innerHTML = '';
     els.table.hidden = true;
     els.empty.hidden = true;
@@ -744,12 +768,14 @@
       var name = String(filters.name || '').toLowerCase();
       var plan = String(filters.plan || '');
       var status = String(filters.status || '');
+      var error = String(filters.error || '');
       var from = String(filters.from || '');
       var to = String(filters.to || '');
       return (entries || []).filter(function (entry) {
         if (name && String(entry && entry.name || '').toLowerCase().indexOf(name) === -1) return false;
         if (plan && accountPlan(entry) !== plan) return false;
         if (status && String(entry && entry.status || '') !== status) return false;
+        if (error && statusError(entry).text !== error) return false;
         if (from || to) {
           var created = localDateKey(entry && entry.created_at);
           if (!created || (from && created < from) || (to && created > to)) return false;
@@ -836,10 +862,45 @@
       if (rounded <= 0 && stats.success > 0) rounded = 0.1;
       return (rounded === Math.floor(rounded) ? String(rounded) : rounded.toFixed(1)) + '%';
     }
+    // Selection is keyed by account name (the same identity the delete API uses)
+    // so it survives the 15s auto-refresh that rebuilds every row node.
+    function accountKey(entry) { return String(entry && entry.name || ''); }
+    function pruneSelection(selected, entries) {
+      var live = Object.create(null);
+      (entries || []).forEach(function (entry) {
+        var key = accountKey(entry);
+        if (key) live[key] = true;
+      });
+      return (selected || []).filter(function (name) { return live[name] === true; });
+    }
+    // Drives the header checkbox tri-state against the rows the filter currently matches.
+    function selectionState(selected, rows) {
+      var chosen = Object.create(null);
+      (selected || []).forEach(function (name) { chosen[name] = true; });
+      var keys = (rows || []).map(accountKey).filter(function (key) { return !!key; });
+      var hit = keys.filter(function (key) { return chosen[key] === true; }).length;
+      return {
+        total: keys.length,
+        selected: hit,
+        all: keys.length > 0 && hit === keys.length,
+        some: hit > 0 && hit < keys.length
+      };
+    }
+    function toggleSelection(selected, rows, checked) {
+      var keys = (rows || []).map(accountKey).filter(function (key) { return !!key; });
+      if (!checked) {
+        return (selected || []).filter(function (name) { return keys.indexOf(name) < 0; });
+      }
+      var out = (selected || []).slice();
+      keys.forEach(function (key) { if (out.indexOf(key) < 0) out.push(key); });
+      return out;
+    }
     return {
       accountPlan: accountPlan, localDateKey: localDateKey, filterAccounts: filterAccounts,
       paginate: paginate, preserveSelectedOption: preserveSelectedOption,
-      statusError: statusError, requestStats: requestStats, formatSuccessRate: formatSuccessRate
+      statusError: statusError, requestStats: requestStats, formatSuccessRate: formatSuccessRate,
+      accountKey: accountKey, pruneSelection: pruneSelection, selectionState: selectionState,
+      toggleSelection: toggleSelection
     };
   })();
   /* ACCOUNT_VIEW_LOGIC_END */
@@ -944,7 +1005,8 @@
       plan: els['account-plan-filter'].value,
       from: els['account-created-from'].value,
       to: els['account-created-to'].value,
-      status: els['account-status-filter'].value
+      status: els['account-status-filter'].value,
+      error: els['account-error-filter'].value
     };
   }
 
@@ -965,26 +1027,50 @@
   function rebuildAccountFilterOptions(preserveMissingPlan) {
     var plans = [];
     var statuses = [];
+    var errors = [];
     accountsData.forEach(function (entry) {
       var plan = accountPlan(entry);
       var status = String(entry && entry.status || '');
+      var error = AccountViewLogic.statusError(entry).text;
       if (plans.indexOf(plan) < 0) plans.push(plan);
       if (status && statuses.indexOf(status) < 0) statuses.push(status);
+      if (error && errors.indexOf(error) < 0) errors.push(error);
     });
     plans = AccountViewLogic.preserveSelectedOption(plans, els['account-plan-filter'].value, preserveMissingPlan);
     statuses.sort();
+    errors.sort();
     replaceFilterOptions(els['account-plan-filter'], plans, function (value) { return value === '—' ? '— / 未知' : value; });
     replaceFilterOptions(els['account-status-filter'], statuses);
+    replaceFilterOptions(els['account-error-filter'], errors);
+  }
+
+  // Selection survives auto-refresh, so a row that vanished upstream must drop out too.
+  function paintSelectionControls(filtered) {
+    var state = AccountViewLogic.selectionState(selectedAccounts, filtered);
+    var selectAll = els['account-select-all'];
+    selectAll.checked = state.all;
+    selectAll.indeterminate = state.some;
+    selectAll.disabled = state.total === 0;
+
+    var count = selectedAccounts.length;
+    var hidden = count - state.selected;
+    els['account-bulk-bar'].hidden = count === 0;
+    els['account-bulk-delete'].disabled = count === 0;
+    els['account-bulk-count'].textContent = hidden > 0
+      ? '已选 ' + count + ' 个账号（其中 ' + hidden + ' 个不在当前筛选结果中）'
+      : '已选 ' + count + ' 个账号';
   }
 
   function renderAccountView(options) {
     options = options || {};
     if (options.rebuildOptions) rebuildAccountFilterOptions(!!options.preserveMissingPlan);
     if (options.resetPage) accountPage = 1;
+    selectedAccounts = AccountViewLogic.pruneSelection(selectedAccounts, accountsData);
     var filtered = AccountViewLogic.filterAccounts(accountsData, currentAccountFilters());
     var page = AccountViewLogic.paginate(filtered, accountPage, els['account-page-size'].value);
     accountPage = page.page;
     paint(page.items);
+    paintSelectionControls(filtered);
 
     var hasSource = accountsData.length > 0;
     var hasMatches = page.total > 0;
@@ -1021,9 +1107,16 @@
       '<td>' + escapeHtml(AccountViewLogic.formatSuccessRate(stats)) + '</td>';
   }
 
+  function selectCell(a) {
+    var name = AccountViewLogic.accountKey(a);
+    var checked = selectedAccounts.indexOf(name) >= 0 ? ' checked' : '';
+    return '<td class="select-col"><input type="checkbox" class="row-select" data-name="' + escapeHtml(name) +
+      '" aria-label="选择 ' + escapeHtml(name) + '"' + checked + '></td>';
+  }
+
   function paint(rows) {
     els.rows.innerHTML = rows.map(function (a) {
-      return '<tr>' +
+      return '<tr>' + selectCell(a) +
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
         td(a.provider) + planCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
@@ -1196,6 +1289,53 @@
       .catch(function (e) { setStatus('删除失败：网络错误 ' + e, 'err'); });
   }
 
+  // Batch delete posts every name in one request: the management API accepts a
+  // names array and answers 207 with a per-name failure list when only some go.
+  function deleteSelectedAccounts(names) {
+    var k = getStoredKey();
+    var button = els['account-bulk-delete'];
+    button.disabled = true;
+    setStatus('正在删除 ' + names.length + ' 个账号…', '');
+    fetch(ENDPOINT, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: names })
+    })
+      .then(function (resp) {
+        if (!resp.ok) return readError(resp).then(function (msg) { return { ok: false, msg: msg }; });
+        return resp.json().then(function (data) { return { ok: true, data: data }; })
+          .catch(function () { return { ok: true, data: null }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          button.disabled = false;
+          setStatus('批量删除失败：' + (result.msg || '请求失败'), 'err');
+          return;
+        }
+        var failures = (result.data && result.data.failed) || [];
+        var failedNames = {};
+        failures.forEach(function (item) {
+          if (item && item.name) failedNames[item.name] = String(item.error || '删除失败');
+        });
+        var removed = names.filter(function (name) { return !failedNames[name]; });
+        accountsData = accountsData.filter(function (a) { return removed.indexOf(a.name) < 0; });
+        // Keep the failed ones ticked so a retry does not need re-selecting.
+        selectedAccounts = names.filter(function (name) { return !!failedNames[name]; });
+        renderAccountView({ resetPage: false, rebuildOptions: true });
+        if (failures.length > 0) {
+          var detail = failures.slice(0, 3).map(function (item) { return item.name + '（' + failedNames[item.name] + '）'; }).join('、');
+          setStatus('已删除 ' + removed.length + ' 个，' + failures.length + ' 个失败：' + detail +
+            (failures.length > 3 ? ' 等' : ''), 'err');
+          return;
+        }
+        setStatus('已删除 ' + removed.length + ' 个账号', 'ok');
+      })
+      .catch(function (e) {
+        button.disabled = false;
+        setStatus('批量删除失败：网络错误 ' + e, 'err');
+      });
+  }
+
   // ---- Tabs ----
   function tabBtnClass(active) {
     return 'px-1 py-3 text-sm font-medium border-b-2 -mb-px transition ' +
@@ -1364,7 +1504,7 @@
       renderAccountView({ resetPage: true, rebuildOptions: false });
     });
   });
-  ['account-plan-filter', 'account-status-filter'].forEach(function (id) {
+  ['account-plan-filter', 'account-status-filter', 'account-error-filter'].forEach(function (id) {
     els[id].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   });
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
@@ -1376,6 +1516,35 @@
   });
   document.getElementById('proxy-save').addEventListener('click', saveProxy);
   document.getElementById('proxy-test').addEventListener('click', testProxy);
+  // Row checkboxes: 'change' bubbles, so one listener survives the row rebuild.
+  els.rows.addEventListener('change', function (e) {
+    var box = e.target && e.target.closest ? e.target.closest('.row-select') : null;
+    if (!box) return;
+    var name = box.getAttribute('data-name') || '';
+    var index = selectedAccounts.indexOf(name);
+    if (box.checked && index < 0) selectedAccounts.push(name);
+    if (!box.checked && index >= 0) selectedAccounts.splice(index, 1);
+    paintSelectionControls(AccountViewLogic.filterAccounts(accountsData, currentAccountFilters()));
+  });
+  // Header checkbox spans every filtered row, not just the visible page, so a
+  // filter-then-select-all-then-delete pass does not need paging through.
+  els['account-select-all'].addEventListener('change', function () {
+    var filtered = AccountViewLogic.filterAccounts(accountsData, currentAccountFilters());
+    selectedAccounts = AccountViewLogic.toggleSelection(selectedAccounts, filtered, els['account-select-all'].checked);
+    renderAccountView({ resetPage: false, rebuildOptions: false });
+  });
+  els['account-bulk-clear'].addEventListener('click', function () {
+    selectedAccounts = [];
+    renderAccountView({ resetPage: false, rebuildOptions: false });
+  });
+  els['account-bulk-delete'].addEventListener('click', function () {
+    var names = selectedAccounts.slice();
+    if (!names.length) return;
+    var preview = names.slice(0, 10).join('\n') + (names.length > 10 ? '\n… 等 ' + names.length + ' 个' : '');
+    if (window.confirm('确定删除选中的 ' + names.length + ' 个认证文件吗？此操作不可恢复。\n\n' + preview)) {
+      deleteSelectedAccounts(names);
+    }
+  });
   els.rows.addEventListener('click', function (e) {
     var delBtn = e.target && e.target.closest ? e.target.closest('.del-btn') : null;
     if (delBtn) {
