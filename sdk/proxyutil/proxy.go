@@ -10,9 +10,19 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
+
+// socks5DialTimeout bounds connection establishment through a SOCKS5 proxy:
+// the TCP connect to the proxy plus the SOCKS5 greeting/auth/CONNECT exchange.
+// It restores the 30s dial budget that http.DefaultTransport already applies to
+// every other code path here and that overriding Transport.DialContext silently
+// dropped for SOCKS5. It bounds connection setup only: golang.org/x/net's SOCKS
+// client clears the deadline once CONNECT succeeds, so long-lived response
+// streams are unaffected.
+const socks5DialTimeout = 30 * time.Second
 
 // Mode describes how a proxy setting should be interpreted.
 type Mode int
@@ -111,8 +121,24 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
+			// proxy.SOCKS5 returns a *socks.Dialer, which implements
+			// proxy.ContextDialer. Its deprecated Dial method hardcodes
+			// context.Background(), so neither the TCP connect nor the SOCKS5
+			// handshake had any deadline: a proxy that accepts the connection and
+			// then stops responding hung the request forever, pinning the whole
+			// request payload in memory. Dial through DialContext with an explicit
+			// budget instead. The nil check is unreachable with the current
+			// golang.org/x/net; it degrades to the old behaviour rather than
+			// failing the transport, because a failed transport makes callers fall
+			// back to a direct connection and leak traffic around the proxy.
+			contextDialer, _ := dialer.(proxy.ContextDialer)
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if contextDialer == nil {
+					return dialer.Dial(network, addr)
+				}
+				dialCtx, cancel := context.WithTimeout(ctx, socks5DialTimeout)
+				defer cancel()
+				return contextDialer.DialContext(dialCtx, network, addr)
 			}
 			return transport, setting.Mode, nil
 		}

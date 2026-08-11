@@ -3809,6 +3809,27 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							} else {
 								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
 							}
+						case 0:
+							// Transport-level failures (connection reset, EOF, TLS or SOCKS5
+							// handshake failure, client timeout) carry no HTTP status, so they
+							// used to fall through to the default branch and leave the cooldown
+							// at its zero value. isAuthBlockedForModel treats an Unavailable
+							// state with a zero NextRetryAfter as *not* blocked, so such a
+							// credential stays selectable forever: the pool never shrinks, every
+							// new request rescans it end to end, and each scanned credential
+							// re-uploads the entire request body. On a saturated uplink that
+							// loop feeds itself. Bench them like any other transient upstream
+							// failure so the pool shrinks and the upstream byte rate is capped
+							// by the pool recovery rate instead of by the link.
+							//
+							// Emergency kill switch: setting transient-error-cooldown-seconds
+							// to -1 makes nextTransientErrorRetryAfter return the zero value
+							// again, restoring the previous behaviour without a redeploy.
+							if disableCooling || isCanceledResultError(result.Error) {
+								state.NextRetryAfter = time.Time{}
+							} else {
+								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
+							}
 						default:
 							state.NextRetryAfter = time.Time{}
 						}
@@ -4144,6 +4165,26 @@ func statusCodeFromResult(err *Error) int {
 		return 0
 	}
 	return err.StatusCode()
+}
+
+// isCanceledResultError reports whether a status-less failure was caused by
+// context cancellation (downstream client hung up, server shutting down) rather
+// than by an upstream transport fault. Those must not bench the credential: the
+// auth is healthy, the caller simply went away. Deadline/timeout errors are
+// deliberately NOT matched here — an upstream that stops responding is exactly
+// the condition a cooldown exists for.
+func isCanceledResultError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Message)
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "context canceled") ||
+		strings.Contains(lower, "context cancelled") ||
+		strings.Contains(lower, "request canceled") ||
+		strings.Contains(lower, "operation was canceled")
 }
 
 func isModelSupportErrorMessage(message string) bool {
