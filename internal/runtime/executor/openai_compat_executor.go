@@ -650,7 +650,7 @@ func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType 
 	}
 	boundary := strings.TrimSpace(params["boundary"])
 	if boundary == "" {
-		return nil, "", fmt.Errorf("multipart boundary is missing")
+		return nil, "", badRequestErr(fmt.Errorf("multipart boundary is missing"))
 	}
 	return rewriteOpenAICompatImagesMultipartPayload(payload, model, boundary, stream)
 }
@@ -667,7 +667,7 @@ func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, bou
 	reader := multipart.NewReader(bytes.NewReader(payload), boundary)
 	form, errRead := reader.ReadForm(openAICompatMultipartMemory)
 	if errRead != nil {
-		return nil, "", fmt.Errorf("read multipart form failed: %w", errRead)
+		return nil, "", badRequestErr(fmt.Errorf("read multipart form failed: %w", errRead))
 	}
 	defer func() {
 		if errRemove := form.RemoveAll(); errRemove != nil {
@@ -802,4 +802,32 @@ func (e statusErr) QuotaDetail() (cliproxyexecutor.QuotaDetail, bool) {
 		return cliproxyexecutor.QuotaDetail{}, false
 	}
 	return *e.quota, true
+}
+
+// badRequestErr marks a failure caused by the inbound request itself -- a
+// malformed multipart body, unparseable JSON, a missing required field -- rather
+// than by the credential or the upstream link.
+//
+// These used to be bare fmt.Errorf values with no status code, which made them
+// indistinguishable from a connection reset by the time they reached the
+// conductor: statusCodeFromResult returned 0, so MarkResult's case 0 branch gave
+// the credential a 60s transport cooldown, and isRequestInvalidError's default
+// arm returned false so the loop moved on to the next credential and repeated it.
+// With max-retry-credentials unset (the default) a single malformed request could
+// therefore walk and bench the entire pool, none of which brings it any closer to
+// succeeding -- the same bytes fail identically against every credential.
+//
+// Attaching 400 plus the invalid_request_error marker routes them through the
+// existing machinery instead: no cooldown (there is a status, so case 0 never
+// runs) and isRequestInvalidError stops the retry loop at the first credential.
+// Keeping the marker in one place keeps eleven call sites from each having their
+// own spelling of it.
+func badRequestErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return statusErr{
+		code: http.StatusBadRequest,
+		msg:  "invalid_request_error: " + err.Error(),
+	}
 }

@@ -511,11 +511,11 @@ func codexPrepareDirectOpenAIImageEditPayload(payload []byte, model string, cont
 
 	mediaType, params, errParse := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if errParse != nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mediaType)), "multipart/") {
-		return nil, "", fmt.Errorf("unsupported OpenAI image edit Content-Type %q", contentType)
+		return nil, "", badRequestErr(fmt.Errorf("unsupported OpenAI image edit Content-Type %q", contentType))
 	}
 	boundary := strings.TrimSpace(params["boundary"])
 	if boundary == "" {
-		return nil, "", fmt.Errorf("multipart boundary is missing")
+		return nil, "", badRequestErr(fmt.Errorf("multipart boundary is missing"))
 	}
 	return codexRewriteOpenAIImageEditMultipartToJSON(payload, model, boundary, stream)
 }
@@ -524,7 +524,7 @@ func codexRewriteOpenAIImageEditMultipartToJSON(payload []byte, model string, bo
 	reader := multipart.NewReader(bytes.NewReader(payload), boundary)
 	form, errRead := reader.ReadForm(openAICompatMultipartMemory)
 	if errRead != nil {
-		return nil, "", fmt.Errorf("read multipart form failed: %w", errRead)
+		return nil, "", badRequestErr(fmt.Errorf("read multipart form failed: %w", errRead))
 	}
 	defer func() {
 		if errRemove := form.RemoveAll(); errRemove != nil {
@@ -704,7 +704,7 @@ func codexPrepareOpenAIImageRequest(req cliproxyexecutor.Request, opts cliproxye
 
 func codexPrepareOpenAIImageGenerationJSON(rawJSON []byte, routeModel string) (codexOpenAIImagePreparedRequest, error) {
 	if !json.Valid(rawJSON) {
-		return codexOpenAIImagePreparedRequest{}, fmt.Errorf("invalid OpenAI image generation request JSON")
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("invalid OpenAI image generation request JSON"))
 	}
 	prompt := strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt").String())
 	tool := codexBuildOpenAIImageTool(rawJSON, routeModel, "generate", []string{"size", "quality", "background", "output_format", "moderation"}, []string{"output_compression", "partial_images"})
@@ -718,7 +718,7 @@ func codexPrepareOpenAIImageGenerationJSON(rawJSON []byte, routeModel string) (c
 
 func codexPrepareOpenAIImageEditJSON(rawJSON []byte, routeModel string) (codexOpenAIImagePreparedRequest, error) {
 	if !json.Valid(rawJSON) {
-		return codexOpenAIImagePreparedRequest{}, fmt.Errorf("invalid OpenAI image edit request JSON")
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("invalid OpenAI image edit request JSON"))
 	}
 	prompt := strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt").String())
 	images := make([]string, 0)
@@ -745,16 +745,16 @@ func codexPrepareOpenAIImageEditJSON(rawJSON []byte, routeModel string) (codexOp
 func codexPrepareOpenAIImageEditMultipart(rawBody []byte, routeModel string, contentType string) (codexOpenAIImagePreparedRequest, error) {
 	_, params, errMedia := mime.ParseMediaType(contentType)
 	if errMedia != nil {
-		return codexOpenAIImagePreparedRequest{}, fmt.Errorf("parse multipart content type failed: %w", errMedia)
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("parse multipart content type failed: %w", errMedia))
 	}
 	boundary := strings.TrimSpace(params["boundary"])
 	if boundary == "" {
-		return codexOpenAIImagePreparedRequest{}, fmt.Errorf("multipart boundary is required")
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("multipart boundary is required"))
 	}
 	reader := multipart.NewReader(bytes.NewReader(rawBody), boundary)
 	form, errForm := reader.ReadForm(32 << 20)
 	if errForm != nil {
-		return codexOpenAIImagePreparedRequest{}, fmt.Errorf("parse multipart form failed: %w", errForm)
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("parse multipart form failed: %w", errForm))
 	}
 	defer func() {
 		if errRemove := form.RemoveAll(); errRemove != nil {

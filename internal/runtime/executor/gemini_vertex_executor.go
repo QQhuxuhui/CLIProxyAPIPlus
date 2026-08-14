@@ -142,7 +142,7 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	}
 
 	if prompt == "" {
-		return nil, fmt.Errorf("imagen: no prompt found in request")
+		return nil, badRequestErr(fmt.Errorf("imagen: no prompt found in request"))
 	}
 
 	// Build Imagen API request
