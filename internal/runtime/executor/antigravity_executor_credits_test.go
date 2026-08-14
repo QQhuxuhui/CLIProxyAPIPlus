@@ -25,6 +25,11 @@ func resetAntigravityCreditsRetryState() {
 	antigravityShortCooldownByAuth.Clear()
 	antigravityCreditsBalanceByAuth.Clear()
 	antigravityCreditsHintRefreshByID.Clear()
+	// Transports are now cached and reused across requests, so their keep-alive
+	// connections outlive a single test. httptest.Server.Close blocks until every
+	// client connection is gone, so a cached transport pointing at a finished
+	// test server deadlocks the suite. Purge closes the idle connections it holds.
+	antigravityTransports.Purge()
 }
 
 type fakeAntigravityKVClient struct {
@@ -261,29 +266,48 @@ func TestParseRetryDelay_HumanReadableDuration(t *testing.T) {
 	}
 }
 
-func TestAntigravityExecute_RetriesTransient429ResourceExhausted(t *testing.T) {
+// TestAntigravityExecute_BareResourceExhaustedRotatesInsteadOfRetrying pins the
+// behaviour change introduced alongside the "resource has been exhausted"
+// keyword: Google's generic RESOURCE_EXHAUSTED body carries no error.details and
+// no retry hint, and this executor used to classify it as a soft rate limit and
+// re-send the entire (multi-megabyte, for image models) request to the same
+// credential request-retry+1 times before giving up.
+//
+// Production evidence for the change: six minutes of upstream response sampling
+// (900 dumps) found this to be the only 429 shape emitted, none of them carrying
+// error.details, and credentials retried within 60s of a failure succeeded only
+// 0.9% of the time. Paying a full upload per doomed retry dominated request
+// latency, so the executor now surfaces the error immediately and lets the
+// conductor cool the credential down and rotate to the next one.
+//
+// Note this does NOT permanently disable the credential: the FullQuotaExhausted
+// branch only calls markAntigravityCreditsPermanentlyDisabled when the body
+// carries an explicit INSUFFICIENT_G1_CREDITS_BALANCE ErrorInfo, which requires
+// error.details to be present.
+func TestAntigravityExecute_BareResourceExhaustedRotatesInsteadOfRetrying(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)
+
+	const bareResourceExhausted = `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
+
+	if got := classifyAntigravity429([]byte(bareResourceExhausted)); got != antigravity429QuotaExhausted {
+		t.Fatalf("classifyAntigravity429() = %q, want %q", got, antigravity429QuotaExhausted)
+	}
+	if antigravityShouldRetrySoftRateLimit(http.StatusTooManyRequests, []byte(bareResourceExhausted)) {
+		t.Fatal("antigravityShouldRetrySoftRateLimit() = true, want false")
+	}
 
 	var requestCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
-		switch requestCount {
-		case 1:
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`))
-		case 2:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}`))
-		default:
-			t.Fatalf("unexpected request count %d", requestCount)
-		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(bareResourceExhausted))
 	}))
 	defer server.Close()
 
 	exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
 	auth := &cliproxyauth.Auth{
-		ID: "auth-transient-429",
+		ID: "auth-bare-resource-exhausted",
 		Attributes: map[string]string{
 			"base_url": server.URL,
 		},
@@ -294,20 +318,17 @@ func TestAntigravityExecute_RetriesTransient429ResourceExhausted(t *testing.T) {
 		},
 	}
 
-	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "claude-sonnet-4-6",
 		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatAntigravity,
 	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want the 429 surfaced so the conductor can rotate")
 	}
-	if len(resp.Payload) == 0 {
-		t.Fatal("Execute() returned empty payload")
-	}
-	if requestCount != 2 {
-		t.Fatalf("request count = %d, want 2", requestCount)
+	if requestCount != 1 {
+		t.Fatalf("request count = %d, want 1 (no same-credential retry on a bare RESOURCE_EXHAUSTED)", requestCount)
 	}
 }
 

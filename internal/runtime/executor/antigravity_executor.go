@@ -104,6 +104,14 @@ var (
 	antigravityQuotaExhaustedKeywords = []string{
 		"quota_exhausted",
 		"quota exhausted",
+		// Google's generic RESOURCE_EXHAUSTED body carries no error.details and no
+		// retry hint, so decideAntigravity429 used to fall through to SoftRetry and
+		// re-upload the whole (multi-megabyte) request to the same dead credential
+		// request-retry+1 times before switching. Production sampling over 6 minutes
+		// (900 dumps) found this to be the only 429 shape emitted, and credentials
+		// retried within 60s of a failure succeed just 0.9% of the time, so treating
+		// it as real exhaustion and rotating immediately is strictly better here.
+		"resource has been exhausted",
 	}
 )
 
@@ -247,13 +255,13 @@ func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
 }
 
-// antigravityTransport is a singleton HTTP/1.1 transport shared by all Antigravity requests.
-// It is initialized once via antigravityTransportOnce to avoid leaking a new connection pool
-// (and the goroutines managing it) on every request.
-var (
-	antigravityTransport     *http.Transport
-	antigravityTransportOnce sync.Once
-)
+// The former antigravityTransport/antigravityTransportOnce singleton has been
+// replaced by antigravityBaseTransport plus the per-credential transport cache in
+// antigravity_transport_pool.go. The singleton only ever covered the no-proxy path;
+// once a proxy was configured every request built a brand-new transport (and leaked
+// its connection pool and goroutines), which is what the cache now prevents.
+// Tests that need to redirect Antigravity traffic must override
+// antigravityBaseTransport and purge the cache -- see useAntigravityRefreshTestTransport.
 
 func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 	if base == nil {
@@ -271,35 +279,35 @@ func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 	}
 	// Actively advertise only HTTP/1.1 in the ALPN handshake.
 	clone.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	applyAntigravityPoolLimits(clone)
 	return clone
 }
 
-// initAntigravityTransport creates the shared HTTP/1.1 transport exactly once.
-func initAntigravityTransport() {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		base = &http.Transport{}
-	}
-	antigravityTransport = cloneTransportWithHTTP11(base)
-}
 
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
 // enforcing HTTP/1.1 by disabling HTTP/2 to perfectly mimic Node.js https defaults.
 // The underlying Transport is a singleton to avoid leaking connection pools.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	antigravityTransportOnce.Do(initAntigravityTransport)
+	if proxyURL := antigravityProxyURL(cfg, auth); proxyURL != "" {
+		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL); transport != nil {
+			return &http.Client{Transport: transport, Timeout: timeout}
+		}
+	}
 
 	client := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, timeout)
-	// If no transport is set, use the shared HTTP/1.1 transport.
 	if client.Transport == nil {
-		client.Transport = antigravityTransport
+		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport)
 		return client
 	}
 
-	// Preserve proxy settings from proxy-aware transports while forcing HTTP/1.1.
-	if transport, ok := client.Transport.(*http.Transport); ok {
-		client.Transport = cloneTransportWithHTTP11(transport)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return client
 	}
+	if transport == nil {
+		transport = antigravityBaseTransport
+	}
+	client.Transport = antigravityHTTP11Transport(auth, transport)
 	return client
 }
 

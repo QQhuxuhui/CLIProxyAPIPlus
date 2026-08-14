@@ -33,12 +33,16 @@ func useAntigravityRefreshTestTransport(t *testing.T, targetHost string) {
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		ForceAttemptHTTP2: false,
 	}
-	antigravityTransport = transport
-	antigravityTransportOnce = sync.Once{}
-	antigravityTransportOnce.Do(func() {})
+	previous := antigravityBaseTransport
+	antigravityBaseTransport = transport
+	// Transports are cloned from the base and cached per credential, so entries
+	// built from the previous base must be dropped for this override to take
+	// effect -- and dropped again afterwards so idle connections pointing at this
+	// test's server do not leak into the next test.
+	antigravityTransports.Purge()
 	t.Cleanup(func() {
-		antigravityTransport = nil
-		antigravityTransportOnce = sync.Once{}
+		antigravityTransports.Purge()
+		antigravityBaseTransport = previous
 	})
 }
 
