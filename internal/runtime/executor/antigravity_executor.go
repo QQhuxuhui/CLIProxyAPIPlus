@@ -283,10 +283,10 @@ func cloneTransportWithHTTP11(base *http.Transport) *http.Transport {
 	return clone
 }
 
-
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
 // enforcing HTTP/1.1 by disabling HTTP/2 to perfectly mimic Node.js https defaults.
-// The underlying Transport is a singleton to avoid leaking connection pools.
+// Transports come from the per-credential LRU cache so connection pools are
+// reused across requests instead of being rebuilt (and leaked) on every call.
 func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	if proxyURL := antigravityProxyURL(cfg, auth); proxyURL != "" {
 		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL); transport != nil {
@@ -443,6 +443,12 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	httpReq := req.WithContext(ctx)
 
+	// Connection management is a Request field, not a header, so the header
+	// whitelist below cannot strip it. An inbound "Connection: close" makes Go's
+	// server set Request.Close, and WithContext copies that field verbatim, which
+	// would both leak the downstream header upstream and drain the shared pool.
+	httpReq.Close = false
+
 	// --- Whitelist: save only the headers we need from the original request ---
 	contentType := httpReq.Header.Get("Content-Type")
 
@@ -457,7 +463,6 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	// Content-Length is managed automatically by Go's http.Client from the Body
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
-	httpReq.Close = true // sends Connection: close
 
 	// Inject Authorization: Bearer <token>
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
@@ -1788,7 +1793,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		if errReq != nil {
 			return cliproxyexecutor.Response{}, errReq
 		}
-		httpReq.Close = true
+		// No httpReq.Close: keep the shared Antigravity connection pool usable.
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
@@ -2353,7 +2358,10 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errReq != nil {
 		return nil, errReq
 	}
-	httpReq.Close = true
+	// Deliberately no httpReq.Close: the native Antigravity client omits the
+	// Connection header and keeps its HTTP/1.1 connections alive, so forcing
+	// "Connection: close" would both deviate from that fingerprint and defeat the
+	// per-credential transport pool.
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
