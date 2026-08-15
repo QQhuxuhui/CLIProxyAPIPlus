@@ -1,12 +1,27 @@
 package executor
 
 import (
+	"bytes"
+	"errors"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+type repeatedByteReader byte
+
+func (r repeatedByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
 
 // Client-request faults must reach the conductor carrying HTTP 400 and the
 // invalid_request_error marker.
@@ -97,5 +112,71 @@ func TestClientRequestFaultsCarryBadRequestStatus(t *testing.T) {
 func TestBadRequestErrPassesNilThrough(t *testing.T) {
 	if err := badRequestErr(nil); err != nil {
 		t.Fatalf("badRequestErr(nil) = %v, want nil", err)
+	}
+}
+
+func TestMultipartTemporaryFileErrorsRemainServerErrors(t *testing.T) {
+	tempPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if errWrite := os.WriteFile(tempPath, []byte("block temp files"), 0o600); errWrite != nil {
+		t.Fatalf("create TMPDIR blocker: %v", errWrite)
+	}
+	t.Setenv("TMPDIR", tempPath)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, errPart := writer.CreateFormFile("image", "large.png")
+	if errPart != nil {
+		t.Fatalf("create multipart file: %v", errPart)
+	}
+	if _, errCopy := io.CopyN(part, repeatedByteReader('x'), openAICompatMultipartMemory+1); errCopy != nil {
+		t.Fatalf("write multipart file: %v", errCopy)
+	}
+	contentType := writer.FormDataContentType()
+	boundary := writer.Boundary()
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("close multipart writer: %v", errClose)
+	}
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "openai compat",
+			call: func() error {
+				_, _, err := rewriteOpenAICompatImagesMultipartPayload(body.Bytes(), "gpt-image-1", boundary, false)
+				return err
+			},
+		},
+		{
+			name: "codex direct",
+			call: func() error {
+				_, _, err := codexRewriteOpenAIImageEditMultipartToJSON(body.Bytes(), "gpt-image-1", boundary, false)
+				return err
+			},
+		},
+		{
+			name: "codex responses",
+			call: func() error {
+				_, err := codexPrepareOpenAIImageEditMultipart(body.Bytes(), "gpt-image-1", contentType)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if err == nil {
+				t.Fatal("multipart parse error = nil, want temporary-file failure")
+			}
+			var pathErr *os.PathError
+			if !errors.As(err, &pathErr) {
+				t.Fatalf("error %T does not preserve the temporary-file PathError: %v", err, err)
+			}
+			if statusErr, ok := err.(cliproxyexecutor.StatusError); ok && statusErr.StatusCode() == http.StatusBadRequest {
+				t.Fatalf("temporary-file failure reported as HTTP 400: %v", err)
+			}
+		})
 	}
 }

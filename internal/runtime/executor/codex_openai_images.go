@@ -524,7 +524,7 @@ func codexRewriteOpenAIImageEditMultipartToJSON(payload []byte, model string, bo
 	reader := multipart.NewReader(bytes.NewReader(payload), boundary)
 	form, errRead := reader.ReadForm(openAICompatMultipartMemory)
 	if errRead != nil {
-		return nil, "", badRequestErr(fmt.Errorf("read multipart form failed: %w", errRead))
+		return nil, "", classifyMultipartReadError(fmt.Errorf("read multipart form failed: %w", errRead))
 	}
 	defer func() {
 		if errRemove := form.RemoveAll(); errRemove != nil {
@@ -754,7 +754,7 @@ func codexPrepareOpenAIImageEditMultipart(rawBody []byte, routeModel string, con
 	reader := multipart.NewReader(bytes.NewReader(rawBody), boundary)
 	form, errForm := reader.ReadForm(32 << 20)
 	if errForm != nil {
-		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("parse multipart form failed: %w", errForm))
+		return codexOpenAIImagePreparedRequest{}, classifyMultipartReadError(fmt.Errorf("parse multipart form failed: %w", errForm))
 	}
 	defer func() {
 		if errRemove := form.RemoveAll(); errRemove != nil {

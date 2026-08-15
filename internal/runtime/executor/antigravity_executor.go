@@ -815,7 +815,7 @@ attemptLoop:
 				lastStatus = httpResp.StatusCode
 				lastBody = append([]byte(nil), bodyBytes...)
 				lastErr = nil
-				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+				if antigravityShouldTryFallbackBaseURL(httpResp.StatusCode, bodyBytes) && idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
@@ -1040,7 +1040,7 @@ attemptLoop:
 				lastStatus = httpResp.StatusCode
 				lastBody = append([]byte(nil), bodyBytes...)
 				lastErr = nil
-				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+				if antigravityShouldTryFallbackBaseURL(httpResp.StatusCode, bodyBytes) && idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
@@ -1525,7 +1525,7 @@ attemptLoop:
 				lastStatus = httpResp.StatusCode
 				lastBody = append([]byte(nil), bodyBytes...)
 				lastErr = nil
-				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+				if antigravityShouldTryFallbackBaseURL(httpResp.StatusCode, bodyBytes) && idx+1 < len(baseURLs) {
 					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 					continue
 				}
@@ -1854,7 +1854,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		lastStatus = httpResp.StatusCode
 		lastBody = append([]byte(nil), bodyBytes...)
 		lastErr = nil
-		if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
+		if antigravityShouldTryFallbackBaseURL(httpResp.StatusCode, bodyBytes) && idx+1 < len(baseURLs) {
 			log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 			continue
 		}
@@ -2545,6 +2545,13 @@ func antigravityShouldRetryNoCapacity(statusCode int, body []byte) bool {
 	}
 	msg := strings.ToLower(string(body))
 	return strings.Contains(msg, "no capacity available")
+}
+
+func antigravityShouldTryFallbackBaseURL(statusCode int, body []byte) bool {
+	if statusCode != http.StatusTooManyRequests {
+		return false
+	}
+	return decideAntigravity429(body).kind != antigravity429DecisionFullQuotaExhausted
 }
 
 func antigravityShouldRetryTransientResourceExhausted429(statusCode int, body []byte) bool {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -329,6 +330,105 @@ func TestAntigravityExecute_BareResourceExhaustedRotatesInsteadOfRetrying(t *tes
 	}
 	if requestCount != 1 {
 		t.Fatalf("request count = %d, want 1 (no same-credential retry on a bare RESOURCE_EXHAUSTED)", requestCount)
+	}
+}
+
+func TestAntigravityBareResourceExhaustedSkipsFallbackBaseURL(t *testing.T) {
+	const bareResourceExhausted = `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
+
+	tests := []struct {
+		name string
+		call func(*AntigravityExecutor, *cliproxyauth.Auth) error
+	}{
+		{
+			name: "execute",
+			call: func(exec *AntigravityExecutor, auth *cliproxyauth.Auth) error {
+				_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+					Model:   "gemini-2.5-pro",
+					Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+				}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+				return err
+			},
+		},
+		{
+			name: "execute claude",
+			call: func(exec *AntigravityExecutor, auth *cliproxyauth.Auth) error {
+				_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+					Model:   "claude-sonnet-4-6",
+					Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+				}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+				return err
+			},
+		},
+		{
+			name: "execute stream",
+			call: func(exec *AntigravityExecutor, auth *cliproxyauth.Auth) error {
+				_, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+					Model:   "gemini-2.5-pro",
+					Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+				}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity, Stream: true})
+				return err
+			},
+		},
+		{
+			name: "count tokens",
+			call: func(exec *AntigravityExecutor, auth *cliproxyauth.Auth) error {
+				_, err := exec.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
+					Model:   "gemini-2.5-pro",
+					Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
+				}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetAntigravityCreditsRetryState()
+			t.Cleanup(resetAntigravityCreditsRetryState)
+
+			var primaryRequests, fallbackRequests atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryRequests.Add(1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(bareResourceExhausted))
+			}))
+			defer primary.Close()
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackRequests.Add(1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(bareResourceExhausted))
+			}))
+			defer fallback.Close()
+
+			previousFallbackOrder := antigravityBaseURLFallbackOrder
+			antigravityBaseURLFallbackOrder = func(*cliproxyauth.Auth) []string {
+				return []string{primary.URL, fallback.URL}
+			}
+			t.Cleanup(func() {
+				antigravityBaseURLFallbackOrder = previousFallbackOrder
+			})
+
+			exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
+			auth := &cliproxyauth.Auth{
+				ID: "auth-bare-resource-exhausted-fallback-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Metadata: map[string]any{
+					"access_token": "token",
+					"project_id":   "project-1",
+					"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+				},
+			}
+
+			if err := tt.call(exec, auth); err == nil {
+				t.Fatal("request error = nil, want the primary 429 returned")
+			}
+			if got := primaryRequests.Load(); got != 1 {
+				t.Fatalf("primary request count = %d, want 1", got)
+			}
+			if got := fallbackRequests.Load(); got != 0 {
+				t.Fatalf("fallback request count = %d, want 0 for full quota exhaustion", got)
+			}
+		})
 	}
 }
 

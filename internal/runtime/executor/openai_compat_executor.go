@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"os"
 	"strings"
 	"time"
 
@@ -667,7 +669,7 @@ func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, bou
 	reader := multipart.NewReader(bytes.NewReader(payload), boundary)
 	form, errRead := reader.ReadForm(openAICompatMultipartMemory)
 	if errRead != nil {
-		return nil, "", badRequestErr(fmt.Errorf("read multipart form failed: %w", errRead))
+		return nil, "", classifyMultipartReadError(fmt.Errorf("read multipart form failed: %w", errRead))
 	}
 	defer func() {
 		if errRemove := form.RemoveAll(); errRemove != nil {
@@ -830,4 +832,15 @@ func badRequestErr(err error) error {
 		code: http.StatusBadRequest,
 		msg:  "invalid_request_error: " + err.Error(),
 	}
+}
+
+func classifyMultipartReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return err
+	}
+	return badRequestErr(err)
 }
