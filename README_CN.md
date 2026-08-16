@@ -82,12 +82,15 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 - 支持 Claude Code 多账户轮询
 - 支持 OpenAI Codex 多账户轮询
 - 支持 Grok Build 多账户轮询
+- 原生 ChatGPT Web 文字与生图 Provider（账号池接入见 [CHATGPT_WEB_PROVIDER_CN.md](CHATGPT_WEB_PROVIDER_CN.md)）
 - 通过配置接入上游 OpenAI 兼容提供商（例如 OpenRouter）
 - 可复用的 Go SDK（见 `docs/sdk-usage_CN.md`）
 
 ## 新手入门
 
 CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-for.me/cn/)
+
+ChatGPT Web 原生 Provider：[CHATGPT_WEB_PROVIDER_CN.md](CHATGPT_WEB_PROVIDER_CN.md)
 
 ## 管理 API 文档
 
