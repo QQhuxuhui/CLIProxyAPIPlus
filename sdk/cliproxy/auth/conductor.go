@@ -1593,6 +1593,7 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	onlyFreeAuth := onlyFreeAuthFromMetadata(opts.Metadata)
 	for {
 		var selected *Auth
 		var errPick error
@@ -1615,7 +1616,7 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 		if selected == nil {
 			return nil, true, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
-		if disallowFreeAuth && isFreeCodexAuth(selected) {
+		if !authAllowedByFreePolicy(selected, disallowFreeAuth, onlyFreeAuth) {
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -3091,6 +3092,56 @@ func disallowFreeAuthFromMetadata(meta map[string]any) bool {
 	default:
 		return false
 	}
+}
+
+func onlyFreeAuthFromMetadata(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	raw, ok := meta[cliproxyexecutor.OnlyFreeAuthMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	switch val := raw.(type) {
+	case bool:
+		return val
+	case string:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(val))
+		return errParse == nil && parsed
+	case []byte:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(string(val)))
+		return errParse == nil && parsed
+	default:
+		return false
+	}
+}
+
+var unknownCodexPlanWarning atomic.Bool
+
+func authAllowedByFreePolicy(auth *Auth, disallowFreeAuth, onlyFreeAuth bool) bool {
+	if auth == nil {
+		return false
+	}
+	if disallowFreeAuth && isFreeCodexAuth(auth) {
+		return false
+	}
+	if !onlyFreeAuth {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	planType := ""
+	if auth.Attributes != nil {
+		planType = strings.TrimSpace(auth.Attributes["plan_type"])
+	}
+	if planType == "" {
+		if unknownCodexPlanWarning.CompareAndSwap(false, true) {
+			log.Warn("codex auth has no plan_type; allowing only-free route")
+		}
+		return true
+	}
+	return strings.EqualFold(planType, "free")
 }
 
 func isFreeCodexAuth(auth *Auth) bool {
@@ -4607,6 +4658,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	onlyFreeAuth := onlyFreeAuthFromMetadata(opts.Metadata)
 
 	m.mu.RLock()
 	selector := m.selector
@@ -4633,7 +4685,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
-		if disallowFreeAuth && isFreeCodexAuth(candidate) {
+		if !authAllowedByFreePolicy(candidate, disallowFreeAuth, onlyFreeAuth) {
 			continue
 		}
 		if _, used := tried[candidate.ID]; used {
@@ -4711,6 +4763,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	onlyFreeAuth := onlyFreeAuthFromMetadata(opts.Metadata)
 	for {
 		selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
@@ -4723,7 +4776,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		if selected == nil {
 			return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
-		if disallowFreeAuth && isFreeCodexAuth(selected) {
+		if !authAllowedByFreePolicy(selected, disallowFreeAuth, onlyFreeAuth) {
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}
@@ -4750,6 +4803,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	onlyFreeAuth := onlyFreeAuthFromMetadata(opts.Metadata)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -4783,7 +4837,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
-		if disallowFreeAuth && isFreeCodexAuth(candidate) {
+		if !authAllowedByFreePolicy(candidate, disallowFreeAuth, onlyFreeAuth) {
 			continue
 		}
 		providerKey := executorKeyFromAuth(candidate)
@@ -4899,6 +4953,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	onlyFreeAuth := onlyFreeAuthFromMetadata(opts.Metadata)
 	for {
 		selected, providerKey, errPick := m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
 		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
@@ -4911,7 +4966,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		if selected == nil {
 			return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 		}
-		if disallowFreeAuth && isFreeCodexAuth(selected) {
+		if !authAllowedByFreePolicy(selected, disallowFreeAuth, onlyFreeAuth) {
 			if tried == nil {
 				tried = make(map[string]struct{})
 			}

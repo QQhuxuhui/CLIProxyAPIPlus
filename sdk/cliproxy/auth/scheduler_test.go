@@ -390,6 +390,107 @@ func TestManager_PickNextMixed_DisallowFreeAuthSkipsCodexFreePlan(t *testing.T) 
 	}
 }
 
+func TestOnlyFreeAuthEligibility(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		auth *Auth
+		want bool
+	}{
+		{name: "free", auth: &Auth{Provider: "codex", Attributes: map[string]string{"plan_type": "free"}}, want: true},
+		{name: "unknown missing attributes", auth: &Auth{Provider: "codex"}, want: true},
+		{name: "unknown empty plan", auth: &Auth{Provider: "codex", Attributes: map[string]string{"plan_type": ""}}, want: true},
+		{name: "plus", auth: &Auth{Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}}, want: false},
+		{name: "team", auth: &Auth{Provider: "codex", Attributes: map[string]string{"plan_type": "team"}}, want: false},
+		{name: "other provider", auth: &Auth{Provider: "gemini"}, want: false},
+		{name: "nil", auth: nil, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := authAllowedByFreePolicy(test.auth, false, true); got != test.want {
+				t.Fatalf("authAllowedByFreePolicy() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestOnlyFreeAuthAppliesToAllSelectionPaths(t *testing.T) {
+	model := "gpt-5.4-mini"
+	registerSchedulerModels(t, "codex", model, "codex-free", "codex-plus", "codex-unknown")
+
+	newManager := func(selector Selector) *Manager {
+		manager := NewManager(nil, selector, nil)
+		manager.executors["codex"] = schedulerTestExecutor{}
+		for _, auth := range []*Auth{
+			{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"plan_type": "free"}},
+			{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}},
+			{ID: "codex-unknown", Provider: "codex"},
+		} {
+			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+				t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+			}
+		}
+		return manager
+	}
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.OnlyFreeAuthMetadataKey: true}}
+	assertAllowed := func(t *testing.T, auth *Auth, errPick error) {
+		t.Helper()
+		if errPick != nil {
+			t.Fatalf("selection error = %v", errPick)
+		}
+		if !authAllowedByFreePolicy(auth, false, true) {
+			t.Fatalf("selected ineligible auth: %+v", auth)
+		}
+	}
+
+	t.Run("builtin scheduler delegate", func(t *testing.T) {
+		manager := newManager(&RoundRobinSelector{})
+		got, handled, errPick := manager.pickViaBuiltinScheduler(context.Background(), schedulerStrategyRoundRobin, "codex", []string{"codex"}, model, opts, map[string]struct{}{})
+		if !handled {
+			t.Fatal("pickViaBuiltinScheduler() handled = false")
+		}
+		assertAllowed(t, got, errPick)
+	})
+
+	t.Run("legacy single", func(t *testing.T) {
+		selector := &trackingSelector{}
+		manager := newManager(selector)
+		got, _, errPick := manager.pickNextLegacy(context.Background(), "codex", model, opts, map[string]struct{}{})
+		assertAllowed(t, got, errPick)
+		for _, authID := range selector.lastAuthID {
+			if authID == "codex-plus" {
+				t.Fatalf("legacy single candidates include paid auth: %v", selector.lastAuthID)
+			}
+		}
+	})
+
+	t.Run("fast single", func(t *testing.T) {
+		manager := newManager(&RoundRobinSelector{})
+		got, _, errPick := manager.pickNext(context.Background(), "codex", model, opts, map[string]struct{}{})
+		assertAllowed(t, got, errPick)
+	})
+
+	t.Run("legacy mixed", func(t *testing.T) {
+		selector := &trackingSelector{}
+		manager := newManager(selector)
+		got, _, _, errPick := manager.pickNextMixedLegacy(context.Background(), []string{"codex"}, model, opts, map[string]struct{}{})
+		assertAllowed(t, got, errPick)
+		for _, authID := range selector.lastAuthID {
+			if authID == "codex-plus" {
+				t.Fatalf("legacy mixed candidates include paid auth: %v", selector.lastAuthID)
+			}
+		}
+	})
+
+	t.Run("fast mixed", func(t *testing.T) {
+		manager := newManager(&RoundRobinSelector{})
+		got, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"codex"}, model, opts, map[string]struct{}{})
+		assertAllowed(t, got, errPick)
+	})
+}
+
 func TestManagerPluginSchedulerSelectsAuthID(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["gemini"] = schedulerTestExecutor{}

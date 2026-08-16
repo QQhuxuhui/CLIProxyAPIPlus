@@ -57,12 +57,13 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
-	// antigravityVersionUnsupportedMarker 是 Google 对申报版本过旧的账号返回的固定错误文本。
-	// 该错误以 HTTP 200 返回（内容为该文本、无 usage），不识别就会被当成成功透传。
+	// antigravityVersionUnsupportedMarker is Google's fixed error text for accounts
+	// reporting an outdated client version. It arrives with HTTP 200 and no usage,
+	// so failing to detect it would forward the response as a success.
 	antigravityVersionUnsupportedMarker = "This version of Antigravity is no longer supported"
-	// antigravityVersionErrorCooldown 是命中版本错误后对该账号该模型的冷却时长。
-	// 版本错误按账号持续存在（需重新授权），冷却期内跳过该账号、改用池中健康账号；
-	// 冷却到期后再次尝试，若仍失败会再次冷却，从而自动把坏账号排除出调度。
+	// antigravityVersionErrorCooldown is the cooldown for an account and model after
+	// a version error. The failure persists until reauthorization, so requests use
+	// another healthy account during the cooldown and retry after it expires.
 	antigravityVersionErrorCooldown = 30 * time.Minute
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
@@ -620,10 +621,10 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
 	return false
 }
 
-// antigravityResponseHasVersionError 检测聚合后的 antigravity 响应是否为 Google 的
-// “版本不再支持”拒绝（antigravityVersionUnsupportedMarker）。该错误以 HTTP 200 返回、
-// 内容为固定错误文本且无 usage，不识别就会被当成 0-token 的“成功”透传给下游。用固定
-// 错误串子串匹配即可——该串是 Google 的系统文案，正常模型补全不会输出。
+// antigravityResponseHasVersionError detects Google's unsupported-version response.
+// It arrives with HTTP 200, fixed text, and no usage, so missing it would forward a
+// zero-token success downstream. The marker is system text that normal completions
+// do not emit, making a substring match sufficient.
 func antigravityResponseHasVersionError(payload []byte) bool {
 	if len(payload) == 0 {
 		return false
@@ -631,8 +632,9 @@ func antigravityResponseHasVersionError(payload []byte) bool {
 	return bytes.Contains(payload, []byte(antigravityVersionUnsupportedMarker))
 }
 
-// antigravityHandleVersionError 命中版本错误时冷却该账号并返回 429 触发换号重试，
-// 与 quota 冷却路径复用同一套机制。返回的 error 非 nil 表示已判定为版本错误。
+// antigravityHandleVersionError cools the account and returns 429 to trigger
+// credential rotation, reusing the quota cooldown path. A non-nil error means the
+// payload was classified as a version error.
 func antigravityHandleVersionError(ctx context.Context, auth *cliproxyauth.Auth, baseModel string, payload []byte) error {
 	if !antigravityResponseHasVersionError(payload) {
 		return nil
@@ -1134,8 +1136,9 @@ attemptLoop:
 			}
 			resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
 
-			// 版本错误以 2xx 返回、内容为固定错误文本且无 usage：bench 该账号并换号重试，
-			// 避免被当成 0-token 的“成功”透传。放在翻译 / usage 上报之前。
+			// Version errors arrive as 2xx with fixed text and no usage. Bench the
+			// account and rotate credentials before translation or usage reporting so
+			// the response is not forwarded as a zero-token success.
 			if errVersion := antigravityHandleVersionError(ctx, auth, baseModel, resp.Payload); errVersion != nil {
 				return resp, errVersion
 			}
@@ -1604,9 +1607,10 @@ attemptLoop:
 						continue
 					}
 
-					// 版本错误在流式下也会以 2xx 出现（内容为固定错误文本）。流已开始无法换号，
-					// 但仍 bench 该账号（(账号,模型) 级冷却，后续 stream/非 stream 请求都会跳过它）
-					// 并以错误结束本流，避免被下游当成 0-token 的“成功”。
+					// Streaming version errors also arrive as 2xx with fixed text. The
+					// stream has already started, so this request cannot rotate credentials,
+					// but benching the account and model protects later requests and ending
+					// with an error avoids a zero-token success downstream.
 					if antigravityResponseHasVersionError(payload) {
 						if errMark := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), antigravityVersionErrorCooldown); errMark != nil {
 							log.Debugf("antigravity executor: mark version-error cooldown failed for auth %s model %s: %v", auth.ID, baseModel, errMark)

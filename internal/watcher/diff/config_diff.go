@@ -60,6 +60,45 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.GPTImage2BaseModel) != strings.TrimSpace(newCfg.GPTImage2BaseModel) {
 		changes = append(changes, fmt.Sprintf("gpt-image-2-base-model: %s -> %s", strings.TrimSpace(oldCfg.GPTImage2BaseModel), strings.TrimSpace(newCfg.GPTImage2BaseModel)))
 	}
+	if oldCfg.WebImageGeneration != newCfg.WebImageGeneration {
+		changes = append(changes, fmt.Sprintf("web-image-generation: %t -> %t", oldCfg.WebImageGeneration, newCfg.WebImageGeneration))
+	}
+	if oldCfg.WebImageFreeOnly != newCfg.WebImageFreeOnly {
+		changes = append(changes, fmt.Sprintf("web-image-free-only: %t -> %t", oldCfg.WebImageFreeOnly, newCfg.WebImageFreeOnly))
+	}
+	if !reflect.DeepEqual(oldCfg.WebImageModels, newCfg.WebImageModels) {
+		changes = append(changes, fmt.Sprintf("web-image-models: %v -> %v", oldCfg.WebImageModels, newCfg.WebImageModels))
+	}
+	if strings.TrimSpace(oldCfg.WebImageBaseModel) != strings.TrimSpace(newCfg.WebImageBaseModel) {
+		changes = append(changes, "web-image-base-model: changed")
+	}
+	if strings.TrimSpace(oldCfg.WebImagePollTimeout) != strings.TrimSpace(newCfg.WebImagePollTimeout) {
+		changes = append(changes, fmt.Sprintf("web-image-poll-timeout: %s -> %s", strings.TrimSpace(oldCfg.WebImagePollTimeout), strings.TrimSpace(newCfg.WebImagePollTimeout)))
+	}
+	if strings.TrimSpace(oldCfg.WebImageTotalDeadline) != strings.TrimSpace(newCfg.WebImageTotalDeadline) {
+		changes = append(changes, fmt.Sprintf("web-image-total-deadline: %s -> %s", strings.TrimSpace(oldCfg.WebImageTotalDeadline), strings.TrimSpace(newCfg.WebImageTotalDeadline)))
+	}
+	if strings.TrimSpace(oldCfg.WebImagePollInterval) != strings.TrimSpace(newCfg.WebImagePollInterval) {
+		changes = append(changes, fmt.Sprintf("web-image-poll-interval: %s -> %s", strings.TrimSpace(oldCfg.WebImagePollInterval), strings.TrimSpace(newCfg.WebImagePollInterval)))
+	}
+	if strings.TrimSpace(oldCfg.WebImagePoWTimeout) != strings.TrimSpace(newCfg.WebImagePoWTimeout) {
+		changes = append(changes, fmt.Sprintf("web-image-pow-timeout: %s -> %s", strings.TrimSpace(oldCfg.WebImagePoWTimeout), strings.TrimSpace(newCfg.WebImagePoWTimeout)))
+	}
+	if oldCfg.WebImageMaxBytes != newCfg.WebImageMaxBytes {
+		changes = append(changes, fmt.Sprintf("web-image-max-bytes: %d -> %d", oldCfg.WebImageMaxBytes, newCfg.WebImageMaxBytes))
+	}
+	if oldCfg.WebImageMaxConcurrency != newCfg.WebImageMaxConcurrency {
+		changes = append(changes, fmt.Sprintf("web-image-max-concurrency: %d -> %d", oldCfg.WebImageMaxConcurrency, newCfg.WebImageMaxConcurrency))
+	}
+	if oldCfg.WebImageMaxConcurrencyPerAccount != newCfg.WebImageMaxConcurrencyPerAccount {
+		changes = append(changes, fmt.Sprintf("web-image-max-concurrency-per-account: %d -> %d", oldCfg.WebImageMaxConcurrencyPerAccount, newCfg.WebImageMaxConcurrencyPerAccount))
+	}
+	if strings.TrimSpace(oldCfg.WebImageUserAgent) != strings.TrimSpace(newCfg.WebImageUserAgent) {
+		changes = append(changes, "web-image-user-agent: changed")
+	}
+	if strings.TrimSpace(oldCfg.WebImageClientVersion) != strings.TrimSpace(newCfg.WebImageClientVersion) {
+		changes = append(changes, "web-image-client-version: changed")
+	}
 	if oldCfg.RequestLog != newCfg.RequestLog {
 		changes = append(changes, fmt.Sprintf("request-log: %t -> %t", oldCfg.RequestLog, newCfg.RequestLog))
 	}

@@ -160,6 +160,23 @@ disable-image-generation: false
 # Must start with "gpt-" (case-insensitive). If unset or invalid, defaults to "gpt-5.4-mini".
 # gpt-image-2-base-model: "gpt-5.4-mini"
 
+# ChatGPT web image generation is experimental and disabled by default.
+# The first release supports one synchronous 1024x1024 b64_json image only.
+# web-image-generation: false
+# web-image-free-only: true
+# web-image-models:
+#   - "gpt-image-web"
+# web-image-base-model: "" # Required when the feature is enabled.
+# web-image-poll-timeout: "120s"
+# web-image-total-deadline: "150s"
+# web-image-poll-interval: "1s"
+# web-image-pow-timeout: "20s"
+# web-image-max-bytes: 20971520
+# web-image-max-concurrency: 4
+# web-image-max-concurrency-per-account: 1
+# web-image-user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+# web-image-client-version: ""
+
 # How long video IDs returned by /openai/v1/videos and xAI video creation stay bound
 # to the credential that created them. Default: 3h.
 video-result-auth-cache-ttl: "3h"

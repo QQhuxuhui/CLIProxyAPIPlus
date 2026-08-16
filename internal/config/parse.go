@@ -30,6 +30,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SaveCooldownStatus = true
 	cfg.TransientErrorCooldownSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
+	cfg.SetWebImageDefaults()
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -78,6 +79,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.NormalizePluginsConfig()
+	cfg.NormalizeWebImageConfig()
 
 	// Apply the same sanitization pipeline.
 	cfg.SanitizeGeminiKeys()

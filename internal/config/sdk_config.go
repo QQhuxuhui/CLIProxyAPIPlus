@@ -4,6 +4,24 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import (
+	"strings"
+	"time"
+)
+
+const (
+	DefaultWebImageModel                          = "gpt-image-web"
+	DefaultWebImagePollTimeout                    = "120s"
+	DefaultWebImageTotalDeadline                  = "150s"
+	DefaultWebImagePollInterval                   = "1s"
+	DefaultWebImagePoWTimeout                     = "20s"
+	DefaultWebImageMaxBytes                 int64 = 20 * 1024 * 1024
+	DefaultWebImageMaxConcurrency                 = 4
+	DefaultWebImageMaxConcurrencyPerAccount       = 1
+	DefaultWebImageUserAgent                      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+	DefaultWebImageClientVersion                  = ""
+)
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
@@ -34,6 +52,8 @@ type SDKConfig struct {
 	// Empty or invalid values use the default 3h.
 	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
 
+	WebImageConfig `yaml:",inline"`
+
 	// ForceModelPrefix requires explicit model prefixes (e.g., "teamA/gemini-3-pro-preview")
 	// to target prefixed credentials. When false, unprefixed model requests may use prefixed
 	// credentials as well.
@@ -55,6 +75,96 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// WebImageConfig controls the opt-in ChatGPT web image generation route.
+type WebImageConfig struct {
+	WebImageGeneration               bool     `yaml:"web-image-generation" json:"web-image-generation"`
+	WebImageFreeOnly                 bool     `yaml:"web-image-free-only" json:"web-image-free-only"`
+	WebImageModels                   []string `yaml:"web-image-models,omitempty" json:"web-image-models,omitempty"`
+	WebImageBaseModel                string   `yaml:"web-image-base-model,omitempty" json:"web-image-base-model,omitempty"`
+	WebImagePollTimeout              string   `yaml:"web-image-poll-timeout,omitempty" json:"web-image-poll-timeout,omitempty"`
+	WebImageTotalDeadline            string   `yaml:"web-image-total-deadline,omitempty" json:"web-image-total-deadline,omitempty"`
+	WebImagePollInterval             string   `yaml:"web-image-poll-interval,omitempty" json:"web-image-poll-interval,omitempty"`
+	WebImagePoWTimeout               string   `yaml:"web-image-pow-timeout,omitempty" json:"web-image-pow-timeout,omitempty"`
+	WebImageMaxBytes                 int64    `yaml:"web-image-max-bytes,omitempty" json:"web-image-max-bytes,omitempty"`
+	WebImageMaxConcurrency           int      `yaml:"web-image-max-concurrency,omitempty" json:"web-image-max-concurrency,omitempty"`
+	WebImageMaxConcurrencyPerAccount int      `yaml:"web-image-max-concurrency-per-account,omitempty" json:"web-image-max-concurrency-per-account,omitempty"`
+	WebImageUserAgent                string   `yaml:"web-image-user-agent,omitempty" json:"web-image-user-agent,omitempty"`
+	WebImageClientVersion            string   `yaml:"web-image-client-version,omitempty" json:"web-image-client-version,omitempty"`
+}
+
+// SetWebImageDefaults applies defaults before unmarshalling so explicit false
+// values remain distinguishable from an absent web-image-free-only key.
+func (c *SDKConfig) SetWebImageDefaults() {
+	if c == nil {
+		return
+	}
+	c.WebImageFreeOnly = true
+	c.WebImageModels = []string{DefaultWebImageModel}
+	c.WebImagePollTimeout = DefaultWebImagePollTimeout
+	c.WebImageTotalDeadline = DefaultWebImageTotalDeadline
+	c.WebImagePollInterval = DefaultWebImagePollInterval
+	c.WebImagePoWTimeout = DefaultWebImagePoWTimeout
+	c.WebImageMaxBytes = DefaultWebImageMaxBytes
+	c.WebImageMaxConcurrency = DefaultWebImageMaxConcurrency
+	c.WebImageMaxConcurrencyPerAccount = DefaultWebImageMaxConcurrencyPerAccount
+	c.WebImageUserAgent = DefaultWebImageUserAgent
+	c.WebImageClientVersion = DefaultWebImageClientVersion
+}
+
+// NormalizeWebImageConfig removes duplicate aliases and repairs invalid limits.
+func (c *SDKConfig) NormalizeWebImageConfig() {
+	if c == nil {
+		return
+	}
+
+	models := make([]string, 0, len(c.WebImageModels))
+	seen := make(map[string]struct{}, len(c.WebImageModels))
+	for _, model := range c.WebImageModels {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		key := strings.ToLower(model)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		models = []string{DefaultWebImageModel}
+	}
+	c.WebImageModels = models
+	c.WebImageBaseModel = strings.TrimSpace(c.WebImageBaseModel)
+	c.WebImagePollTimeout = positiveDurationOrDefault(c.WebImagePollTimeout, DefaultWebImagePollTimeout)
+	c.WebImageTotalDeadline = positiveDurationOrDefault(c.WebImageTotalDeadline, DefaultWebImageTotalDeadline)
+	c.WebImagePollInterval = positiveDurationOrDefault(c.WebImagePollInterval, DefaultWebImagePollInterval)
+	c.WebImagePoWTimeout = positiveDurationOrDefault(c.WebImagePoWTimeout, DefaultWebImagePoWTimeout)
+	if c.WebImageMaxBytes <= 0 {
+		c.WebImageMaxBytes = DefaultWebImageMaxBytes
+	}
+	if c.WebImageMaxConcurrency <= 0 {
+		c.WebImageMaxConcurrency = DefaultWebImageMaxConcurrency
+	}
+	if c.WebImageMaxConcurrencyPerAccount <= 0 {
+		c.WebImageMaxConcurrencyPerAccount = DefaultWebImageMaxConcurrencyPerAccount
+	}
+	c.WebImageUserAgent = strings.TrimSpace(c.WebImageUserAgent)
+	if c.WebImageUserAgent == "" {
+		c.WebImageUserAgent = DefaultWebImageUserAgent
+	}
+	c.WebImageClientVersion = strings.TrimSpace(c.WebImageClientVersion)
+}
+
+func positiveDurationOrDefault(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	duration, errParse := time.ParseDuration(value)
+	if errParse != nil || duration <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // StreamingConfig holds server streaming behavior configuration.

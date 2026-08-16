@@ -19,6 +19,11 @@ const RequestPathMetadataKey = "request_path"
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 
+// OnlyFreeAuthMetadataKey restricts auth selection to Codex free-tier credentials.
+// Codex credentials with no plan metadata remain eligible so stale or missing
+// identity claims do not silently disable the route.
+const OnlyFreeAuthMetadataKey = "only_free_auth"
+
 // AuthSelectionModelMetadataKey overrides the model used only for auth selection.
 const AuthSelectionModelMetadataKey = "auth_selection_model"
 

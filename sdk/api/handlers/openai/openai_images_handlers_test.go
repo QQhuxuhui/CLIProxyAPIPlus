@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -15,9 +16,40 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/tidwall/gjson"
 )
+
+type webImageHandlerCaptureExecutor struct {
+	authID string
+	opts   cliproxyexecutor.Options
+}
+
+func (e *webImageHandlerCaptureExecutor) Identifier() string { return "codex" }
+
+func (e *webImageHandlerCaptureExecutor) Execute(_ context.Context, auth *cliproxyauth.Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.authID = auth.ID
+	e.opts = opts
+	return cliproxyexecutor.Response{Payload: []byte(`{"created":123,"data":[{"b64_json":"aW1hZ2U="}],"size":"1024x1024"}`)}, nil
+}
+
+func (e *webImageHandlerCaptureExecutor) ExecuteStream(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (e *webImageHandlerCaptureExecutor) Refresh(_ context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *webImageHandlerCaptureExecutor) CountTokens(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *webImageHandlerCaptureExecutor) HttpRequest(context.Context, *cliproxyauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
 
 func performImagesEndpointRequest(t *testing.T, endpointPath string, contentType string, body io.Reader, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
@@ -63,6 +95,182 @@ func TestImagesModelValidationAllowsGPTImageAndXAIModels(t *testing.T) {
 	}
 	if isSupportedImagesModel("codex/grok-imagine-image") {
 		t.Fatal("expected codex/grok-imagine-image to be rejected")
+	}
+}
+
+func TestWebImageModelMatchingUsesConfiguredAliases(t *testing.T) {
+	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{WebImageModels: []string{"gpt-image-web", " custom-web-image "}}}
+	for _, model := range []string{"gpt-image-web", "codex/gpt-image-web", "custom-web-image", "codex/custom-web-image"} {
+		if !isWebImageModel(cfg, model) {
+			t.Fatalf("isWebImageModel(%q) = false", model)
+		}
+	}
+	if isWebImageModel(cfg, "gpt-image-2") {
+		t.Fatal("gpt-image-2 must not route to web image")
+	}
+}
+
+func TestImagesGenerationsWebImageDisabledReturns404(t *testing.T) {
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler := &OpenAIAPIHandler{BaseAPIHandler: base}
+	body := strings.NewReader(`{"model":"gpt-image-web","prompt":"draw"}`)
+
+	resp := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", body, handler.ImagesGenerations)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusNotFound, resp.Body.String())
+	}
+}
+
+func TestImagesEditsWebImageDisabledReturns404(t *testing.T) {
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler := &OpenAIAPIHandler{BaseAPIHandler: base}
+
+	t.Run("json", func(t *testing.T) {
+		body := strings.NewReader(`{"model":"gpt-image-web","prompt":"edit"}`)
+		resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", body, handler.ImagesEdits)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusNotFound, resp.Body.String())
+		}
+	})
+
+	t.Run("multipart", func(t *testing.T) {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if errWrite := writer.WriteField("model", "gpt-image-web"); errWrite != nil {
+			t.Fatalf("write model field: %v", errWrite)
+		}
+		if errWrite := writer.WriteField("prompt", "edit"); errWrite != nil {
+			t.Fatalf("write prompt field: %v", errWrite)
+		}
+		if errClose := writer.Close(); errClose != nil {
+			t.Fatalf("close multipart writer: %v", errClose)
+		}
+
+		resp := performImagesEndpointRequest(t, imagesEditsPath, writer.FormDataContentType(), &body, handler.ImagesEdits)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusNotFound, resp.Body.String())
+		}
+	})
+}
+
+func TestValidateWebImageGenerationRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "valid defaults", body: `{"model":"gpt-image-web","prompt":"draw"}`},
+		{name: "valid explicit", body: `{"model":"gpt-image-web","prompt":"draw","n":1,"size":"1024x1024","response_format":"b64_json"}`},
+		{name: "multiple", body: `{"model":"gpt-image-web","prompt":"draw","n":2}`, want: "n must be 1"},
+		{name: "stream", body: `{"model":"gpt-image-web","prompt":"draw","stream":true}`, want: "streaming is not supported"},
+		{name: "url", body: `{"model":"gpt-image-web","prompt":"draw","response_format":"url"}`, want: "response_format must be b64_json"},
+		{name: "large", body: `{"model":"gpt-image-web","prompt":"draw","size":"2048x2048"}`, want: "size must be 1024x1024"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errValidate := validateWebImageGenerationRequest([]byte(test.body))
+			if test.want == "" {
+				if errValidate != nil {
+					t.Fatalf("validateWebImageGenerationRequest() error = %v", errValidate)
+				}
+				return
+			}
+			if errValidate == nil || !strings.Contains(errValidate.Error(), test.want) {
+				t.Fatalf("validateWebImageGenerationRequest() error = %v, want containing %q", errValidate, test.want)
+			}
+		})
+	}
+}
+
+func TestImagesGenerationsWebImageRejectsUnsupportedShapesBeforeExecution(t *testing.T) {
+	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
+		WebImageGeneration: true,
+		WebImageFreeOnly:   true,
+		WebImageModels:     []string{"gpt-image-web"},
+		WebImageBaseModel:  "internal-image-model",
+	}}
+	base := handlers.NewBaseAPIHandlers(cfg, nil)
+	handler := &OpenAIAPIHandler{BaseAPIHandler: base}
+
+	for _, body := range []string{
+		`{"model":"gpt-image-web","prompt":"draw","n":2}`,
+		`{"model":"gpt-image-web","prompt":"draw","stream":true}`,
+		`{"model":"gpt-image-web","prompt":"draw","response_format":"url"}`,
+		`{"model":"gpt-image-web","prompt":"draw","size":"2048x2048"}`,
+	} {
+		resp := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", strings.NewReader(body), handler.ImagesGenerations)
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want %d: %s", body, resp.Code, http.StatusBadRequest, resp.Body.String())
+		}
+	}
+}
+
+func TestImagesGenerationsWebImageRoutesThroughFreeCodexAuth(t *testing.T) {
+	model := "custom-web-image"
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("web-free", "codex", []*registry.ModelInfo{{ID: internalconfig.DefaultWebImageModel}})
+	modelRegistry.RegisterClient("web-plus", "codex", []*registry.ModelInfo{{ID: internalconfig.DefaultWebImageModel}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("web-free")
+		modelRegistry.UnregisterClient("web-plus")
+	})
+
+	manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
+	executor := &webImageHandlerCaptureExecutor{}
+	manager.RegisterExecutor(executor)
+	for _, auth := range []*cliproxyauth.Auth{
+		{ID: "web-plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}},
+		{ID: "web-free", Provider: "codex", Attributes: map[string]string{"plan_type": "free"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
+	}
+
+	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
+		WebImageGeneration: true,
+		WebImageFreeOnly:   true,
+		WebImageModels:     []string{model},
+		WebImageBaseModel:  "internal-image-model",
+	}}
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	handler := &OpenAIAPIHandler{BaseAPIHandler: base}
+	resp := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", strings.NewReader(`{"model":"custom-web-image","prompt":"draw"}`), handler.ImagesGenerations)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	if executor.authID != "web-free" {
+		t.Fatalf("selected auth = %q, want web-free", executor.authID)
+	}
+	if executor.opts.SourceFormat.String() != webImagesHandlerType {
+		t.Fatalf("SourceFormat = %q, want %q", executor.opts.SourceFormat, webImagesHandlerType)
+	}
+	if executor.opts.ResponseFormat.String() != xaiImagesHandlerType {
+		t.Fatalf("ResponseFormat = %q, want %q", executor.opts.ResponseFormat, xaiImagesHandlerType)
+	}
+	if executor.opts.Metadata[cliproxyexecutor.OnlyFreeAuthMetadataKey] != true {
+		t.Fatalf("OnlyFreeAuthMetadataKey = %v", executor.opts.Metadata[cliproxyexecutor.OnlyFreeAuthMetadataKey])
+	}
+	if executor.opts.Metadata[cliproxyexecutor.AuthSelectionModelMetadataKey] != internalconfig.DefaultWebImageModel {
+		t.Fatalf("AuthSelectionModelMetadataKey = %v", executor.opts.Metadata[cliproxyexecutor.AuthSelectionModelMetadataKey])
+	}
+}
+
+func TestImagesEditsRejectsConfiguredWebImageAliasBeforeImageParsing(t *testing.T) {
+	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
+		WebImageGeneration: true,
+		WebImageModels:     []string{"custom-web-image"},
+		WebImageBaseModel:  "internal-image-model",
+	}}
+	handler := &OpenAIAPIHandler{BaseAPIHandler: handlers.NewBaseAPIHandlers(cfg, nil)}
+
+	resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", strings.NewReader(`{"model":"custom-web-image","prompt":"edit"}`), handler.ImagesEdits)
+
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "does not support edits") {
+		t.Fatalf("status = %d body = %s", resp.Code, resp.Body.String())
 	}
 }
 

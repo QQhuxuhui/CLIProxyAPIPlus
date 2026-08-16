@@ -31,6 +31,7 @@ const (
 	defaultXAIImagesModel       = "grok-imagine-image"
 	xaiImagesQualityModel       = "grok-imagine-image-quality"
 	xaiImagesHandlerType        = "openai-image"
+	webImagesHandlerType        = "chatgpt-web-image"
 	xaiImagesDefaultAspectRatio = "1:1"
 	xaiImagesDefaultResolution  = "1k"
 	imagesGenerationsPath       = "/v1/images/generations"
@@ -220,6 +221,43 @@ func isSupportedImagesModel(model string) bool {
 		return true
 	}
 	return isXAIImagesModel(model) || isOpenAICompatImagesModel(model)
+}
+
+func isWebImageModel(cfg *internalconfig.SDKConfig, model string) bool {
+	prefix, baseModel := imagesModelParts(model)
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix != "" && prefix != "codex" {
+		return false
+	}
+	baseModel = strings.ToLower(strings.TrimSpace(baseModel))
+	models := []string{internalconfig.DefaultWebImageModel}
+	if cfg != nil && len(cfg.WebImageModels) > 0 {
+		models = cfg.WebImageModels
+	}
+	for _, configured := range models {
+		if strings.EqualFold(strings.TrimSpace(configured), baseModel) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateWebImageGenerationRequest(rawJSON []byte) error {
+	if n := gjson.GetBytes(rawJSON, "n"); n.Exists() && n.Int() != 1 {
+		return fmt.Errorf("n must be 1 for web image generation")
+	}
+	if gjson.GetBytes(rawJSON, "stream").Bool() {
+		return fmt.Errorf("streaming is not supported for web image generation")
+	}
+	responseFormat := strings.TrimSpace(gjson.GetBytes(rawJSON, "response_format").String())
+	if responseFormat != "" && !strings.EqualFold(responseFormat, "b64_json") {
+		return fmt.Errorf("response_format must be b64_json for web image generation")
+	}
+	size := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String())
+	if size != "" && !strings.EqualFold(size, "1024x1024") && !strings.EqualFold(size, "1k") {
+		return fmt.Errorf("size must be 1024x1024 for web image generation")
+	}
+	return nil
 }
 
 func isCodexImagesToolModel(model string) bool {
@@ -607,7 +645,26 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
 	}
-	if rejectUnsupportedImagesModel(c, imageModel) {
+	var cfg *internalconfig.SDKConfig
+	if h != nil && h.BaseAPIHandler != nil {
+		cfg = h.BaseAPIHandler.Cfg
+	}
+	webImageModel := isWebImageModel(cfg, imageModel)
+	if webImageModel {
+		if cfg == nil || !cfg.WebImageGeneration {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		if errValidate := validateWebImageGenerationRequest(rawJSON); errValidate != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errValidate.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		if strings.TrimSpace(cfg.WebImageBaseModel) == "" {
+			c.JSON(http.StatusServiceUnavailable, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Web image generation is not configured", Type: "server_error"}})
+			return
+		}
+	}
+	if !webImageModel && rejectUnsupportedImagesModel(c, imageModel) {
 		return
 	}
 
@@ -627,6 +684,11 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		responseFormat = "b64_json"
 	}
 	stream := gjson.GetBytes(rawJSON, "stream").Bool()
+
+	if webImageModel {
+		h.collectWebImages(c, rawJSON, imageModel)
+		return
+	}
 
 	if isCodexImagesToolModel(imageModel) {
 		imageReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
@@ -681,6 +743,32 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	h.collectImagesFromResponses(c, responsesReq, responseFormat)
 }
 
+func (h *OpenAIAPIHandler) collectWebImages(c *gin.Context, imageReq []byte, imageModel string) {
+	c.Header("Content-Type", "application/json")
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	if h.BaseAPIHandler.Cfg.WebImageFreeOnly {
+		cliCtx = handlers.WithOnlyFreeAuth(cliCtx)
+	}
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+
+	resp, upstreamHeaders, errMsg := h.ExecuteWebImageWithAuthManager(cliCtx, webImagesHandlerType, strings.TrimSpace(imageModel), imageReq, "", internalconfig.DefaultWebImageModel)
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		if errMsg.Error != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel(nil)
+		}
+		return
+	}
+
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(resp)
+	cliCancel(nil)
+}
+
 func (h *OpenAIAPIHandler) ImagesEdits(c *gin.Context) {
 	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
 		c.AbortWithStatus(http.StatusNotFound)
@@ -720,6 +808,9 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	imageModel := strings.TrimSpace(c.PostForm("model"))
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
+	}
+	if h.rejectWebImageEdit(c, imageModel) {
+		return
 	}
 	if rejectUnsupportedImagesModel(c, imageModel) {
 		return
@@ -894,6 +985,9 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
 	}
+	if h.rejectWebImageEdit(c, imageModel) {
+		return
+	}
 	if rejectUnsupportedImagesModel(c, imageModel) {
 		return
 	}
@@ -1004,6 +1098,32 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		return
 	}
 	h.collectImagesFromResponses(c, responsesReq, responseFormat)
+}
+
+func (h *OpenAIAPIHandler) isWebImageModel(model string) bool {
+	if h == nil || h.BaseAPIHandler == nil {
+		return isWebImageModel(nil, model)
+	}
+	return isWebImageModel(h.BaseAPIHandler.Cfg, model)
+}
+
+func (h *OpenAIAPIHandler) rejectWebImageEdit(c *gin.Context, model string) bool {
+	if !h.isWebImageModel(model) {
+		return false
+	}
+	if h == nil || h.BaseAPIHandler == nil || h.BaseAPIHandler.Cfg == nil || !h.BaseAPIHandler.Cfg.WebImageGeneration {
+		c.AbortWithStatus(http.StatusNotFound)
+		return true
+	}
+	writeWebImageEditsUnsupported(c)
+	return true
+}
+
+func writeWebImageEditsUnsupported(c *gin.Context) {
+	c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{
+		Message: "Invalid request: web image generation does not support edits",
+		Type:    "invalid_request_error",
+	}})
 }
 
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {

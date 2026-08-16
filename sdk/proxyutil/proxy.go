@@ -182,15 +182,30 @@ type httpConnectDialer struct {
 }
 
 func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
-	proxyConn, errDial := d.dialer.Dial(network, proxyDialAddr(d.proxyURL))
+	return d.DialContext(context.Background(), network, addr)
+}
+
+func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var proxyConn net.Conn
+	var errDial error
+	if contextDialer, ok := d.dialer.(proxy.ContextDialer); ok {
+		proxyConn, errDial = contextDialer.DialContext(ctx, network, proxyDialAddr(d.proxyURL))
+	} else {
+		proxyConn, errDial = d.dialer.Dial(network, proxyDialAddr(d.proxyURL))
+	}
 	if errDial != nil {
 		return nil, fmt.Errorf("dial HTTP proxy failed: %w", errDial)
 	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = proxyConn.Close() })
+	defer stopCancel()
 
 	conn := proxyConn
 	if d.proxyURL.Scheme == "https" {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: d.proxyURL.Hostname()})
-		if errHandshake := tlsConn.Handshake(); errHandshake != nil {
+		if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
 			if errClose := conn.Close(); errClose != nil {
 				return nil, fmt.Errorf("HTTPS proxy TLS handshake failed: %w; close failed: %v", errHandshake, errClose)
 			}

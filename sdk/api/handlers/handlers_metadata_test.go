@@ -19,6 +19,15 @@ func TestRequestExecutionMetadataIncludesExecutionSessionWithoutIdempotencyKey(t
 	}
 }
 
+func TestRequestExecutionMetadataIncludesOnlyFreeAuth(t *testing.T) {
+	ctx := WithOnlyFreeAuth(context.Background())
+
+	meta := requestExecutionMetadata(ctx)
+	if got := meta[coreexecutor.OnlyFreeAuthMetadataKey]; got != true {
+		t.Fatalf("OnlyFreeAuthMetadataKey = %v, want true", got)
+	}
+}
+
 func TestSetReasoningEffortMetadataUsesSuffixOverBody(t *testing.T) {
 	meta := make(map[string]any)
 

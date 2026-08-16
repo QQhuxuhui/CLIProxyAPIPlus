@@ -2,6 +2,22 @@ package registry
 
 import "testing"
 
+func TestWithCodexBuiltinsIncludesWebImageModel(t *testing.T) {
+	models := WithCodexBuiltins(nil)
+
+	for _, model := range models {
+		if model == nil || model.ID != codexBuiltinWebImageModelID {
+			continue
+		}
+		if model.Type != "openai" {
+			t.Fatalf("web image model type = %q, want openai", model.Type)
+		}
+		return
+	}
+
+	t.Fatalf("expected Codex builtin model %s", codexBuiltinWebImageModelID)
+}
+
 func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 

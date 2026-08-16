@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/webimage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -1690,14 +1691,16 @@ func CloseCodexWebsocketSessionsForAuthID(authID string, reason string) {
 //
 // For non-websocket downstream requests, it always uses the legacy HTTP implementation.
 type CodexAutoExecutor struct {
-	httpExec *CodexExecutor
-	wsExec   *CodexWebsocketsExecutor
+	httpExec     *CodexExecutor
+	wsExec       *CodexWebsocketsExecutor
+	webImageExec codexWebImageGenerator
 }
 
 func NewCodexAutoExecutor(cfg *config.Config) *CodexAutoExecutor {
 	return &CodexAutoExecutor{
-		httpExec: NewCodexExecutor(cfg),
-		wsExec:   NewCodexWebsocketsExecutor(cfg),
+		httpExec:     NewCodexExecutor(cfg),
+		wsExec:       NewCodexWebsocketsExecutor(cfg),
+		webImageExec: webimage.NewExecutor(cfg),
 	}
 }
 
@@ -1718,6 +1721,9 @@ func (e *CodexAutoExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.
 }
 
 func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if isCodexWebImageRequest(opts) {
+		return e.executeWebImage(ctx, auth, req, opts)
+	}
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
@@ -1728,6 +1734,9 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 }
 
 func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	if isCodexWebImageRequest(opts) {
+		return nil, badRequestErr(fmt.Errorf("web image streaming is not supported"))
+	}
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return nil, fmt.Errorf("codex auto executor: executor is nil")
 	}
@@ -1752,10 +1761,17 @@ func (e *CodexAutoExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 }
 
 func (e *CodexAutoExecutor) CloseExecutionSession(sessionID string) {
-	if e == nil || e.wsExec == nil {
+	if e == nil {
 		return
 	}
-	e.wsExec.CloseExecutionSession(sessionID)
+	if sessionID == cliproxyauth.CloseAllExecutionSessionsID {
+		if closer, ok := e.webImageExec.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
+	if e.wsExec != nil {
+		e.wsExec.CloseExecutionSession(sessionID)
+	}
 }
 
 func (e *CodexAutoExecutor) UpstreamDisconnectChan(sessionID string) <-chan error {

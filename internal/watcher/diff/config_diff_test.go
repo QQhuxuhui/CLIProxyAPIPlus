@@ -432,6 +432,39 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	expectContains(t, changes, "openai-compatibility:")
 }
 
+func TestBuildConfigChangeDetailsWebImage(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{}
+	newCfg.WebImageGeneration = true
+	newCfg.WebImageFreeOnly = true
+	newCfg.WebImageModels = []string{"gpt-image-web", "gpt-image-web-test"}
+	newCfg.WebImageBaseModel = "internal-image-model"
+	newCfg.WebImagePollTimeout = "90s"
+	newCfg.WebImageTotalDeadline = "2m"
+	newCfg.WebImagePollInterval = "2s"
+	newCfg.WebImagePoWTimeout = "8s"
+	newCfg.WebImageMaxBytes = 12345
+	newCfg.WebImageMaxConcurrency = 8
+	newCfg.WebImageMaxConcurrencyPerAccount = 2
+	newCfg.WebImageUserAgent = "test-agent"
+	newCfg.WebImageClientVersion = "test-version"
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "web-image-generation: false -> true")
+	expectContains(t, details, "web-image-free-only: false -> true")
+	expectContains(t, details, "web-image-models: [] -> [gpt-image-web gpt-image-web-test]")
+	expectContains(t, details, "web-image-base-model: changed")
+	expectContains(t, details, "web-image-poll-timeout:  -> 90s")
+	expectContains(t, details, "web-image-total-deadline:  -> 2m")
+	expectContains(t, details, "web-image-poll-interval:  -> 2s")
+	expectContains(t, details, "web-image-pow-timeout:  -> 8s")
+	expectContains(t, details, "web-image-max-bytes: 0 -> 12345")
+	expectContains(t, details, "web-image-max-concurrency: 0 -> 8")
+	expectContains(t, details, "web-image-max-concurrency-per-account: 0 -> 2")
+	expectContains(t, details, "web-image-user-agent: changed")
+	expectContains(t, details, "web-image-client-version: changed")
+}
+
 func TestFormatProxyURL(t *testing.T) {
 	tests := []struct {
 		name string

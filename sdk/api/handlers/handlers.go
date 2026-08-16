@@ -65,6 +65,7 @@ type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 type disallowFreeAuthContextKey struct{}
+type onlyFreeAuthContextKey struct{}
 
 // PluginInterceptorHost applies plugin interceptors around handler execution.
 type PluginInterceptorHost interface {
@@ -159,6 +160,15 @@ func WithDisallowFreeAuth(ctx context.Context) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, disallowFreeAuthContextKey{}, true)
+}
+
+// WithOnlyFreeAuth returns a child context that restricts selection to Codex
+// free-tier credentials while allowing credentials with unknown plan metadata.
+func WithOnlyFreeAuth(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, onlyFreeAuthContextKey{}, true)
 }
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
@@ -289,6 +299,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
+	if onlyFreeAuthFromContext(ctx) {
+		meta[coreexecutor.OnlyFreeAuthMetadataKey] = true
+	}
 	return meta
 }
 
@@ -402,6 +415,14 @@ func disallowFreeAuthFromContext(ctx context.Context) bool {
 		return false
 	}
 	raw, ok := ctx.Value(disallowFreeAuthContextKey{}).(bool)
+	return ok && raw
+}
+
+func onlyFreeAuthFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	raw, ok := ctx.Value(onlyFreeAuthContextKey{}).(bool)
 	return ok && raw
 }
 
@@ -712,6 +733,15 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 // ExecuteImageWithAuthManager executes an OpenAI-compatible image endpoint request.
 func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	return h.executeWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, true)
+}
+
+// ExecuteWebImageWithAuthManager executes a web image request while preserving
+// the standard OpenAI Images response protocol for downstream interceptors.
+func (h *BaseAPIHandler) ExecuteWebImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	return h.executeWithAuthManagerFormats(ctx, handlerType, "openai-image", modelName, rawJSON, alt, true, modelExecutionOptions{
+		ForcedProvider:     "codex",
+		AuthSelectionModel: authSelectionModel,
+	})
 }
 
 func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) ([]byte, http.Header, *interfaces.ErrorMessage) {
@@ -1647,7 +1677,7 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 
 func isOpenAIImageOnlyModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
-	case "gpt-image-1.5", "gpt-image-2":
+	case "gpt-image-1.5", "gpt-image-2", "gpt-image-web":
 		return true
 	default:
 		return false

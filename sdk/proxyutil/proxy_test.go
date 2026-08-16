@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 func mustDefaultTransport(t *testing.T) *http.Transport {
@@ -114,6 +116,21 @@ func TestBuildHTTPTransportHTTPProxy(t *testing.T) {
 	}
 	if transport.TLSHandshakeTimeout != defaultTransport.TLSHandshakeTimeout {
 		t.Fatalf("TLSHandshakeTimeout = %v, want %v", transport.TLSHandshakeTimeout, defaultTransport.TLSHandshakeTimeout)
+	}
+}
+
+func TestBuildDialerHTTPProxySupportsContext(t *testing.T) {
+	t.Parallel()
+
+	dialer, mode, errBuild := BuildDialer("http://127.0.0.1:8080")
+	if errBuild != nil {
+		t.Fatalf("BuildDialer returned error: %v", errBuild)
+	}
+	if mode != ModeProxy {
+		t.Fatalf("mode = %d, want %d", mode, ModeProxy)
+	}
+	if _, ok := dialer.(proxy.ContextDialer); !ok {
+		t.Fatalf("dialer type = %T, want proxy.ContextDialer", dialer)
 	}
 }
 
