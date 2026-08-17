@@ -47,6 +47,9 @@ func TestParseConfigBytesWebImageDefaults(t *testing.T) {
 	if cfg.WebImageClientVersion != DefaultWebImageClientVersion {
 		t.Fatalf("WebImageClientVersion = %q, want %q", cfg.WebImageClientVersion, DefaultWebImageClientVersion)
 	}
+	if cfg.WebImageClientBuild != DefaultWebImageClientBuild {
+		t.Fatalf("WebImageClientBuild = %q, want %q", cfg.WebImageClientBuild, DefaultWebImageClientBuild)
+	}
 }
 
 func TestParseConfigBytesWebImageOverrides(t *testing.T) {
@@ -64,6 +67,7 @@ web-image-max-concurrency: 9
 web-image-max-concurrency-per-account: 2
 web-image-user-agent: test-agent
 web-image-client-version: test-version
+web-image-client-build: test-build
 `))
 	if errParse != nil {
 		t.Fatalf("ParseConfigBytes() error = %v", errParse)
@@ -87,7 +91,7 @@ web-image-client-version: test-version
 	if cfg.WebImageMaxBytes != 12345 || cfg.WebImageMaxConcurrency != 9 || cfg.WebImageMaxConcurrencyPerAccount != 2 {
 		t.Fatalf("limit overrides were not preserved: %+v", cfg.WebImageConfig)
 	}
-	if cfg.WebImageUserAgent != "test-agent" || cfg.WebImageClientVersion != "test-version" {
+	if cfg.WebImageUserAgent != "test-agent" || cfg.WebImageClientVersion != "test-version" || cfg.WebImageClientBuild != "test-build" {
 		t.Fatalf("client overrides were not preserved: %+v", cfg.WebImageConfig)
 	}
 }

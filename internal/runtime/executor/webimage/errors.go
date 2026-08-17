@@ -1,9 +1,11 @@
 package webimage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 var (
@@ -24,10 +26,11 @@ const (
 
 // StatusError carries a scrubbed failure classification for the Codex bridge.
 type StatusError struct {
-	Status int
-	Kind   string
-	Stage  string
-	Msg    string
+	Status     int
+	Kind       string
+	Stage      string
+	Msg        string
+	RetryAfter time.Duration
 }
 
 func (e *StatusError) Error() string {
@@ -48,4 +51,11 @@ func (e *StatusError) StatusCode() int {
 		return http.StatusBadGateway
 	}
 	return e.Status
+}
+
+func preserveContextError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return nil
 }

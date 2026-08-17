@@ -104,6 +104,9 @@ func (e *Executor) Generate(ctx context.Context, credentials Credentials, prompt
 	if errRequirements := e.prepareRequirements(ctx, session, credentials, &state, totalDeadline); errRequirements != nil {
 		return nil, nil, errRequirements
 	}
+	if errPrepare := e.prepareConversation(ctx, session, credentials, &state, totalDeadline); errPrepare != nil {
+		return nil, nil, errPrepare
+	}
 	if errConversation := e.startConversation(ctx, session, credentials, &state, totalDeadline); errConversation != nil {
 		return nil, nil, errConversation
 	}

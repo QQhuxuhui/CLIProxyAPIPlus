@@ -92,6 +92,25 @@ func TestBuildRequirementsTokenMatchesSentinelFraming(t *testing.T) {
 	}
 }
 
+func TestBuildLegacyRequirementsTokenUsesLegacyVector(t *testing.T) {
+	token, errBuild := BuildLegacyRequirementsToken(context.Background(), "test-agent", PoWOptions{})
+	if errBuild != nil {
+		t.Fatalf("BuildLegacyRequirementsToken() error = %v", errBuild)
+	}
+	encoded := strings.TrimPrefix(token, requirementsTokenPrefix)
+	raw, errDecode := base64.StdEncoding.DecodeString(encoded)
+	if errDecode != nil {
+		t.Fatalf("decode legacy requirements token: %v", errDecode)
+	}
+	var vector []any
+	if errJSON := json.Unmarshal(raw, &vector); errJSON != nil {
+		t.Fatalf("decode legacy requirements vector: %v", errJSON)
+	}
+	if len(vector) != 18 || vector[4] != "test-agent" {
+		t.Fatalf("legacy requirements vector = %#v", vector)
+	}
+}
+
 func TestSolveLegacyProofUsesLegacySentinelFraming(t *testing.T) {
 	proof, errSolve := SolveLegacyProof(context.Background(), PoWChallenge{
 		Required:   true,

@@ -22,6 +22,7 @@ type Session struct {
 	Identity      Identity
 	UserAgent     string
 	ClientVersion string
+	ClientBuild   string
 
 	signature string
 	createdAt time.Time

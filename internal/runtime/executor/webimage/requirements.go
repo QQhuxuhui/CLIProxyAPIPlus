@@ -15,11 +15,16 @@ func (e *Executor) prepareRequirements(ctx context.Context, session *Session, cr
 	if errBudget := e.checkBudget(ctx, deadline, "Sentinel prepare"); errBudget != nil {
 		return errBudget
 	}
-	startedAt := time.Now()
-	vector := e.browserVector(session)
-	elapsed := time.Since(startedAt).Milliseconds()
-	requirementsToken, errToken := BuildRequirementsToken(vector, elapsed)
+	tokenContext, cancelToken := context.WithTimeout(ctx, e.duration(e.cfg.WebImagePoWTimeout, config.DefaultWebImagePoWTimeout))
+	requirementsToken, errToken := BuildLegacyRequirementsToken(tokenContext, session.UserAgent, PoWOptions{})
+	cancelToken()
 	if errToken != nil {
+		if errors.Is(errToken, context.Canceled) {
+			return errToken
+		}
+		if errors.Is(errToken, context.DeadlineExceeded) {
+			return &StatusError{Status: http.StatusGatewayTimeout, Kind: ErrorKindTimeout, Stage: "Sentinel prepare", Msg: "web image Sentinel requirements token timed out"}
+		}
 		return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "Sentinel prepare", Msg: "web image Sentinel requirements token failed"}
 	}
 	prepareBody, errBody := json.Marshal(map[string]any{"p": requirementsToken})
@@ -62,9 +67,12 @@ func (e *Executor) prepareRequirements(ctx context.Context, session *Session, cr
 	}
 	if challenge.Required {
 		powContext, cancelPoW := context.WithTimeout(ctx, e.duration(e.cfg.WebImagePoWTimeout, config.DefaultWebImagePoWTimeout))
-		proofToken, errProof := SolveProof(powContext, challenge, vector, PoWOptions{})
+		proofToken, errProof := SolveLegacyProof(powContext, challenge, session.UserAgent, PoWOptions{})
 		cancelPoW()
 		if errProof != nil {
+			if errors.Is(errProof, context.Canceled) {
+				return errProof
+			}
 			if errors.Is(errProof, context.DeadlineExceeded) {
 				return &StatusError{Status: http.StatusGatewayTimeout, Kind: ErrorKindTimeout, Stage: "Sentinel proof", Msg: "web image Sentinel proof timed out"}
 			}
@@ -120,7 +128,7 @@ func (e *Executor) prepareLegacyRequirements(ctx context.Context, session *Sessi
 	if errRequirements != nil {
 		return errRequirements
 	}
-	if boolValue(findMap(response.Body, "arkose"), "required") || boolValue(findMap(response.Body, "turnstile"), "required") {
+	if boolValue(findMap(response.Body, "arkose"), "required") {
 		return &StatusError{Status: http.StatusServiceUnavailable, Kind: ErrorKindChallenge, Stage: "Sentinel requirements", Msg: "web image requires an interactive browser challenge"}
 	}
 

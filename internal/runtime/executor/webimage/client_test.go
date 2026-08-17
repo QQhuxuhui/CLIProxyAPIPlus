@@ -115,6 +115,14 @@ func TestSessionPoolRebuildsWhenFingerprintConfigChanges(t *testing.T) {
 	if first == second {
 		t.Fatal("session was not rebuilt after fingerprint config changed")
 	}
+	cfg.WebImageClientBuild = "changed-build"
+	third, errThird := pool.Get(Credentials{AuthID: "auth-a"})
+	if errThird != nil {
+		t.Fatalf("Get() after client build change error = %v", errThird)
+	}
+	if second == third {
+		t.Fatal("session was not rebuilt after client build config changed")
+	}
 }
 
 func TestSessionClientVerifiesTLSCertificates(t *testing.T) {

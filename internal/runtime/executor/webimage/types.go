@@ -50,5 +50,7 @@ type generationState struct {
 	proofToken            string
 	turnstileToken        string
 	conversationID        string
-	fileID                string
+	assetRefs             []string
+	done                  bool
+	failed                bool
 }

@@ -176,6 +176,7 @@ disable-image-generation: false
 # web-image-max-concurrency-per-account: 1
 # web-image-user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 # web-image-client-version: ""
+# web-image-client-build: ""
 
 # How long video IDs returned by /openai/v1/videos and xAI video creation stay bound
 # to the credential that created them. Default: 3h.

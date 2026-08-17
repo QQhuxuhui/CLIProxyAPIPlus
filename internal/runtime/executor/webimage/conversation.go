@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+var (
+	fileServiceAssetPattern = regexp.MustCompile(`file-service://[A-Za-z0-9_.:-]+`)
+	sedimentAssetPattern    = regexp.MustCompile(`sediment://[A-Za-z0-9_.:-]+`)
 )
 
 func (e *Executor) startConversation(ctx context.Context, session *Session, credentials Credentials, state *generationState, deadline time.Time) error {
@@ -31,19 +37,17 @@ func (e *Executor) startConversation(ctx context.Context, session *Session, cred
 	if state.conduitToken != "" {
 		request.Header.Set("X-Conduit-Token", state.conduitToken)
 	}
-	if state.chatRequirementsToken != "" {
-		request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Token", state.chatRequirementsToken)
-		if state.legacyRequirements && state.proofToken != "" {
-			request.Header.Set("OpenAI-Sentinel-Proof-Token", state.proofToken)
+	for name, values := range sentinelHeaders(state) {
+		for _, value := range values {
+			request.Header.Add(name, value)
 		}
-	} else {
-		request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Prepare-Token", state.prepareToken)
-		request.Header.Set("OpenAI-Sentinel-Proof-Token", state.proofToken)
-		request.Header.Set("OpenAI-Sentinel-Turnstile-Token", state.turnstileToken)
 	}
 
 	response, errDo := session.Client.Do(request)
 	if errDo != nil {
+		if errContext := preserveContextError(errDo); errContext != nil {
+			return errContext
+		}
 		return &StatusError{Status: http.StatusServiceUnavailable, Kind: ErrorKindChallenge, Stage: "conversation", Msg: "web image conversation transport failed"}
 	}
 	defer response.Body.Close()
@@ -67,8 +71,11 @@ func (e *Executor) buildConversationBody(state *generationState) ([]byte, error)
 			"create_time": float64(now.UnixMilli()) / 1000,
 			"content":     map[string]any{"content_type": "text", "parts": []any{state.prompt}},
 			"metadata": map[string]any{
-				"serialization_metadata": map[string]any{"custom_symbol_offsets": []any{}},
-				"system_hints":           []any{},
+				"developer_mode_connector_ids": []any{},
+				"selected_github_repos":        []any{},
+				"selected_all_github_repos":    false,
+				"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
+				"system_hints":                 []any{"picture_v2"},
 			},
 		},
 	}
@@ -76,8 +83,30 @@ func (e *Executor) buildConversationBody(state *generationState) ([]byte, error)
 }
 
 func (e *Executor) buildPrepareBody(state *generationState) ([]byte, error) {
-	body := e.buildConversationPayload(state)
-	body["client_prepare_state"] = "none"
+	if state.parentMessageID == "" {
+		state.parentMessageID = uuid.NewString()
+	}
+	body := map[string]any{
+		"action":                "next",
+		"fork_from_shared_post": false,
+		"parent_message_id":     state.parentMessageID,
+		"model":                 strings.TrimSpace(e.cfg.WebImageBaseModel),
+		"client_prepare_state":  "success",
+		"timezone_offset_min":   -480,
+		"timezone":              "Asia/Shanghai",
+		"conversation_mode":     map[string]any{"kind": "primary_assistant"},
+		"system_hints":          []any{"picture_v2"},
+		"partial_query": map[string]any{
+			"id":      uuid.NewString(),
+			"author":  map[string]any{"role": "user"},
+			"content": map[string]any{"content_type": "text", "parts": []any{state.prompt}},
+		},
+		"supports_buffering":  true,
+		"supported_encodings": []any{"v1"},
+		"client_contextual_info": map[string]any{
+			"app_name": "chatgpt.com",
+		},
+	}
 	return json.Marshal(body)
 }
 
@@ -90,28 +119,26 @@ func (e *Executor) buildConversationPayload(state *generationState) map[string]a
 		"action":                               "next",
 		"parent_message_id":                    state.parentMessageID,
 		"model":                                baseModel,
+		"client_prepare_state":                 "sent",
 		"timezone":                             "Asia/Shanghai",
 		"timezone_offset_min":                  -480,
 		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
-		"client_prepare_state":                 state.clientPrepareState,
 		"force_parallel_switch":                "auto",
 		"enable_message_followups":             true,
 		"paragen_cot_summary_display_override": "allow",
 		"supported_encodings":                  []any{"v1"},
 		"supports_buffering":                   true,
-		"system_hints":                         []any{"image_generation"},
+		"system_hints":                         []any{"picture_v2"},
 		"local_function_names":                 []any{},
 		"client_contextual_info": map[string]any{
-			"app_name":                         "chatgpt.com",
-			"has_web_push_capabilities":        false,
-			"is_dark_mode":                     false,
-			"page_height":                      900,
-			"page_width":                       1440,
-			"pixel_ratio":                      1,
-			"screen_height":                    1080,
-			"screen_width":                     1920,
-			"time_since_loaded":                1,
-			"web_push_notification_permission": "default",
+			"app_name":          "chatgpt.com",
+			"is_dark_mode":      false,
+			"time_since_loaded": 1200,
+			"page_height":       1072,
+			"page_width":        1724,
+			"pixel_ratio":       1.2,
+			"screen_height":     1440,
+			"screen_width":      2560,
 		},
 	}
 }
@@ -137,9 +164,7 @@ func parseConversationSSE(reader io.Reader, state *generationState) error {
 		if state.conversationID == "" {
 			state.conversationID = findString(event, "conversation_id", "conversationId")
 		}
-		if state.fileID == "" {
-			state.fileID = findFileID(event)
-		}
+		mergeGenerationState(state, event)
 	}
 	if errScan := scanner.Err(); errScan != nil {
 		return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "conversation", Msg: "web image conversation stream was interrupted"}
@@ -151,7 +176,102 @@ func parseConversationSSE(reader io.Reader, state *generationState) error {
 }
 
 func findFileID(value any) string {
-	pointer := findString(value, "asset_pointer", "image_asset_pointer", "file_id", "fileId")
+	return assetID(findAssetRef(value))
+}
+
+func findAssetRef(value any) string {
+	refs := findAssetRefs(value)
+	if len(refs) > 0 {
+		return refs[0]
+	}
+	return ""
+}
+
+func findAssetRefs(value any) []string {
+	refs := make([]string, 0, 4)
+	findEmbeddedAssetRefs(value, &refs)
+	return deduplicateAssetRefs(refs)
+}
+
+func findEmbeddedAssetRefs(value any, refs *[]string) {
+	switch current := value.(type) {
+	case string:
+		for _, match := range fileServiceAssetPattern.FindAllString(current, -1) {
+			*refs = append(*refs, match)
+		}
+		for _, match := range sedimentAssetPattern.FindAllString(current, -1) {
+			*refs = append(*refs, match)
+		}
+		trimmed := strings.TrimSpace(current)
+		lower := strings.ToLower(trimmed)
+		if (strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://")) && (strings.Contains(lower, "image") || strings.Contains(lower, "download") || strings.Contains(lower, ".png") || strings.Contains(lower, ".jpg") || strings.Contains(lower, ".jpeg") || strings.Contains(lower, ".webp")) {
+			*refs = append(*refs, trimmed)
+		}
+		if strings.HasPrefix(lower, "data:image/") {
+			*refs = append(*refs, trimmed)
+		}
+	case map[string]any:
+		for key, child := range current {
+			if text, ok := child.(string); ok {
+				switch strings.ToLower(key) {
+				case "asset_pointer", "image_asset_pointer", "file_id", "fileid", "sediment_id":
+					if trimmed := strings.TrimSpace(text); trimmed != "" {
+						*refs = append(*refs, trimmed)
+					}
+				}
+			}
+			findEmbeddedAssetRefs(child, refs)
+		}
+	case []any:
+		for _, child := range current {
+			findEmbeddedAssetRefs(child, refs)
+		}
+	}
+}
+
+func mergeGenerationState(state *generationState, value any) {
+	if state == nil {
+		return
+	}
+	state.assetRefs = deduplicateAssetRefs(append(state.assetRefs, findAssetRefs(value)...))
+	for _, status := range findStrings(value, "status", "type") {
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case "finished_successfully", "completed", "done", "finished", "message_stream_complete":
+			state.done = true
+		case "failed", "error", "cancelled", "canceled":
+			state.failed = true
+		}
+	}
+}
+
+func deduplicateAssetRefs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func hasDirectAsset(refs []string) bool {
+	for _, ref := range refs {
+		lower := strings.ToLower(strings.TrimSpace(ref))
+		if strings.HasPrefix(lower, "file-service://") || strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:image/") {
+			return true
+		}
+	}
+	return false
+}
+
+func assetID(pointer string) string {
 	pointer = strings.TrimSpace(pointer)
 	if pointer == "" {
 		return ""

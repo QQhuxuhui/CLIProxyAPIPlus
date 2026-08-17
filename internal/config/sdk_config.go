@@ -18,8 +18,9 @@ const (
 	DefaultWebImageMaxBytes                 int64 = 20 * 1024 * 1024
 	DefaultWebImageMaxConcurrency                 = 4
 	DefaultWebImageMaxConcurrencyPerAccount       = 1
-	DefaultWebImageUserAgent                      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-	DefaultWebImageClientVersion                  = ""
+	DefaultWebImageUserAgent                      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+	DefaultWebImageClientVersion                  = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
+	DefaultWebImageClientBuild                    = "5955942"
 )
 
 // SDKConfig represents the application's configuration, loaded from a YAML file.
@@ -92,6 +93,7 @@ type WebImageConfig struct {
 	WebImageMaxConcurrencyPerAccount int      `yaml:"web-image-max-concurrency-per-account,omitempty" json:"web-image-max-concurrency-per-account,omitempty"`
 	WebImageUserAgent                string   `yaml:"web-image-user-agent,omitempty" json:"web-image-user-agent,omitempty"`
 	WebImageClientVersion            string   `yaml:"web-image-client-version,omitempty" json:"web-image-client-version,omitempty"`
+	WebImageClientBuild              string   `yaml:"web-image-client-build,omitempty" json:"web-image-client-build,omitempty"`
 }
 
 // SetWebImageDefaults applies defaults before unmarshalling so explicit false
@@ -111,6 +113,7 @@ func (c *SDKConfig) SetWebImageDefaults() {
 	c.WebImageMaxConcurrencyPerAccount = DefaultWebImageMaxConcurrencyPerAccount
 	c.WebImageUserAgent = DefaultWebImageUserAgent
 	c.WebImageClientVersion = DefaultWebImageClientVersion
+	c.WebImageClientBuild = DefaultWebImageClientBuild
 }
 
 // NormalizeWebImageConfig removes duplicate aliases and repairs invalid limits.
@@ -156,6 +159,7 @@ func (c *SDKConfig) NormalizeWebImageConfig() {
 		c.WebImageUserAgent = DefaultWebImageUserAgent
 	}
 	c.WebImageClientVersion = strings.TrimSpace(c.WebImageClientVersion)
+	c.WebImageClientBuild = strings.TrimSpace(c.WebImageClientBuild)
 }
 
 func positiveDurationOrDefault(value, fallback string) string {

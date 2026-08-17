@@ -5,14 +5,17 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -56,6 +59,65 @@ func SolveProof(ctx context.Context, challenge PoWChallenge, vector BrowserVecto
 		hash := sentinelHash(seed + encoded)
 		if hash[:len(difficulty)] <= difficulty {
 			return proofTokenPrefix + encoded + "~S", nil
+		}
+	}
+	return "", ErrPoWExhausted
+}
+
+// BuildLegacyRequirementsToken generates the Sentinel token shared by V2 prepare and legacy fallback.
+func BuildLegacyRequirementsToken(ctx context.Context, userAgent string, opts PoWOptions) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	maxAttempts := opts.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultPoWMaxAttempts
+	}
+	config := []any{
+		legacyRandomChoice([]int{16, 24, 32}) + legacyRandomChoice([]int{3000, 4000, 6000}),
+		time.Now().UTC().Format("Mon Jan 02 2006 15:04:05 GMT+0000 (UTC)"),
+		nil,
+		0,
+		userAgent,
+		nil,
+		"dpl=1440a687921de39ff5ee56b92807faaadce73f13",
+		"en-US",
+		"en-US,zh-CN",
+		0,
+		legacyRandomChoice([]string{
+			"webdriver−false",
+			"vendor−Google Inc.",
+			"cookieEnabled−true",
+			"pdfViewerEnabled−true",
+			"hardwareConcurrency−32",
+			"language−zh-CN",
+			"mimeTypes−[object MimeTypeArray]",
+			"userAgentData−[object NavigatorUAData]",
+		}),
+		"location",
+		legacyRandomChoice([]string{"innerWidth", "innerHeight", "devicePixelRatio", "screen", "chrome", "location", "history", "navigator"}),
+		legacyRandomFloat64(),
+		uuid.NewString(),
+		"",
+		8,
+		time.Now().Unix(),
+	}
+	seed := strconv.FormatFloat(legacyRandomFloat64(), 'f', -1, 64)
+	target := []byte{0x0f, 0xff, 0xff}
+	for nonce := 0; nonce < maxAttempts; nonce++ {
+		if errContext := ctx.Err(); errContext != nil {
+			return "", errContext
+		}
+		config[3] = nonce
+		config[9] = nonce >> 1
+		raw, errMarshal := json.Marshal(config)
+		if errMarshal != nil {
+			return "", fmt.Errorf("encode legacy Sentinel requirements vector: %w", errMarshal)
+		}
+		encoded := base64.StdEncoding.EncodeToString(raw)
+		digest := sha3.Sum512([]byte(seed + encoded))
+		if bytes.Compare(digest[:len(target)], target) <= 0 {
+			return requirementsTokenPrefix + encoded, nil
 		}
 	}
 	return "", ErrPoWExhausted
@@ -126,6 +188,14 @@ func legacyRandomChoice[T any](values []T) T {
 		}
 	}
 	return values[index]
+}
+
+func legacyRandomFloat64() float64 {
+	var raw [8]byte
+	if _, errRead := cryptorand.Read(raw[:]); errRead != nil {
+		return float64(time.Now().UnixNano()&((1<<53)-1)) / float64(1<<53)
+	}
+	return float64(binary.BigEndian.Uint64(raw[:])>>11) / float64(1<<53)
 }
 
 func validLegacyDifficulty(difficulty string) bool {
