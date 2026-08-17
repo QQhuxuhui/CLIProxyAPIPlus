@@ -73,17 +73,25 @@ func (e *Executor) Close() {
 	}
 }
 
-// Generate creates one 1K image from a prompt.
+// Generate creates one image from a text prompt.
 func (e *Executor) Generate(ctx context.Context, credentials Credentials, prompt string) ([]ImageResult, *Meta, error) {
+	return e.GenerateRequest(ctx, credentials, Request{Prompt: prompt})
+}
+
+// GenerateRequest creates one image from text and optional reference images.
+func (e *Executor) GenerateRequest(ctx context.Context, credentials Credentials, request Request) ([]ImageResult, *Meta, error) {
 	if e == nil || e.cfg == nil {
 		return nil, nil, &StatusError{Status: 503, Kind: ErrorKindProtocol, Stage: "config", Msg: "web image generation is not configured"}
 	}
-	prompt = strings.TrimSpace(prompt)
+	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {
 		return nil, nil, &StatusError{Status: 400, Kind: ErrorKindProtocol, Stage: "request", Msg: "web image prompt is empty"}
 	}
 	if strings.TrimSpace(credentials.AccessToken) == "" {
 		return nil, nil, &StatusError{Status: 503, Kind: ErrorKindAuth, Stage: "auth", Msg: "web image credential has no access token"}
+	}
+	if errImages := e.validateInputImages(request.Images); errImages != nil {
+		return nil, nil, errImages
 	}
 	release, errAcquire := e.acquire(ctx, credentials.AuthID)
 	if errAcquire != nil {
@@ -100,6 +108,11 @@ func (e *Executor) Generate(ctx context.Context, credentials Credentials, prompt
 	state := generationState{prompt: prompt, turnTraceID: newTurnTraceID()}
 	if errBootstrap := e.bootstrap(ctx, session, credentials, &state, totalDeadline); errBootstrap != nil {
 		return nil, nil, errBootstrap
+	}
+	if len(request.Images) > 0 {
+		if errUpload := e.uploadInputImages(ctx, session, credentials, &state, request.Images, totalDeadline); errUpload != nil {
+			return nil, nil, errUpload
+		}
 	}
 	if errRequirements := e.prepareRequirements(ctx, session, credentials, &state, totalDeadline); errRequirements != nil {
 		return nil, nil, errRequirements

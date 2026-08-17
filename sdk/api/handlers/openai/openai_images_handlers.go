@@ -36,6 +36,7 @@ const (
 	xaiImagesDefaultResolution  = "1k"
 	imagesGenerationsPath       = "/v1/images/generations"
 	imagesEditsPath             = "/v1/images/edits"
+	imagesEditsMinBodyLimit     = int64(64 << 20)
 )
 
 type imageCallResult struct {
@@ -253,11 +254,49 @@ func validateWebImageGenerationRequest(rawJSON []byte) error {
 	if responseFormat != "" && !strings.EqualFold(responseFormat, "b64_json") {
 		return fmt.Errorf("response_format must be b64_json for web image generation")
 	}
-	size := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String())
-	if size != "" && !strings.EqualFold(size, "1024x1024") && !strings.EqualFold(size, "1k") {
-		return fmt.Errorf("size must be 1024x1024 for web image generation")
-	}
 	return nil
+}
+
+func buildWebImageMultipartEditRequest(form *multipart.Form, model, prompt string, imageFiles []*multipart.FileHeader, images []string) ([]byte, error) {
+	payload := []byte(`{"images":[]}`)
+	payload, _ = sjson.SetBytes(payload, "model", model)
+	payload, _ = sjson.SetBytes(payload, "prompt", prompt)
+	for index, imageURL := range images {
+		filename := ""
+		if index < len(imageFiles) && imageFiles[index] != nil {
+			filename = imageFiles[index].Filename
+		}
+		payload, _ = sjson.SetBytes(payload, fmt.Sprintf("images.%d.filename", index), filename)
+		payload, _ = sjson.SetBytes(payload, fmt.Sprintf("images.%d.image_url", index), imageURL)
+	}
+	for _, field := range []string{"size", "quality"} {
+		if value := strings.TrimSpace(firstMultipartValue(form, field)); value != "" {
+			payload, _ = sjson.SetBytes(payload, field, value)
+		}
+	}
+	responseFormat := strings.TrimSpace(firstMultipartValue(form, "response_format"))
+	if responseFormat == "" {
+		responseFormat = "b64_json"
+	}
+	payload, _ = sjson.SetBytes(payload, "response_format", responseFormat)
+	if rawN := strings.TrimSpace(firstMultipartValue(form, "n")); rawN != "" {
+		n, errParse := strconv.ParseInt(rawN, 10, 64)
+		if errParse != nil {
+			return nil, fmt.Errorf("n must be 1 for web image generation")
+		}
+		payload, _ = sjson.SetBytes(payload, "n", n)
+	}
+	if rawStream := strings.TrimSpace(firstMultipartValue(form, "stream")); rawStream != "" {
+		payload, _ = sjson.SetBytes(payload, "stream", parseBoolField(rawStream, false))
+	}
+	return payload, nil
+}
+
+func firstMultipartValue(form *multipart.Form, field string) string {
+	if form == nil || len(form.Value[field]) == 0 {
+		return ""
+	}
+	return form.Value[field][0]
 }
 
 func isCodexImagesToolModel(model string) bool {
@@ -477,12 +516,20 @@ func mimeTypeFromOutputFormat(outputFormat string) string {
 }
 
 func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
+	dataURL, _, err := multipartFileToDataURLLimited(fileHeader, 0)
+	return dataURL, err
+}
+
+func multipartFileToDataURLLimited(fileHeader *multipart.FileHeader, maxBytes int64) (string, int64, error) {
 	if fileHeader == nil {
-		return "", fmt.Errorf("upload file is nil")
+		return "", 0, fmt.Errorf("upload file is nil")
+	}
+	if maxBytes > 0 && fileHeader.Size > maxBytes {
+		return "", 0, fmt.Errorf("upload file exceeds the configured byte limit")
 	}
 	f, err := fileHeader.Open()
 	if err != nil {
-		return "", fmt.Errorf("open upload file failed: %w", err)
+		return "", 0, fmt.Errorf("open upload file failed: %w", err)
 	}
 	defer func() {
 		if errClose := f.Close(); errClose != nil {
@@ -490,9 +537,16 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 		}
 	}()
 
-	data, err := io.ReadAll(f)
+	reader := io.Reader(f)
+	if maxBytes > 0 {
+		reader = io.LimitReader(f, maxBytes+1)
+	}
+	data, err := io.ReadAll(reader)
 	if err != nil {
-		return "", fmt.Errorf("read upload file failed: %w", err)
+		return "", 0, fmt.Errorf("read upload file failed: %w", err)
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return "", 0, fmt.Errorf("upload file exceeds the configured byte limit")
 	}
 
 	mediaType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
@@ -501,7 +555,7 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(data)
-	return "data:" + mediaType + ";base64," + b64, nil
+	return "data:" + mediaType + ";base64," + b64, int64(len(data)), nil
 }
 
 func buildOpenAICompatImagesJSONRequest(rawJSON []byte, imageModel string, stream bool) []byte {
@@ -774,6 +828,10 @@ func (h *OpenAIAPIHandler) ImagesEdits(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
+	requestLimit := h.imagesEditsRequestBodyLimit()
+	if c != nil && c.Request != nil && c.Request.Body != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, requestLimit)
+	}
 
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
 	if strings.HasPrefix(contentType, "application/json") {
@@ -809,10 +867,17 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
 	}
-	if h.rejectWebImageEdit(c, imageModel) {
-		return
-	}
-	if rejectUnsupportedImagesModel(c, imageModel) {
+	webImageModel := h.isWebImageModel(imageModel)
+	if webImageModel {
+		if h == nil || h.BaseAPIHandler == nil || h.BaseAPIHandler.Cfg == nil || !h.BaseAPIHandler.Cfg.WebImageGeneration {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		if strings.TrimSpace(h.BaseAPIHandler.Cfg.WebImageBaseModel) == "" {
+			c.JSON(http.StatusServiceUnavailable, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Web image generation is not configured", Type: "server_error"}})
+			return
+		}
+	} else if rejectUnsupportedImagesModel(c, imageModel) {
 		return
 	}
 
@@ -842,10 +907,31 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		})
 		return
 	}
+	if webImageModel && len(imageFiles) > internalconfig.WebImageMaxInputImages {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: too many reference images", Type: "invalid_request_error"}})
+		return
+	}
 
 	images := make([]string, 0, len(imageFiles))
+	webImageMaxBytes := internalconfig.DefaultWebImageMaxBytes
+	if webImageModel && h.BaseAPIHandler.Cfg.WebImageMaxBytes > 0 {
+		webImageMaxBytes = h.BaseAPIHandler.Cfg.WebImageMaxBytes
+	}
+	var webImageInputBytes int64
 	for _, fh := range imageFiles {
-		dataURL, err := multipartFileToDataURL(fh)
+		var dataURL string
+		var bytesRead int64
+		var err error
+		if webImageModel {
+			remaining := webImageMaxBytes - webImageInputBytes
+			if remaining <= 0 {
+				err = fmt.Errorf("reference images exceed the configured byte limit")
+			} else {
+				dataURL, bytesRead, err = multipartFileToDataURLLimited(fh, remaining)
+			}
+		} else {
+			dataURL, err = multipartFileToDataURL(fh)
+		}
 		if err != nil {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 				Error: handlers.ErrorDetail{
@@ -855,6 +941,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 			})
 			return
 		}
+		webImageInputBytes += bytesRead
 		images = append(images, dataURL)
 	}
 
@@ -863,6 +950,23 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		responseFormat = "b64_json"
 	}
 	stream := parseBoolField(c.PostForm("stream"), false)
+	if webImageModel {
+		if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: masks are not supported for web image edits", Type: "invalid_request_error"}})
+			return
+		}
+		webRequest, errBuild := buildWebImageMultipartEditRequest(form, imageModel, prompt, imageFiles, images)
+		if errBuild != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errBuild.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		if errValidate := validateWebImageGenerationRequest(webRequest); errValidate != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errValidate.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		h.collectWebImages(c, webRequest, imageModel)
+		return
+	}
 
 	if isCodexImagesToolModel(imageModel) {
 		imageReq, contentType, errBuild := buildOpenAICompatImagesMultipartRequest(form, imageModel, stream)
@@ -961,7 +1065,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 }
 
 func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := handlers.ReadRequestBodyLimited(c, h.imagesEditsRequestBodyLimit())
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -985,10 +1089,17 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	if imageModel == "" {
 		imageModel = defaultImagesToolModel
 	}
-	if h.rejectWebImageEdit(c, imageModel) {
-		return
-	}
-	if rejectUnsupportedImagesModel(c, imageModel) {
+	webImageModel := h.isWebImageModel(imageModel)
+	if webImageModel {
+		if h == nil || h.BaseAPIHandler == nil || h.BaseAPIHandler.Cfg == nil || !h.BaseAPIHandler.Cfg.WebImageGeneration {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		if strings.TrimSpace(h.BaseAPIHandler.Cfg.WebImageBaseModel) == "" {
+			c.JSON(http.StatusServiceUnavailable, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Web image generation is not configured", Type: "server_error"}})
+			return
+		}
+	} else if rejectUnsupportedImagesModel(c, imageModel) {
 		return
 	}
 
@@ -1008,6 +1119,22 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		responseFormat = "b64_json"
 	}
 	stream := gjson.GetBytes(rawJSON, "stream").Bool()
+	if webImageModel {
+		if gjson.GetBytes(rawJSON, "mask").Exists() {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: masks are not supported for web image edits", Type: "invalid_request_error"}})
+			return
+		}
+		if len(collectXAIImagesFromJSON(rawJSON)) == 0 {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: image is required", Type: "invalid_request_error"}})
+			return
+		}
+		if errValidate := validateWebImageGenerationRequest(rawJSON); errValidate != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errValidate.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		h.collectWebImages(c, rawJSON, imageModel)
+		return
+	}
 
 	if isCodexImagesToolModel(imageModel) {
 		imageReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
@@ -1100,30 +1227,23 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	h.collectImagesFromResponses(c, responsesReq, responseFormat)
 }
 
+func (h *OpenAIAPIHandler) imagesEditsRequestBodyLimit() int64 {
+	maxInputBytes := internalconfig.DefaultWebImageMaxBytes
+	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.WebImageMaxBytes > 0 {
+		maxInputBytes = h.BaseAPIHandler.Cfg.WebImageMaxBytes
+	}
+	limit := maxInputBytes + maxInputBytes/2 + 1<<20
+	if limit < imagesEditsMinBodyLimit {
+		return imagesEditsMinBodyLimit
+	}
+	return limit
+}
+
 func (h *OpenAIAPIHandler) isWebImageModel(model string) bool {
 	if h == nil || h.BaseAPIHandler == nil {
 		return isWebImageModel(nil, model)
 	}
 	return isWebImageModel(h.BaseAPIHandler.Cfg, model)
-}
-
-func (h *OpenAIAPIHandler) rejectWebImageEdit(c *gin.Context, model string) bool {
-	if !h.isWebImageModel(model) {
-		return false
-	}
-	if h == nil || h.BaseAPIHandler == nil || h.BaseAPIHandler.Cfg == nil || !h.BaseAPIHandler.Cfg.WebImageGeneration {
-		c.AbortWithStatus(http.StatusNotFound)
-		return true
-	}
-	writeWebImageEditsUnsupported(c)
-	return true
-}
-
-func writeWebImageEditsUnsupported(c *gin.Context) {
-	c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{
-		Message: "Invalid request: web image generation does not support edits",
-		Type:    "invalid_request_error",
-	}})
 }
 
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {

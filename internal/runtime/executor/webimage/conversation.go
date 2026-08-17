@@ -64,22 +64,66 @@ func (e *Executor) buildConversationBody(state *generationState) ([]byte, error)
 	body := e.buildConversationPayload(state)
 	now := time.Now()
 	messageID := uuid.NewString()
+	metadata := map[string]any{
+		"developer_mode_connector_ids": []any{},
+		"selected_github_repos":        []any{},
+		"selected_all_github_repos":    false,
+		"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
+		"system_hints":                 []any{"picture_v2"},
+	}
+	if attachments := conversationAttachments(state); len(attachments) > 0 {
+		metadata["attachments"] = attachments
+	}
 	body["messages"] = []any{
 		map[string]any{
 			"id":          messageID,
 			"author":      map[string]any{"role": "user"},
 			"create_time": float64(now.UnixMilli()) / 1000,
-			"content":     map[string]any{"content_type": "text", "parts": []any{state.prompt}},
-			"metadata": map[string]any{
-				"developer_mode_connector_ids": []any{},
-				"selected_github_repos":        []any{},
-				"selected_all_github_repos":    false,
-				"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
-				"system_hints":                 []any{"picture_v2"},
-			},
+			"content":     conversationContent(state),
+			"metadata":    metadata,
 		},
 	}
 	return json.Marshal(body)
+}
+
+func conversationContent(state *generationState) map[string]any {
+	if state == nil || len(state.uploadedImages) == 0 {
+		prompt := ""
+		if state != nil {
+			prompt = state.prompt
+		}
+		return map[string]any{"content_type": "text", "parts": []any{prompt}}
+	}
+	parts := make([]any, 0, len(state.uploadedImages)+1)
+	for _, uploaded := range state.uploadedImages {
+		parts = append(parts, map[string]any{
+			"content_type":  "image_asset_pointer",
+			"asset_pointer": uploaded.AssetPointer,
+			"size_bytes":    uploaded.SizeBytes,
+			"width":         uploaded.Width,
+			"height":        uploaded.Height,
+		})
+	}
+	parts = append(parts, state.prompt)
+	return map[string]any{"content_type": "multimodal_text", "parts": parts}
+}
+
+func conversationAttachments(state *generationState) []any {
+	if state == nil || len(state.uploadedImages) == 0 {
+		return nil
+	}
+	attachments := make([]any, 0, len(state.uploadedImages))
+	for _, uploaded := range state.uploadedImages {
+		attachments = append(attachments, map[string]any{
+			"id":        uploaded.FileID,
+			"name":      uploaded.Filename,
+			"size":      uploaded.SizeBytes,
+			"mime_type": uploaded.MIMEType,
+			"width":     uploaded.Width,
+			"height":    uploaded.Height,
+		})
+	}
+	return attachments
 }
 
 func (e *Executor) buildPrepareBody(state *generationState) ([]byte, error) {
@@ -233,7 +277,13 @@ func mergeGenerationState(state *generationState, value any) {
 	if state == nil {
 		return
 	}
-	state.assetRefs = deduplicateAssetRefs(append(state.assetRefs, findAssetRefs(value)...))
+	refs := findAssetRefs(value)
+	for _, ref := range refs {
+		if !isUploadedImageRef(state, ref) {
+			state.assetRefs = append(state.assetRefs, ref)
+		}
+	}
+	state.assetRefs = deduplicateAssetRefs(state.assetRefs)
 	for _, status := range findStrings(value, "status", "type") {
 		switch strings.ToLower(strings.TrimSpace(status)) {
 		case "finished_successfully", "completed", "done", "finished", "message_stream_complete":
@@ -242,6 +292,20 @@ func mergeGenerationState(state *generationState, value any) {
 			state.failed = true
 		}
 	}
+}
+
+func isUploadedImageRef(state *generationState, ref string) bool {
+	if state == nil {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	refID := assetID(ref)
+	for _, uploaded := range state.uploadedImages {
+		if ref == uploaded.AssetPointer || ref == uploaded.FileID || (refID != "" && refID == uploaded.FileID) {
+			return true
+		}
+	}
+	return false
 }
 
 func deduplicateAssetRefs(values []string) []string {

@@ -15,6 +15,12 @@ import (
 
 const requestScopedNotFoundMessage = "Item with id 'rs_0b5f3eb6f51f175c0169ca74e4a85881998539920821603a74' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
 
+type requestScopedUpstreamTestError struct{}
+
+func (requestScopedUpstreamTestError) Error() string       { return "request-scoped signed upload failed" }
+func (requestScopedUpstreamTestError) StatusCode() int     { return http.StatusBadGateway }
+func (requestScopedUpstreamTestError) RequestScoped() bool { return true }
+
 func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(3, 30*time.Second, 0)
@@ -1212,5 +1218,48 @@ func TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth(t *testing
 	}
 	if state := updatedBad.ModelStates[model]; state != nil {
 		t.Fatalf("expected request-scoped 404 to avoid bad auth model cooldown state, got %#v", state)
+	}
+}
+
+func TestManager_RequestScopedUpstreamErrorSkipsRetryAndHealthMutation(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-first-auth": requestScopedUpstreamTestError{},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	model := "gpt-image-web"
+	firstAuth := &Auth{ID: "aa-first-auth", Provider: "codex"}
+	secondAuth := &Auth{ID: "bb-second-auth", Provider: "codex"}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(firstAuth.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(secondAuth.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(firstAuth.ID)
+		reg.UnregisterClient(secondAuth.ID)
+	})
+	if _, errRegister := m.Register(context.Background(), firstAuth); errRegister != nil {
+		t.Fatalf("register first auth: %v", errRegister)
+	}
+	if _, errRegister := m.Register(context.Background(), secondAuth); errRegister != nil {
+		t.Fatalf("register second auth: %v", errRegister)
+	}
+
+	_, errExecute := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.PinnedAuthMetadataKey: firstAuth.ID}})
+	if errExecute == nil {
+		t.Fatal("Execute() error = nil")
+	}
+	if got := executor.ExecuteCalls(); len(got) != 1 || got[0] != firstAuth.ID {
+		t.Fatalf("execute calls = %#v", got)
+	}
+	updated, ok := m.GetByID(firstAuth.ID)
+	if !ok || updated == nil {
+		t.Fatal("first auth is missing")
+	}
+	if updated.Failed != 0 || updated.Unavailable || updated.LastError != nil || len(updated.ModelStates) != 0 {
+		t.Fatalf("request-scoped failure mutated auth health: %+v", updated)
 	}
 }

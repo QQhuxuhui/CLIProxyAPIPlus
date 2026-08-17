@@ -26,6 +26,21 @@ type Credentials struct {
 	AuthID      string
 }
 
+// Request describes one web image turn, optionally with reference images.
+type Request struct {
+	Prompt string
+	Images []InputImage
+}
+
+// InputImage contains one decoded reference image for browser upload.
+type InputImage struct {
+	Filename string
+	MIMEType string
+	Data     []byte
+	Width    int
+	Height   int
+}
+
 // ImageResult contains one downloaded image ready for the OpenAI Images bridge.
 type ImageResult struct {
 	Base64Data    string
@@ -36,6 +51,16 @@ type ImageResult struct {
 // Meta describes the completed web generation without exposing the internal model.
 type Meta struct {
 	CreatedAt int64
+}
+
+type uploadedImage struct {
+	FileID       string
+	Filename     string
+	MIMEType     string
+	AssetPointer string
+	SizeBytes    int
+	Width        int
+	Height       int
 }
 
 type generationState struct {
@@ -50,6 +75,7 @@ type generationState struct {
 	proofToken            string
 	turnstileToken        string
 	conversationID        string
+	uploadedImages        []uploadedImage
 	assetRefs             []string
 	done                  bool
 	failed                bool

@@ -155,6 +155,12 @@ type StatusError interface {
 	StatusCode() int
 }
 
+// RequestScopedError marks failures that must not change credential health or retry another credential.
+type RequestScopedError interface {
+	error
+	RequestScoped() bool
+}
+
 // QuotaDetail carries structured upstream 429 quota information across the
 // executor -> conductor boundary. It is provider-neutral: any executor may
 // populate it from a structured rate-limit/quota response.

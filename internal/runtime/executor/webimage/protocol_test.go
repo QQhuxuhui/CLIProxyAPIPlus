@@ -1,14 +1,19 @@
 package webimage
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -233,6 +238,235 @@ func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 	defer mu.Unlock()
 	if strings.Join(paths, "\n") != strings.Join(wantPaths, "\n") {
 		t.Fatalf("paths =\n%s\nwant:\n%s", strings.Join(paths, "\n"), strings.Join(wantPaths, "\n"))
+	}
+}
+
+func TestGenerateRequestUploadsReferenceImageAndSendsMultimodalContent(t *testing.T) {
+	inputBytes := webImageTestPNG(t, 4, 6)
+	outputBytes := []byte("edited-image")
+	paths := make([]string, 0, 12)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/":
+			_, _ = io.WriteString(w, `<!doctype html>`)
+		case "/backend-api/files":
+			var body map[string]any
+			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
+				t.Errorf("decode file create body: %v", errDecode)
+			}
+			if body["file_name"] != "reference.png" || body["file_size"] != float64(len(inputBytes)) || body["use_case"] != "multimodal" || body["mime_type"] != "image/png" {
+				t.Errorf("file create body = %#v", body)
+			}
+			_, _ = fmt.Fprintf(w, `{"status":"success","file_id":"file_reference","upload_url":%q}`, server.URL+"/upload/file_reference")
+		case "/upload/file_reference":
+			if r.Method != http.MethodPut {
+				t.Errorf("upload method = %s", r.Method)
+			}
+			if got := r.Header.Get("X-Ms-Blob-Type"); got != "BlockBlob" {
+				t.Errorf("X-Ms-Blob-Type = %q", got)
+			}
+			got, errRead := io.ReadAll(r.Body)
+			if errRead != nil || !bytes.Equal(got, inputBytes) {
+				t.Errorf("upload bytes = %d, error = %v", len(got), errRead)
+			}
+			w.WriteHeader(http.StatusCreated)
+		case "/backend-api/files/process_upload_stream":
+			var body map[string]any
+			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
+				t.Errorf("decode process body: %v", errDecode)
+			}
+			if body["file_id"] != "file_reference" || body["use_case"] != "multimodal" || body["index_for_retrieval"] != false {
+				t.Errorf("process body = %#v", body)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: file-processing\n")
+			_, _ = io.WriteString(w, "data: {\"type\":\"file.processing.file_ready\",\"file_id\":\"file_reference\"}\n\n")
+			_, _ = io.WriteString(w, "data: {\"type\":\"file.processing.completed\"}\n\n")
+		case "/backend-api/sentinel/chat-requirements/prepare":
+			_, _ = io.WriteString(w, `{"prepare_token":"prepare","proofofwork":{"required":false},"turnstile":{"required":false}}`)
+		case "/backend-api/sentinel/chat-requirements/finalize":
+			_, _ = io.WriteString(w, `{"token":"requirements"}`)
+		case "/backend-api/f/conversation/prepare":
+			_, _ = io.WriteString(w, `{"conduit_token":"conduit"}`)
+		case "/backend-api/f/conversation":
+			var body map[string]any
+			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
+				t.Errorf("decode conversation body: %v", errDecode)
+			}
+			messages, _ := body["messages"].([]any)
+			if len(messages) != 1 {
+				t.Errorf("messages = %#v", messages)
+			} else {
+				message, _ := messages[0].(map[string]any)
+				content, _ := message["content"].(map[string]any)
+				parts, _ := content["parts"].([]any)
+				if content["content_type"] != "multimodal_text" || len(parts) != 2 {
+					t.Errorf("content = %#v", content)
+				} else {
+					pointer, _ := parts[0].(map[string]any)
+					if pointer["content_type"] != "image_asset_pointer" || pointer["asset_pointer"] != "sediment://file_reference" || pointer["width"] != float64(4) || pointer["height"] != float64(6) {
+						t.Errorf("pointer = %#v", pointer)
+					}
+					if parts[1] != "make it watercolor" {
+						t.Errorf("prompt part = %#v", parts[1])
+					}
+				}
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"conversation_id\":\"edit-conversation\"}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		case "/backend-api/conversation/edit-conversation":
+			_, _ = io.WriteString(w, `{"parts":["sediment://file_reference","file-service://file-output"]}`)
+		case "/backend-api/files/file-output/download":
+			_, _ = fmt.Fprintf(w, `{"download_url":%q}`, server.URL+"/edited.png")
+		case "/edited.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(outputBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	cfg.WebImageBaseModel = "internal-image-model"
+	cfg.WebImagePollInterval = "1ms"
+	executor := NewExecutor(cfg, WithBaseURL(server.URL), WithBrowserVectorFactory(func(*Session) BrowserVector { return fixedBrowserVector() }))
+	defer executor.Close()
+
+	results, _, errGenerate := executor.GenerateRequest(context.Background(), Credentials{AccessToken: "token", AuthID: "auth"}, Request{
+		Prompt: "make it watercolor",
+		Images: []InputImage{{Filename: "reference.png", MIMEType: "image/png", Data: inputBytes, Width: 4, Height: 6}},
+	})
+	if errGenerate != nil {
+		t.Fatalf("GenerateRequest() error = %v", errGenerate)
+	}
+	decoded, errDecode := base64.StdEncoding.DecodeString(results[0].Base64Data)
+	if errDecode != nil || !bytes.Equal(decoded, outputBytes) {
+		t.Fatalf("decoded output = %q, error = %v", decoded, errDecode)
+	}
+
+	wantPaths := []string{
+		"GET /",
+		"POST /backend-api/files",
+		"PUT /upload/file_reference",
+		"POST /backend-api/files/process_upload_stream",
+		"POST /backend-api/sentinel/chat-requirements/prepare",
+		"POST /backend-api/sentinel/chat-requirements/finalize",
+		"POST /backend-api/f/conversation/prepare",
+		"POST /backend-api/f/conversation",
+		"GET /backend-api/conversation/edit-conversation",
+		"GET /backend-api/files/file-output/download",
+		"GET /edited.png",
+	}
+	if strings.Join(paths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("paths =\n%s\nwant:\n%s", strings.Join(paths, "\n"), strings.Join(wantPaths, "\n"))
+	}
+}
+
+func webImageTestPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	img.Set(0, 0, color.RGBA{G: 255, A: 255})
+	var buffer bytes.Buffer
+	if errEncode := png.Encode(&buffer, img); errEncode != nil {
+		t.Fatalf("png.Encode() error = %v", errEncode)
+	}
+	return buffer.Bytes()
+}
+
+func TestValidateUploadURLAllowsAzureBlobAndRejectsUnrelatedHost(t *testing.T) {
+	executor := NewExecutor(&config.Config{})
+	defer executor.Close()
+	allowed, _ := url.Parse("https://account.blob.core.windows.net/container/image.png?sig=redacted")
+	if errValidate := executor.validateUploadURL(allowed); errValidate != nil {
+		t.Fatalf("validateUploadURL(azure) error = %v", errValidate)
+	}
+	rejected, _ := url.Parse("https://example.com/image.png")
+	if errValidate := executor.validateUploadURL(rejected); errValidate == nil {
+		t.Fatal("validateUploadURL(unrelated) error = nil")
+	}
+}
+
+func TestParseUploadProcessingStreamChecksAllStatusFieldsDeterministically(t *testing.T) {
+	readyOnly := "data: {\"type\":\"file.processing.file_ready\",\"status\":\"processing\"}\n\n"
+	if errParse := parseUploadProcessingStream(strings.NewReader(readyOnly)); errParse != nil {
+		t.Fatalf("ready-only stream error = %v", errParse)
+	}
+
+	failed := "data: {\"type\":\"file.processing.file_ready\",\"status\":\"failed\"}\n\n"
+	errParse := parseUploadProcessingStream(strings.NewReader(failed))
+	var statusError *StatusError
+	if !errorsAs(errParse, &statusError) || statusError.Kind != ErrorKindUpstream {
+		t.Fatalf("failed stream error = %#v", errParse)
+	}
+}
+
+func TestPutInputImageDoesNotClassifySignedUploadStatusAsAccountFailure(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":"signed upload failed"}`)
+			}))
+			defer server.Close()
+
+			executor := NewExecutor(&config.Config{}, WithBaseURL(server.URL))
+			defer executor.Close()
+			session, errSession := executor.sessions.Get(Credentials{AuthID: "auth"})
+			if errSession != nil {
+				t.Fatalf("session error = %v", errSession)
+			}
+			errUpload := executor.putInputImage(context.Background(), session, server.URL, "image/png", []byte("image"))
+			var statusError *StatusError
+			if !errorsAs(errUpload, &statusError) {
+				t.Fatalf("upload error = %#v", errUpload)
+			}
+			if statusError.StatusCode() != http.StatusBadGateway || statusError.Kind != ErrorKindUpstream {
+				t.Fatalf("status error = %+v", statusError)
+			}
+			if !statusError.RequestScoped() {
+				t.Fatalf("signed upload error is not request-scoped: %+v", statusError)
+			}
+		})
+	}
+}
+
+func TestValidateInputImagesEnforcesCountAndAggregateByteLimits(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebImageMaxBytes = 4
+	executor := NewExecutor(cfg)
+	defer executor.Close()
+
+	errBytes := executor.validateInputImages([]InputImage{
+		{Data: []byte("123"), Width: 1, Height: 1},
+		{Data: []byte("45"), Width: 1, Height: 1},
+	})
+	var statusError *StatusError
+	if !errorsAs(errBytes, &statusError) || statusError.Kind != ErrorKindOversize {
+		t.Fatalf("byte limit error = %#v", errBytes)
+	}
+
+	images := make([]InputImage, config.WebImageMaxInputImages+1)
+	for index := range images {
+		images[index] = InputImage{Data: []byte("1"), Width: 1, Height: 1}
+	}
+	errCount := executor.validateInputImages(images)
+	statusError = nil
+	if !errorsAs(errCount, &statusError) || statusError.Kind != ErrorKindOversize {
+		t.Fatalf("count limit error = %#v", errCount)
+	}
+}
+
+func TestMergeGenerationStateExcludesUploadedReferencePointers(t *testing.T) {
+	state := generationState{uploadedImages: []uploadedImage{{FileID: "file_reference", AssetPointer: "sediment://file_reference"}}}
+	mergeGenerationState(&state, map[string]any{"parts": []any{"sediment://file_reference", "file_reference", "file-service://file-output"}})
+	if len(state.assetRefs) != 1 || state.assetRefs[0] != "file-service://file-output" {
+		t.Fatalf("assetRefs = %#v", state.assetRefs)
 	}
 }
 

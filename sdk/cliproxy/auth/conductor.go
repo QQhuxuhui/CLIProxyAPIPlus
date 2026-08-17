@@ -2591,6 +2591,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				if isRequestScopedError(errExec) {
+					return cliproxyexecutor.Response{}, errExec
+				}
 				result.Error = &Error{Message: errExec.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
@@ -3607,6 +3610,9 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 	if err == nil {
 		return 0, false
 	}
+	if isRequestScopedError(err) {
+		return 0, false
+	}
 	if maxWait <= 0 {
 		return 0, false
 	}
@@ -4401,6 +4407,14 @@ func isRequestInvalidError(err error) bool {
 	default:
 		return false
 	}
+}
+
+func isRequestScopedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var scoped cliproxyexecutor.RequestScopedError
+	return errors.As(err, &scoped) && scoped != nil && scoped.RequestScoped()
 }
 
 func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time, disableCooling bool) {

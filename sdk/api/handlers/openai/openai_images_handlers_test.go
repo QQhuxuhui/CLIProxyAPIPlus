@@ -24,13 +24,15 @@ import (
 
 type webImageHandlerCaptureExecutor struct {
 	authID string
+	req    cliproxyexecutor.Request
 	opts   cliproxyexecutor.Options
 }
 
 func (e *webImageHandlerCaptureExecutor) Identifier() string { return "codex" }
 
-func (e *webImageHandlerCaptureExecutor) Execute(_ context.Context, auth *cliproxyauth.Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *webImageHandlerCaptureExecutor) Execute(_ context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	e.authID = auth.ID
+	e.req = req
 	e.opts = opts
 	return cliproxyexecutor.Response{Payload: []byte(`{"created":123,"data":[{"b64_json":"aW1hZ2U="}],"size":"1024x1024"}`)}, nil
 }
@@ -165,7 +167,8 @@ func TestValidateWebImageGenerationRequest(t *testing.T) {
 		{name: "multiple", body: `{"model":"gpt-image-web","prompt":"draw","n":2}`, want: "n must be 1"},
 		{name: "stream", body: `{"model":"gpt-image-web","prompt":"draw","stream":true}`, want: "streaming is not supported"},
 		{name: "url", body: `{"model":"gpt-image-web","prompt":"draw","response_format":"url"}`, want: "response_format must be b64_json"},
-		{name: "large", body: `{"model":"gpt-image-web","prompt":"draw","size":"2048x2048"}`, want: "size must be 1024x1024"},
+		{name: "large", body: `{"model":"gpt-image-web","prompt":"draw","size":"2048x2048"}`},
+		{name: "custom size and quality", body: `{"model":"gpt-image-web","prompt":"draw","size":"cinema-wide-custom","quality":"maximum-detail"}`},
 	}
 
 	for _, test := range tests {
@@ -198,7 +201,6 @@ func TestImagesGenerationsWebImageRejectsUnsupportedShapesBeforeExecution(t *tes
 		`{"model":"gpt-image-web","prompt":"draw","n":2}`,
 		`{"model":"gpt-image-web","prompt":"draw","stream":true}`,
 		`{"model":"gpt-image-web","prompt":"draw","response_format":"url"}`,
-		`{"model":"gpt-image-web","prompt":"draw","size":"2048x2048"}`,
 	} {
 		resp := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", strings.NewReader(body), handler.ImagesGenerations)
 		if resp.Code != http.StatusBadRequest {
@@ -259,18 +261,120 @@ func TestImagesGenerationsWebImageRoutesThroughFreeCodexAuth(t *testing.T) {
 	}
 }
 
-func TestImagesEditsRejectsConfiguredWebImageAliasBeforeImageParsing(t *testing.T) {
+func TestImagesEditsWebImageRoutesMultipartRequest(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("web-edit", "codex", []*registry.ModelInfo{{ID: internalconfig.DefaultWebImageModel}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient("web-edit") })
+
+	manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
+	executor := &webImageHandlerCaptureExecutor{}
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), &cliproxyauth.Auth{ID: "web-edit", Provider: "codex"}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
 	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
 		WebImageGeneration: true,
 		WebImageModels:     []string{"custom-web-image"},
 		WebImageBaseModel:  "internal-image-model",
 	}}
-	handler := &OpenAIAPIHandler{BaseAPIHandler: handlers.NewBaseAPIHandlers(cfg, nil)}
+	handler := &OpenAIAPIHandler{BaseAPIHandler: handlers.NewBaseAPIHandlers(cfg, manager)}
 
-	resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", strings.NewReader(`{"model":"custom-web-image","prompt":"edit"}`), handler.ImagesEdits)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, value := range map[string]string{
+		"model":   "custom-web-image",
+		"prompt":  "turn this into a poster",
+		"size":    "1600x900",
+		"quality": "maximum-detail",
+	} {
+		if errWrite := writer.WriteField(name, value); errWrite != nil {
+			t.Fatalf("write %s: %v", name, errWrite)
+		}
+	}
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition", `form-data; name="image"; filename="reference.png"`)
+	partHeader.Set("Content-Type", "image/png")
+	part, errPart := writer.CreatePart(partHeader)
+	if errPart != nil {
+		t.Fatalf("CreatePart() error = %v", errPart)
+	}
+	if _, errWrite := part.Write([]byte("png-data")); errWrite != nil {
+		t.Fatalf("write image: %v", errWrite)
+	}
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("close multipart writer: %v", errClose)
+	}
 
-	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "does not support edits") {
+	resp := performImagesEndpointRequest(t, imagesEditsPath, writer.FormDataContentType(), &body, handler.ImagesEdits)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	payload := executor.opts.OriginalRequest
+	if got := gjson.GetBytes(payload, "prompt").String(); got != "turn this into a poster" {
+		t.Fatalf("prompt = %q, payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "size").String(); got != "1600x900" {
+		t.Fatalf("size = %q, payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "quality").String(); got != "maximum-detail" {
+		t.Fatalf("quality = %q, payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "images.0.filename").String(); got != "reference.png" {
+		t.Fatalf("filename = %q, payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "images.0.image_url").String(); got != "data:image/png;base64,cG5nLWRhdGE=" {
+		t.Fatalf("image_url = %q, payload=%s", got, payload)
+	}
+	if got := executor.opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]; got != imagesEditsPath {
+		t.Fatalf("request path = %v, want %s", got, imagesEditsPath)
+	}
+}
+
+func TestImagesEditsWebImageRejectsMultipartInputOverConfiguredLimit(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("web-edit-limit", "codex", []*registry.ModelInfo{{ID: internalconfig.DefaultWebImageModel}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient("web-edit-limit") })
+
+	manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
+	executor := &webImageHandlerCaptureExecutor{}
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), &cliproxyauth.Auth{ID: "web-edit-limit", Provider: "codex"}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
+		WebImageGeneration: true,
+		WebImageModels:     []string{"custom-web-image"},
+		WebImageBaseModel:  "internal-image-model",
+		WebImageMaxBytes:   4,
+	}}
+	handler := &OpenAIAPIHandler{BaseAPIHandler: handlers.NewBaseAPIHandlers(cfg, manager)}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if errWrite := writer.WriteField("model", "custom-web-image"); errWrite != nil {
+		t.Fatalf("write model: %v", errWrite)
+	}
+	if errWrite := writer.WriteField("prompt", "edit"); errWrite != nil {
+		t.Fatalf("write prompt: %v", errWrite)
+	}
+	part, errPart := writer.CreateFormFile("image", "reference.png")
+	if errPart != nil {
+		t.Fatalf("CreateFormFile() error = %v", errPart)
+	}
+	if _, errWrite := part.Write([]byte("12345")); errWrite != nil {
+		t.Fatalf("write image: %v", errWrite)
+	}
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("close multipart writer: %v", errClose)
+	}
+
+	resp := performImagesEndpointRequest(t, imagesEditsPath, writer.FormDataContentType(), &body, handler.ImagesEdits)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "byte limit") {
 		t.Fatalf("status = %d body = %s", resp.Code, resp.Body.String())
+	}
+	if executor.req.Payload != nil {
+		t.Fatalf("executor request = %s", executor.req.Payload)
 	}
 }
 

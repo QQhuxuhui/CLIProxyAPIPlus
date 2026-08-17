@@ -31,6 +31,7 @@ type StatusError struct {
 	Stage      string
 	Msg        string
 	RetryAfter time.Duration
+	Scoped     bool
 }
 
 func (e *StatusError) Error() string {
@@ -51,6 +52,11 @@ func (e *StatusError) StatusCode() int {
 		return http.StatusBadGateway
 	}
 	return e.Status
+}
+
+// RequestScoped reports whether this failure is unrelated to credential health.
+func (e *StatusError) RequestScoped() bool {
+	return e != nil && e.Scoped
 }
 
 func preserveContextError(err error) error {

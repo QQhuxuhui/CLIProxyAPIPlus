@@ -16,6 +16,7 @@ const (
 	DefaultWebImagePollInterval                   = "1s"
 	DefaultWebImagePoWTimeout                     = "20s"
 	DefaultWebImageMaxBytes                 int64 = 20 * 1024 * 1024
+	WebImageMaxInputImages                        = 16
 	DefaultWebImageMaxConcurrency                 = 4
 	DefaultWebImageMaxConcurrencyPerAccount       = 1
 	DefaultWebImageUserAgent                      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
