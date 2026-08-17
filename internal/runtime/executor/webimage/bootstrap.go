@@ -32,14 +32,20 @@ func (e *Executor) bootstrap(ctx context.Context, session *Session, credentials 
 		headers.Set("X-Conduit-Token", state.conduitToken)
 	}
 	headers.Set("X-OAI-Turn-Trace-ID", state.turnTraceID)
-	prepareResponse, errPrepare := e.doJSON(ctx, session, credentials, http.MethodPost, "/backend-api/f/conversation/prepare", []byte(`{}`), headers, "conversation prepare")
+	prepareBody, errBody := e.buildPrepareBody(state)
+	if errBody != nil {
+		return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "conversation prepare", Msg: "web image conversation prepare body failed"}
+	}
+	prepareResponse, errPrepare := e.doJSON(ctx, session, credentials, http.MethodPost, "/backend-api/f/conversation/prepare", prepareBody, headers, "conversation prepare")
 	if errPrepare != nil {
 		return errPrepare
 	}
 	if token := strings.TrimSpace(prepareResponse.Header.Get("X-Conduit-Token")); token != "" {
 		state.conduitToken = token
+	} else if token := findString(prepareResponse.Body, "conduit_token", "conduitToken"); token != "" {
+		state.conduitToken = token
 	}
-	state.clientPrepareState = findString(prepareResponse.Body, "client_prepare_state", "prepare_state", "state")
+	state.clientPrepareState = "success"
 	return nil
 }
 

@@ -20,6 +20,7 @@ func TestLiveWebImageGeneration(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.SetWebImageDefaults()
 	cfg.WebImageBaseModel = baseModel
+	cfg.ProxyURL = strings.TrimSpace(os.Getenv("CPA_WEBIMAGE_LIVE_PROXY"))
 	if value := strings.TrimSpace(os.Getenv("CPA_WEBIMAGE_LIVE_CLIENT_VERSION")); value != "" {
 		cfg.WebImageClientVersion = value
 	}
@@ -32,6 +33,7 @@ func TestLiveWebImageGeneration(t *testing.T) {
 	}
 	results, _, errGenerate := executor.Generate(context.Background(), Credentials{
 		AccessToken: accessToken,
+		AccountID:   strings.TrimSpace(os.Getenv("CPA_WEBIMAGE_LIVE_ACCOUNT_ID")),
 		AuthID:      "web-image-live-smoke",
 	}, prompt)
 	if errGenerate != nil {

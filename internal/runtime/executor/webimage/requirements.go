@@ -15,7 +15,18 @@ func (e *Executor) prepareRequirements(ctx context.Context, session *Session, cr
 	if errBudget := e.checkBudget(ctx, deadline, "Sentinel prepare"); errBudget != nil {
 		return errBudget
 	}
-	prepareResponse, errPrepare := e.doJSON(ctx, session, credentials, http.MethodPost, "/backend-api/sentinel/chat-requirements/prepare", []byte(`{}`), nil, "Sentinel prepare")
+	startedAt := time.Now()
+	vector := e.browserVector(session)
+	elapsed := time.Since(startedAt).Milliseconds()
+	requirementsToken, errToken := BuildRequirementsToken(vector, elapsed)
+	if errToken != nil {
+		return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "Sentinel prepare", Msg: "web image Sentinel requirements token failed"}
+	}
+	prepareBody, errBody := json.Marshal(map[string]any{"p": requirementsToken})
+	if errBody != nil {
+		return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "Sentinel prepare", Msg: "web image Sentinel prepare body failed"}
+	}
+	prepareResponse, errPrepare := e.doJSON(ctx, session, credentials, http.MethodPost, "/backend-api/sentinel/chat-requirements/prepare", prepareBody, nil, "Sentinel prepare")
 	if errPrepare != nil {
 		return errPrepare
 	}
@@ -35,40 +46,56 @@ func (e *Executor) prepareRequirements(ctx context.Context, session *Session, cr
 		Seed:       stringValue(powMap, "seed"),
 		Difficulty: stringValue(powMap, "difficulty"),
 	}
-	vector := e.browserVector(session)
-	powContext, cancelPoW := context.WithTimeout(ctx, e.duration(e.cfg.WebImagePoWTimeout, config.DefaultWebImagePoWTimeout))
-	proofToken, errProof := SolveProof(powContext, challenge, vector, PoWOptions{})
-	cancelPoW()
-	if errProof != nil {
-		if errors.Is(errProof, context.DeadlineExceeded) {
-			return &StatusError{Status: http.StatusGatewayTimeout, Kind: ErrorKindTimeout, Stage: "Sentinel proof", Msg: "web image Sentinel proof timed out"}
+	if challenge.Required {
+		powContext, cancelPoW := context.WithTimeout(ctx, e.duration(e.cfg.WebImagePoWTimeout, config.DefaultWebImagePoWTimeout))
+		proofToken, errProof := SolveProof(powContext, challenge, vector, PoWOptions{})
+		cancelPoW()
+		if errProof != nil {
+			if errors.Is(errProof, context.DeadlineExceeded) {
+				return &StatusError{Status: http.StatusGatewayTimeout, Kind: ErrorKindTimeout, Stage: "Sentinel proof", Msg: "web image Sentinel proof timed out"}
+			}
+			return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "Sentinel proof", Msg: "web image Sentinel proof failed"}
 		}
-		return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "Sentinel proof", Msg: "web image Sentinel proof failed"}
+		state.proofToken = proofToken
 	}
-	state.proofToken = proofToken
 
 	if errBudget := e.checkBudget(ctx, deadline, "Sentinel finalize"); errBudget != nil {
 		return errBudget
 	}
-	finalizeBody, _ := json.Marshal(map[string]any{
-		"prepare_token":   state.prepareToken,
-		"proof_token":     state.proofToken,
-		"turnstile_token": state.turnstileToken,
-	})
+	finalizePayload := map[string]any{"prepare_token": state.prepareToken}
+	if state.proofToken != "" {
+		finalizePayload["proofofwork"] = state.proofToken
+	}
+	if state.turnstileToken != "" {
+		finalizePayload["turnstile"] = state.turnstileToken
+	}
+	finalizeBody, _ := json.Marshal(finalizePayload)
 	finalizeResponse, errFinalize := e.doJSON(ctx, session, credentials, http.MethodPost, "/backend-api/sentinel/chat-requirements/finalize", finalizeBody, nil, "Sentinel finalize")
 	if errFinalize != nil {
 		return errFinalize
 	}
-	if value := findString(finalizeResponse.Body, "prepare_token", "prepareToken"); value != "" {
-		state.prepareToken = value
+	if body, ok := finalizeResponse.Body.(map[string]any); ok {
+		state.chatRequirementsToken = stringValue(body, "token")
 	}
-	if value := findString(finalizeResponse.Body, "proof_token", "proofToken"); value != "" {
-		state.proofToken = value
+	if state.chatRequirementsToken != "" {
+		return nil
 	}
-	if value := findString(finalizeResponse.Body, "turnstile_token", "turnstileToken"); value != "" {
-		state.turnstileToken = value
+	legacyPrepareToken := findString(finalizeResponse.Body, "prepare_token", "prepareToken")
+	legacyProofToken := findString(finalizeResponse.Body, "proof_token", "proofToken")
+	legacyTurnstileToken := findString(finalizeResponse.Body, "turnstile_token", "turnstileToken")
+	if legacyPrepareToken != "" {
+		state.prepareToken = legacyPrepareToken
 	}
-	return nil
+	if legacyProofToken != "" {
+		state.proofToken = legacyProofToken
+	}
+	if legacyTurnstileToken != "" {
+		state.turnstileToken = legacyTurnstileToken
+	}
+	if legacyPrepareToken != "" && legacyProofToken != "" {
+		return nil
+	}
+	return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "Sentinel finalize", Msg: "web image Sentinel requirements token missing"}
 }
 
 func findMap(value any, key string) map[string]any {

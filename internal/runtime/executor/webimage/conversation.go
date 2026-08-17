@@ -31,9 +31,13 @@ func (e *Executor) startConversation(ctx context.Context, session *Session, cred
 	if state.conduitToken != "" {
 		request.Header.Set("X-Conduit-Token", state.conduitToken)
 	}
-	request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Prepare-Token", state.prepareToken)
-	request.Header.Set("OpenAI-Sentinel-Proof-Token", state.proofToken)
-	request.Header.Set("OpenAI-Sentinel-Turnstile-Token", state.turnstileToken)
+	if state.chatRequirementsToken != "" {
+		request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Token", state.chatRequirementsToken)
+	} else {
+		request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Prepare-Token", state.prepareToken)
+		request.Header.Set("OpenAI-Sentinel-Proof-Token", state.proofToken)
+		request.Header.Set("OpenAI-Sentinel-Turnstile-Token", state.turnstileToken)
+	}
 
 	response, errDo := session.Client.Do(request)
 	if errDo != nil {
@@ -50,25 +54,38 @@ func (e *Executor) startConversation(ctx context.Context, session *Session, cred
 }
 
 func (e *Executor) buildConversationBody(state *generationState) ([]byte, error) {
+	body := e.buildConversationPayload(state)
 	now := time.Now()
 	messageID := uuid.NewString()
-	parentMessageID := uuid.NewString()
-	baseModel := strings.TrimSpace(e.cfg.WebImageBaseModel)
-	body := map[string]any{
-		"action": "next",
-		"messages": []any{
-			map[string]any{
-				"id":          messageID,
-				"author":      map[string]any{"role": "user"},
-				"create_time": float64(now.UnixMilli()) / 1000,
-				"content":     map[string]any{"content_type": "text", "parts": []any{state.prompt}},
-				"metadata": map[string]any{
-					"serialization_metadata": map[string]any{"custom_symbol_offsets": []any{}},
-					"system_hints":           []any{},
-				},
+	body["messages"] = []any{
+		map[string]any{
+			"id":          messageID,
+			"author":      map[string]any{"role": "user"},
+			"create_time": float64(now.UnixMilli()) / 1000,
+			"content":     map[string]any{"content_type": "text", "parts": []any{state.prompt}},
+			"metadata": map[string]any{
+				"serialization_metadata": map[string]any{"custom_symbol_offsets": []any{}},
+				"system_hints":           []any{},
 			},
 		},
-		"parent_message_id":                    parentMessageID,
+	}
+	return json.Marshal(body)
+}
+
+func (e *Executor) buildPrepareBody(state *generationState) ([]byte, error) {
+	body := e.buildConversationPayload(state)
+	body["client_prepare_state"] = "none"
+	return json.Marshal(body)
+}
+
+func (e *Executor) buildConversationPayload(state *generationState) map[string]any {
+	if state.parentMessageID == "" {
+		state.parentMessageID = uuid.NewString()
+	}
+	baseModel := strings.TrimSpace(e.cfg.WebImageBaseModel)
+	return map[string]any{
+		"action":                               "next",
+		"parent_message_id":                    state.parentMessageID,
 		"model":                                baseModel,
 		"timezone":                             "Asia/Shanghai",
 		"timezone_offset_min":                  -480,
@@ -94,7 +111,6 @@ func (e *Executor) buildConversationBody(state *generationState) ([]byte, error)
 			"web_push_notification_permission": "default",
 		},
 	}
-	return json.Marshal(body)
 }
 
 func parseConversationSSE(reader io.Reader, state *generationState) error {

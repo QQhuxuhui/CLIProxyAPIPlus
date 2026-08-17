@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
@@ -19,6 +20,7 @@ import (
 func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 	var mu sync.Mutex
 	paths := make([]string, 0, 8)
+	prepareParentMessageID := ""
 	imageBytes := []byte("fake-png-data")
 
 	var server *httptest.Server
@@ -37,6 +39,9 @@ func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 			if got := r.Header.Get("OAI-Session-ID"); got == "" {
 				t.Errorf("%s missing OAI-Session-ID", r.URL.Path)
 			}
+			if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-id" {
+				t.Errorf("%s ChatGPT-Account-ID = %q", r.URL.Path, got)
+			}
 		}
 
 		switch r.URL.Path {
@@ -48,24 +53,77 @@ func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 			if got := r.Header.Get("X-Conduit-Token"); got != "conduit-token" {
 				t.Errorf("prepare X-Conduit-Token = %q", got)
 			}
-			_, _ = io.WriteString(w, `{"client_prepare_state":"ready"}`)
+			var body map[string]any
+			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
+				t.Errorf("decode prepare body: %v", errDecode)
+			}
+			if body["action"] != "next" {
+				t.Errorf("prepare action = %v", body["action"])
+			}
+			if body["model"] != "internal-image-model" {
+				t.Errorf("prepare model = %v", body["model"])
+			}
+			if body["client_prepare_state"] != "none" {
+				t.Errorf("prepare client_prepare_state = %v", body["client_prepare_state"])
+			}
+			if _, hasMessages := body["messages"]; hasMessages {
+				t.Errorf("prepare messages = %v, want omitted", body["messages"])
+			}
+			parentMessageID, _ := body["parent_message_id"].(string)
+			if parentMessageID == "" {
+				t.Error("prepare parent_message_id is empty")
+			}
+			mu.Lock()
+			prepareParentMessageID = parentMessageID
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"conduit_token":"prepared-conduit","nested":{"state":"queued"}}`)
 		case "/backend-api/sentinel/chat-requirements/prepare":
+			var body map[string]any
+			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
+				t.Errorf("decode Sentinel prepare body: %v", errDecode)
+			}
+			token := fmt.Sprint(body["p"])
+			if !strings.HasPrefix(token, requirementsTokenPrefix) {
+				t.Errorf("Sentinel prepare p = %q", token)
+			} else {
+				encoded := strings.TrimPrefix(token, requirementsTokenPrefix)
+				decoded, errDecode := base64.StdEncoding.DecodeString(encoded)
+				if errDecode != nil {
+					t.Errorf("decode Sentinel prepare p: %v", errDecode)
+				} else {
+					var vector BrowserVector
+					if errJSON := json.Unmarshal(decoded, &vector); errJSON != nil {
+						t.Errorf("decode Sentinel prepare vector: %v", errJSON)
+					} else if len(vector) <= 9 || vector[3] != float64(1) || vector[9].(float64) > 1000 {
+						t.Errorf("Sentinel prepare vector nonce/elapsed = %v/%v", vector[3], vector[9])
+					}
+				}
+			}
 			_, _ = io.WriteString(w, `{"prepare_token":"prepare-token","proofofwork":{"required":true,"seed":"seed","difficulty":"ffff"},"turnstile":{"required":false}}`)
 		case "/backend-api/sentinel/chat-requirements/finalize":
 			var body map[string]any
 			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
 				t.Errorf("decode finalize body: %v", errDecode)
 			}
-			if body["prepare_token"] != "prepare-token" || !strings.HasPrefix(fmt.Sprint(body["proof_token"]), proofTokenPrefix) {
+			if body["prepare_token"] != "prepare-token" || !strings.HasPrefix(fmt.Sprint(body["proofofwork"]), proofTokenPrefix) {
 				t.Errorf("finalize body = %#v", body)
 			}
-			_, _ = io.WriteString(w, `{"prepare_token":"prepare-token","proof_token":"final-proof-token","turnstile_token":""}`)
-		case "/backend-api/f/conversation":
-			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Prepare-Token"); got != "prepare-token" {
-				t.Errorf("conversation prepare token = %q", got)
+			if _, hasLegacyProof := body["proof_token"]; hasLegacyProof {
+				t.Errorf("finalize legacy proof_token = %v", body["proof_token"])
 			}
-			if got := r.Header.Get("OpenAI-Sentinel-Proof-Token"); got != "final-proof-token" {
-				t.Errorf("conversation proof token = %q", got)
+			_, _ = io.WriteString(w, `{"token":"final-requirements-token"}`)
+		case "/backend-api/f/conversation":
+			if got := r.Header.Get("X-Conduit-Token"); got != "prepared-conduit" {
+				t.Errorf("conversation X-Conduit-Token = %q", got)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token"); got != "final-requirements-token" {
+				t.Errorf("conversation requirements token = %q", got)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Prepare-Token"); got != "" {
+				t.Errorf("conversation legacy prepare token = %q", got)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Proof-Token"); got != "" {
+				t.Errorf("conversation legacy proof token = %q", got)
 			}
 			var body map[string]any
 			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
@@ -73,6 +131,15 @@ func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 			}
 			if body["model"] != "internal-image-model" {
 				t.Errorf("conversation model = %v", body["model"])
+			}
+			mu.Lock()
+			wantParentMessageID := prepareParentMessageID
+			mu.Unlock()
+			if body["parent_message_id"] != wantParentMessageID {
+				t.Errorf("conversation parent_message_id = %v, want %q", body["parent_message_id"], wantParentMessageID)
+			}
+			if body["client_prepare_state"] != "success" {
+				t.Errorf("conversation client_prepare_state = %v", body["client_prepare_state"])
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "data: {\"conversation_id\":\"conv-1\",\"message\":{\"content\":{\"content_type\":\"image_asset_pointer\",\"asset_pointer\":\"sediment://file-1\"}}}\n\n")
@@ -103,12 +170,18 @@ func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 		return fixedBrowserVector()
 	}))
 	defer executor.Close()
-
-	results, meta, errGenerate := executor.Generate(context.Background(), Credentials{
+	credentials := Credentials{
 		AccessToken: "access-token",
 		AccountID:   "account-id",
 		AuthID:      "auth-id",
-	}, "draw a blue sphere")
+	}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+	session.createdAt = time.Now().Add(-10 * time.Minute)
+
+	results, meta, errGenerate := executor.Generate(context.Background(), credentials, "draw a blue sphere")
 	if errGenerate != nil {
 		t.Fatalf("Generate() error = %v", errGenerate)
 	}
@@ -168,6 +241,37 @@ func TestGenerateRejectsTurnstileRequirement(t *testing.T) {
 	_, _, errGenerate := executor.Generate(context.Background(), Credentials{AccessToken: "token", AuthID: "auth"}, "draw")
 	var statusError *StatusError
 	if !errorsAs(errGenerate, &statusError) || statusError.StatusCode() != http.StatusServiceUnavailable || statusError.Kind != ErrorKindChallenge {
+		t.Fatalf("Generate() error = %#v", errGenerate)
+	}
+}
+
+func TestGenerateRejectsMissingFinalRequirementsToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/conversation/init":
+			w.Header().Set("X-Conduit-Token", "conduit")
+			_, _ = io.WriteString(w, `{}`)
+		case "/backend-api/f/conversation/prepare":
+			_, _ = io.WriteString(w, `{}`)
+		case "/backend-api/sentinel/chat-requirements/prepare":
+			_, _ = io.WriteString(w, `{"prepare_token":"prepare","proofofwork":{"required":true,"seed":"seed","difficulty":"ffff"},"turnstile":{"required":false}}`)
+		case "/backend-api/sentinel/chat-requirements/finalize":
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	cfg.WebImageBaseModel = "internal-image-model"
+	executor := NewExecutor(cfg, WithBaseURL(server.URL), WithBrowserVectorFactory(func(*Session) BrowserVector { return fixedBrowserVector() }))
+	defer executor.Close()
+
+	_, _, errGenerate := executor.Generate(context.Background(), Credentials{AccessToken: "token", AuthID: "auth"}, "draw")
+	var statusError *StatusError
+	if !errorsAs(errGenerate, &statusError) || statusError.Stage != "Sentinel finalize" || statusError.Kind != ErrorKindProtocol {
 		t.Fatalf("Generate() error = %#v", errGenerate)
 	}
 }

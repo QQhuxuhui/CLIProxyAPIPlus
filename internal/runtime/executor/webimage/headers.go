@@ -22,6 +22,9 @@ func newAPIRequest(ctx context.Context, session *Session, credentials Credential
 	if token := strings.TrimSpace(credentials.AccessToken); token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
+	if accountID := strings.TrimSpace(credentials.AccountID); accountID != "" {
+		request.Header.Set("ChatGPT-Account-ID", accountID)
+	}
 	request.Header.Set("OAI-Language", "en-US")
 	request.Header.Set("X-OAI-Is-Client-Observation", "false")
 	request.Header.Set("X-OpenAI-Target-Path", path)

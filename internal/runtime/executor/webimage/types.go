@@ -39,13 +39,15 @@ type Meta struct {
 }
 
 type generationState struct {
-	prompt             string
-	turnTraceID        string
-	conduitToken       string
-	clientPrepareState string
-	prepareToken       string
-	proofToken         string
-	turnstileToken     string
-	conversationID     string
-	fileID             string
+	prompt                string
+	turnTraceID           string
+	parentMessageID       string
+	conduitToken          string
+	clientPrepareState    string
+	chatRequirementsToken string
+	prepareToken          string
+	proofToken            string
+	turnstileToken        string
+	conversationID        string
+	fileID                string
 }
