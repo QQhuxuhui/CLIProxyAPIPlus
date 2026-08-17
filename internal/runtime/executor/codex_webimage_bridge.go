@@ -125,12 +125,12 @@ func buildCodexWebImagePrompt(prompt, size, quality string, isEdit bool) string 
 			height, errHeight := strconv.ParseUint(matches[2], 10, 64)
 			if errWidth == nil && errHeight == nil && width > 0 && height > 0 {
 				switch {
-				case width > height:
-					directives = append(directives, "Use a landscape composition that follows the requested dimensions.")
-				case width < height:
-					directives = append(directives, "Use a portrait composition that follows the requested dimensions.")
-				default:
+				case width == height:
 					directives = append(directives, "Use a square composition that follows the requested dimensions.")
+				case width > height && float64(width)/float64(height) > 1.05:
+					directives = append(directives, "Use a landscape composition that follows the requested dimensions.")
+				case width < height && float64(height)/float64(width) > 1.05:
+					directives = append(directives, "Use a portrait composition that follows the requested dimensions.")
 				}
 			}
 		}

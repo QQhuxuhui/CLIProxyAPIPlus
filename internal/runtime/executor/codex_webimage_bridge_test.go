@@ -123,6 +123,18 @@ func TestCodexAutoExecutorForwardsArbitrarySizeWithoutInventingOrientation(t *te
 	}
 }
 
+func TestBuildCodexWebImagePromptDoesNotForceOrientationForNearSquareSize(t *testing.T) {
+	prompt := buildCodexWebImagePrompt("edit", "1469x1461", "", true)
+	if !strings.Contains(prompt, "1469x1461") || !strings.Contains(prompt, "Preserve") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	for _, unexpected := range []string{"landscape", "portrait", "square composition"} {
+		if strings.Contains(prompt, unexpected) {
+			t.Fatalf("prompt = %q, unexpected %q", prompt, unexpected)
+		}
+	}
+}
+
 func TestCodexAutoExecutorBuildsReferenceImageEditRequest(t *testing.T) {
 	imageData := encodeTestPNG(t, 2, 3)
 	payload := []byte(`{"prompt":"make it watercolor","quality":"high","images":[{"filename":"reference.png","image_url":"data:image/png;base64,` + imageData + `"}]}`)
