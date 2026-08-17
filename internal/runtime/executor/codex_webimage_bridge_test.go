@@ -144,7 +144,7 @@ func TestCodexAutoExecutorBuildsReferenceImageEditRequest(t *testing.T) {
 	if input.Filename != "reference.png" || input.MIMEType != "image/png" || input.Width != 2 || input.Height != 3 {
 		t.Fatalf("input = %+v", input)
 	}
-	for _, want := range []string{"high", "Preserve", "dimensions", "aspect ratio"} {
+	for _, want := range []string{"high", "2x3", "Preserve", "dimensions", "aspect ratio"} {
 		if !strings.Contains(generator.request.Prompt, want) {
 			t.Fatalf("prompt = %q, want containing %q", generator.request.Prompt, want)
 		}

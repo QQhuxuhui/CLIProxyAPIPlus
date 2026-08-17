@@ -63,8 +63,12 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 	}
 	size := strings.TrimSpace(gjson.GetBytes(payload, "size").String())
 	quality := strings.TrimSpace(gjson.GetBytes(payload, "quality").String())
+	promptSize := size
+	if promptSize == "" && isEdit && len(inputImages) > 0 && inputImages[0].Width > 0 && inputImages[0].Height > 0 {
+		promptSize = fmt.Sprintf("%dx%d", inputImages[0].Width, inputImages[0].Height)
+	}
 	webRequest := webimage.Request{
-		Prompt: buildCodexWebImagePrompt(prompt, size, quality, isEdit),
+		Prompt: buildCodexWebImagePrompt(prompt, promptSize, quality, isEdit),
 		Images: inputImages,
 	}
 
@@ -90,8 +94,8 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 		createdAt = meta.CreatedAt
 	}
 	converted := make([]codexImageCallResult, 0, len(results))
-	responseSize := codexWebImageResponseSize(size, inputImages, isEdit)
 	for _, result := range results {
+		responseSize := codexWebImageResponseSize(promptSize, size, inputImages, isEdit, result.Base64Data)
 		converted = append(converted, codexImageCallResult{
 			Result:        result.Base64Data,
 			RevisedPrompt: result.RevisedPrompt,
@@ -130,7 +134,8 @@ func buildCodexWebImagePrompt(prompt, size, quality string, isEdit bool) string 
 				}
 			}
 		}
-	} else if isEdit {
+	}
+	if isEdit {
 		directives = append(directives, "Preserve the reference image's original dimensions and aspect ratio.")
 	}
 	if quality != "" {
@@ -142,14 +147,32 @@ func buildCodexWebImagePrompt(prompt, size, quality string, isEdit bool) string 
 	return prompt + "\n\n" + strings.Join(directives, "\n")
 }
 
-func codexWebImageResponseSize(size string, images []webimage.InputImage, isEdit bool) string {
-	if size = strings.TrimSpace(size); size != "" {
-		return size
+func codexWebImageResponseSize(promptSize, requestedSize string, images []webimage.InputImage, isEdit bool, base64Data string) string {
+	if width, height, ok := codexWebImageOutputDimensions(base64Data); ok {
+		return fmt.Sprintf("%dx%d", width, height)
+	}
+	if promptSize = strings.TrimSpace(promptSize); promptSize != "" {
+		return promptSize
+	}
+	if requestedSize = strings.TrimSpace(requestedSize); requestedSize != "" {
+		return requestedSize
 	}
 	if isEdit && len(images) > 0 && images[0].Width > 0 && images[0].Height > 0 {
 		return fmt.Sprintf("%dx%d", images[0].Width, images[0].Height)
 	}
 	return "1024x1024"
+}
+
+func codexWebImageOutputDimensions(base64Data string) (int, int, bool) {
+	data, errDecode := base64.StdEncoding.DecodeString(base64Data)
+	if errDecode != nil || len(data) == 0 {
+		return 0, 0, false
+	}
+	config, _, errConfig := image.DecodeConfig(bytes.NewReader(data))
+	if errConfig != nil || config.Width <= 0 || config.Height <= 0 {
+		return 0, 0, false
+	}
+	return config.Width, config.Height, true
 }
 
 func parseCodexWebImageInputsWithLimits(payload []byte, required bool, maxImages int, maxBytes int64) ([]webimage.InputImage, error) {
