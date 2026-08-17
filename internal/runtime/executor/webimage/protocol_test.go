@@ -216,7 +216,108 @@ func TestGenerateRunsWebConversationProtocol(t *testing.T) {
 	}
 }
 
-func TestGenerateRejectsTurnstileRequirement(t *testing.T) {
+func TestPrepareRequirementsFallsBackToLegacySentinel(t *testing.T) {
+	paths := make([]string, 0, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/backend-api/sentinel/chat-requirements/prepare":
+			_, _ = io.WriteString(w, `{"prepare_token":"prepare","proofofwork":{"required":true,"seed":"v2-seed","difficulty":"ffff"},"turnstile":{"required":true}}`)
+		case "/backend-api/sentinel/chat-requirements":
+			var body map[string]any
+			if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
+				t.Errorf("decode legacy Sentinel body: %v", errDecode)
+			}
+			if token := fmt.Sprint(body["p"]); !strings.HasPrefix(token, requirementsTokenPrefix) {
+				t.Errorf("legacy Sentinel p = %q", token)
+			}
+			_, _ = io.WriteString(w, `{"token":"legacy-requirements-token","arkose":{"required":false},"proofofwork":{"required":true,"seed":"legacy-seed","difficulty":"ffff"}}`)
+		case "/backend-api/f/conversation":
+			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token"); got != "legacy-requirements-token" {
+				t.Errorf("conversation requirements token = %q", got)
+			}
+			proof := r.Header.Get("OpenAI-Sentinel-Proof-Token")
+			if !strings.HasPrefix(proof, proofTokenPrefix) || strings.HasSuffix(proof, "~S") {
+				t.Errorf("conversation legacy proof token = %q", proof)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Prepare-Token"); got != "" {
+				t.Errorf("conversation stale prepare token = %q", got)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Turnstile-Token"); got != "" {
+				t.Errorf("conversation stale turnstile token = %q", got)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"conversation_id\":\"legacy-conversation\"}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	cfg.WebImageBaseModel = "internal-image-model"
+	executor := NewExecutor(cfg, WithBaseURL(server.URL), WithBrowserVectorFactory(func(*Session) BrowserVector { return fixedBrowserVector() }))
+	defer executor.Close()
+	credentials := Credentials{AccessToken: "token", AuthID: "auth"}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+	state := generationState{prompt: "draw", turnTraceID: newTurnTraceID(), clientPrepareState: "success"}
+	deadline := time.Now().Add(time.Minute)
+
+	if errRequirements := executor.prepareRequirements(context.Background(), session, credentials, &state, deadline); errRequirements != nil {
+		t.Fatalf("prepareRequirements() error = %v", errRequirements)
+	}
+	if errConversation := executor.startConversation(context.Background(), session, credentials, &state, deadline); errConversation != nil {
+		t.Fatalf("startConversation() error = %v", errConversation)
+	}
+	if state.conversationID != "legacy-conversation" {
+		t.Fatalf("conversation ID = %q", state.conversationID)
+	}
+	wantPaths := []string{
+		"/backend-api/sentinel/chat-requirements/prepare",
+		"/backend-api/sentinel/chat-requirements",
+		"/backend-api/f/conversation",
+	}
+	if strings.Join(paths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("paths = %v, want %v", paths, wantPaths)
+	}
+}
+
+func TestPrepareRequirementsPreservesChallengeWhenLegacyUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/sentinel/chat-requirements/prepare":
+			_, _ = io.WriteString(w, `{"prepare_token":"prepare","proofofwork":{"required":false},"turnstile":{"required":true}}`)
+		case "/backend-api/sentinel/chat-requirements":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	executor := NewExecutor(cfg, WithBaseURL(server.URL), WithBrowserVectorFactory(func(*Session) BrowserVector { return fixedBrowserVector() }))
+	defer executor.Close()
+	credentials := Credentials{AccessToken: "token", AuthID: "auth"}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+	errRequirements := executor.prepareRequirements(context.Background(), session, credentials, &generationState{}, time.Now().Add(time.Minute))
+	var statusError *StatusError
+	if !errorsAs(errRequirements, &statusError) || statusError.StatusCode() != http.StatusServiceUnavailable || statusError.Kind != ErrorKindChallenge || statusError.Stage != "Sentinel prepare" {
+		t.Fatalf("prepareRequirements() error = %#v", errRequirements)
+	}
+}
+
+func TestGenerateRejectsLegacyArkoseRequirement(t *testing.T) {
+	legacyCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/backend-api/conversation/init":
@@ -226,6 +327,9 @@ func TestGenerateRejectsTurnstileRequirement(t *testing.T) {
 			_, _ = io.WriteString(w, `{}`)
 		case "/backend-api/sentinel/chat-requirements/prepare":
 			_, _ = io.WriteString(w, `{"prepare_token":"prepare","proofofwork":{"required":false},"turnstile":{"required":true}}`)
+		case "/backend-api/sentinel/chat-requirements":
+			legacyCalled = true
+			_, _ = io.WriteString(w, `{"token":"legacy","arkose":{"required":true},"proofofwork":{"required":false}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -240,7 +344,7 @@ func TestGenerateRejectsTurnstileRequirement(t *testing.T) {
 
 	_, _, errGenerate := executor.Generate(context.Background(), Credentials{AccessToken: "token", AuthID: "auth"}, "draw")
 	var statusError *StatusError
-	if !errorsAs(errGenerate, &statusError) || statusError.StatusCode() != http.StatusServiceUnavailable || statusError.Kind != ErrorKindChallenge {
+	if !legacyCalled || !errorsAs(errGenerate, &statusError) || statusError.StatusCode() != http.StatusServiceUnavailable || statusError.Kind != ErrorKindChallenge {
 		t.Fatalf("Generate() error = %#v", errGenerate)
 	}
 }

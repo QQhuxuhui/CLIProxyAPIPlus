@@ -33,6 +33,9 @@ func (e *Executor) startConversation(ctx context.Context, session *Session, cred
 	}
 	if state.chatRequirementsToken != "" {
 		request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Token", state.chatRequirementsToken)
+		if state.legacyRequirements && state.proofToken != "" {
+			request.Header.Set("OpenAI-Sentinel-Proof-Token", state.proofToken)
+		}
 	} else {
 		request.Header.Set("OpenAI-Sentinel-Chat-Requirements-Prepare-Token", state.prepareToken)
 		request.Header.Set("OpenAI-Sentinel-Proof-Token", state.proofToken)

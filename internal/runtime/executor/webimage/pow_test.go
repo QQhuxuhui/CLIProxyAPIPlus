@@ -2,10 +2,15 @@ package webimage
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/sha3"
 )
 
 func fixedBrowserVector() BrowserVector {
@@ -84,6 +89,50 @@ func TestBuildRequirementsTokenMatchesSentinelFraming(t *testing.T) {
 	}
 	if len(token) < len("gAAAAAC") || token[:len("gAAAAAC")] != "gAAAAAC" {
 		t.Fatalf("BuildRequirementsToken() = %q", token)
+	}
+}
+
+func TestSolveLegacyProofUsesLegacySentinelFraming(t *testing.T) {
+	proof, errSolve := SolveLegacyProof(context.Background(), PoWChallenge{
+		Required:   true,
+		Seed:       "legacy-seed",
+		Difficulty: "000f",
+	}, "test-agent", PoWOptions{})
+	if errSolve != nil {
+		t.Fatalf("SolveLegacyProof() error = %v", errSolve)
+	}
+	if !strings.HasPrefix(proof, proofTokenPrefix) || strings.HasSuffix(proof, "~S") {
+		t.Fatalf("SolveLegacyProof() = %q", proof)
+	}
+	encoded := strings.TrimPrefix(proof, proofTokenPrefix)
+	raw, errDecode := base64.StdEncoding.DecodeString(encoded)
+	if errDecode != nil {
+		t.Fatalf("decode legacy proof: %v", errDecode)
+	}
+	var vector []any
+	if errJSON := json.Unmarshal(raw, &vector); errJSON != nil {
+		t.Fatalf("decode legacy vector: %v", errJSON)
+	}
+	if len(vector) != 13 || vector[4] != "test-agent" {
+		t.Fatalf("legacy vector = %#v", vector)
+	}
+	digest := sha3.Sum512([]byte("legacy-seed" + encoded))
+	if got := hex.EncodeToString(digest[:])[:4]; got > "000f" {
+		t.Fatalf("legacy digest prefix = %q", got)
+	}
+}
+
+func TestSolveLegacyProofRejectsInvalidDifficulty(t *testing.T) {
+	_, errSolve := SolveLegacyProof(context.Background(), PoWChallenge{Required: true, Seed: "seed", Difficulty: "not-hex"}, "test-agent", PoWOptions{})
+	if !errors.Is(errSolve, ErrInvalidChallenge) {
+		t.Fatalf("SolveLegacyProof() error = %v, want ErrInvalidChallenge", errSolve)
+	}
+}
+
+func TestSolveLegacyProofAcceptsUppercaseHexPrefix(t *testing.T) {
+	proof, errSolve := SolveLegacyProof(context.Background(), PoWChallenge{Required: true, Seed: "seed", Difficulty: "0Xffff"}, "test-agent", PoWOptions{MaxAttempts: 1})
+	if errSolve != nil || !strings.HasPrefix(proof, proofTokenPrefix) {
+		t.Fatalf("SolveLegacyProof() = %q, %v", proof, errSolve)
 	}
 }
 

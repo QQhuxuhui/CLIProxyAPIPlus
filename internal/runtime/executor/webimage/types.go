@@ -45,6 +45,7 @@ type generationState struct {
 	conduitToken          string
 	clientPrepareState    string
 	chatRequirementsToken string
+	legacyRequirements    bool
 	prepareToken          string
 	proofToken            string
 	turnstileToken        string
