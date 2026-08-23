@@ -3,6 +3,8 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -164,7 +166,17 @@ func TestValidateWebImageGenerationRequest(t *testing.T) {
 	}{
 		{name: "valid defaults", body: `{"model":"gpt-image-web","prompt":"draw"}`},
 		{name: "valid explicit", body: `{"model":"gpt-image-web","prompt":"draw","n":1,"size":"1024x1024","response_format":"b64_json"}`},
-		{name: "multiple", body: `{"model":"gpt-image-web","prompt":"draw","n":2}`, want: "n must be 1"},
+		{name: "too many", body: `{"model":"gpt-image-web","prompt":"draw","n":11}`, want: "n must be an integer between 1 and 10"},
+		{name: "string n", body: `{"model":"gpt-image-web","prompt":"draw","n":"3"}`, want: "n must be an integer between 1 and 10"},
+		{name: "unsupported output format", body: `{"model":"gpt-image-web","prompt":"draw","output_format":"gif"}`, want: "output_format"},
+		{name: "jpg alias", body: `{"model":"gpt-image-web","prompt":"draw","output_format":"jpg"}`, want: "output_format"},
+		{name: "compression without lossy format", body: `{"model":"gpt-image-web","prompt":"draw","output_compression":50}`, want: "output_compression requires output_format"},
+		{name: "compression with png", body: `{"model":"gpt-image-web","prompt":"draw","output_format":"png","output_compression":50}`, want: "output_compression requires output_format"},
+		{name: "transparent jpeg", body: `{"model":"gpt-image-web","prompt":"draw","background":"transparent","output_format":"jpeg"}`, want: "transparent background requires output_format"},
+		{name: "transparent webp", body: `{"model":"gpt-image-web","prompt":"draw","background":"transparent","output_format":"webp"}`},
+		{name: "fractional compression", body: `{"model":"gpt-image-web","prompt":"draw","output_compression":10.5}`, want: "output_compression"},
+		{name: "compression too high", body: `{"model":"gpt-image-web","prompt":"draw","output_compression":101}`, want: "output_compression"},
+		{name: "compression negative", body: `{"model":"gpt-image-web","prompt":"draw","output_compression":-1}`, want: "output_compression"},
 		{name: "stream", body: `{"model":"gpt-image-web","prompt":"draw","stream":true}`, want: "streaming is not supported"},
 		{name: "url", body: `{"model":"gpt-image-web","prompt":"draw","response_format":"url"}`, want: "response_format must be b64_json"},
 		{name: "large", body: `{"model":"gpt-image-web","prompt":"draw","size":"2048x2048"}`},
@@ -187,6 +199,63 @@ func TestValidateWebImageGenerationRequest(t *testing.T) {
 	}
 }
 
+func TestImagesEndpointsRejectIncompatibleEncodingBeforeModelRouting(t *testing.T) {
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler := &OpenAIAPIHandler{BaseAPIHandler: base}
+
+	generation := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", strings.NewReader(
+		`{"model":"gpt-image-2","prompt":"draw","output_format":"png","output_compression":50}`,
+	), handler.ImagesGenerations)
+	if generation.Code != http.StatusBadRequest || !strings.Contains(generation.Body.String(), "output_compression requires output_format") {
+		t.Fatalf("generation status=%d body=%s", generation.Code, generation.Body.String())
+	}
+
+	jsonEdit := performImagesEndpointRequest(t, imagesEditsPath, "application/json", strings.NewReader(
+		`{"model":"gpt-image-2","prompt":"edit","images":[{"image_url":"data:image/png;base64,AA=="}],"background":"transparent","output_format":"jpeg"}`,
+	), handler.ImagesEdits)
+	if jsonEdit.Code != http.StatusBadRequest || !strings.Contains(jsonEdit.Body.String(), "transparent background requires output_format") {
+		t.Fatalf("JSON edit status=%d body=%s", jsonEdit.Code, jsonEdit.Body.String())
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range map[string]string{
+		"model":              "gpt-image-2",
+		"prompt":             "edit",
+		"output_format":      "png",
+		"output_compression": "50",
+	} {
+		if errWrite := writer.WriteField(key, value); errWrite != nil {
+			t.Fatalf("write %s: %v", key, errWrite)
+		}
+	}
+	file, errFile := writer.CreateFormFile("image", "reference.png")
+	if errFile != nil {
+		t.Fatalf("create image: %v", errFile)
+	}
+	if _, errWrite := file.Write([]byte("image")); errWrite != nil {
+		t.Fatalf("write image: %v", errWrite)
+	}
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("close multipart: %v", errClose)
+	}
+	multipartEdit := performImagesEndpointRequest(t, imagesEditsPath, writer.FormDataContentType(), &body, handler.ImagesEdits)
+	if multipartEdit.Code != http.StatusBadRequest || !strings.Contains(multipartEdit.Body.String(), "output_compression requires output_format") {
+		t.Fatalf("multipart edit status=%d body=%s", multipartEdit.Code, multipartEdit.Body.String())
+	}
+}
+
+func TestBuildWebImageMultipartPreservesInvalidCompressionForValidation(t *testing.T) {
+	form := &multipart.Form{Value: map[string][]string{"output_compression": {"10.5"}}}
+	payload, errBuild := buildWebImageMultipartEditRequest(form, "custom-web-image", "edit", nil, nil)
+	if errBuild != nil {
+		t.Fatalf("build multipart request: %v", errBuild)
+	}
+	if errValidate := validateWebImageGenerationRequest(payload); errValidate == nil || !strings.Contains(errValidate.Error(), "output_compression") {
+		t.Fatalf("invalid compression should reach shared validation, got %v", errValidate)
+	}
+}
+
 func TestImagesGenerationsWebImageRejectsUnsupportedShapesBeforeExecution(t *testing.T) {
 	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
 		WebImageGeneration: true,
@@ -198,7 +267,7 @@ func TestImagesGenerationsWebImageRejectsUnsupportedShapesBeforeExecution(t *tes
 	handler := &OpenAIAPIHandler{BaseAPIHandler: base}
 
 	for _, body := range []string{
-		`{"model":"gpt-image-web","prompt":"draw","n":2}`,
+		`{"model":"gpt-image-web","prompt":"draw","n":11}`,
 		`{"model":"gpt-image-web","prompt":"draw","stream":true}`,
 		`{"model":"gpt-image-web","prompt":"draw","response_format":"url"}`,
 	} {
@@ -282,10 +351,12 @@ func TestImagesEditsWebImageRoutesMultipartRequest(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for name, value := range map[string]string{
-		"model":   "custom-web-image",
-		"prompt":  "turn this into a poster",
-		"size":    "1600x900",
-		"quality": "maximum-detail",
+		"model":          "custom-web-image",
+		"prompt":         "turn this into a poster",
+		"size":           "1600x900",
+		"quality":        "maximum-detail",
+		"input_fidelity": "high",
+		"background":     "transparent",
 	} {
 		if errWrite := writer.WriteField(name, value); errWrite != nil {
 			t.Fatalf("write %s: %v", name, errWrite)
@@ -298,8 +369,15 @@ func TestImagesEditsWebImageRoutesMultipartRequest(t *testing.T) {
 	if errPart != nil {
 		t.Fatalf("CreatePart() error = %v", errPart)
 	}
-	if _, errWrite := part.Write([]byte("png-data")); errWrite != nil {
+	if _, errWrite := part.Write(maskPNG(t, 100, 100, image.Rect(0, 0, 100, 100))); errWrite != nil {
 		t.Fatalf("write image: %v", errWrite)
+	}
+	maskPart, errMaskPart := writer.CreateFormFile("mask", "mask.png")
+	if errMaskPart != nil {
+		t.Fatalf("CreateFormFile(mask) error = %v", errMaskPart)
+	}
+	if _, errWrite := maskPart.Write(maskPNG(t, 100, 100, image.Rect(50, 0, 100, 50))); errWrite != nil {
+		t.Fatalf("write mask: %v", errWrite)
 	}
 	if errClose := writer.Close(); errClose != nil {
 		t.Fatalf("close multipart writer: %v", errClose)
@@ -311,7 +389,7 @@ func TestImagesEditsWebImageRoutesMultipartRequest(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
 	}
 	payload := executor.opts.OriginalRequest
-	if got := gjson.GetBytes(payload, "prompt").String(); got != "turn this into a poster" {
+	if got := gjson.GetBytes(payload, "prompt").String(); !strings.HasPrefix(got, "turn this into a poster\n\n") || !strings.Contains(got, "top-right area") {
 		t.Fatalf("prompt = %q, payload=%s", got, payload)
 	}
 	if got := gjson.GetBytes(payload, "size").String(); got != "1600x900" {
@@ -320,14 +398,97 @@ func TestImagesEditsWebImageRoutesMultipartRequest(t *testing.T) {
 	if got := gjson.GetBytes(payload, "quality").String(); got != "maximum-detail" {
 		t.Fatalf("quality = %q, payload=%s", got, payload)
 	}
+	if got := gjson.GetBytes(payload, "input_fidelity").String(); got != "high" {
+		t.Fatalf("input_fidelity = %q, payload=%s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "background").String(); got != "transparent" {
+		t.Fatalf("background = %q, payload=%s", got, payload)
+	}
 	if got := gjson.GetBytes(payload, "images.0.filename").String(); got != "reference.png" {
 		t.Fatalf("filename = %q, payload=%s", got, payload)
 	}
-	if got := gjson.GetBytes(payload, "images.0.image_url").String(); got != "data:image/png;base64,cG5nLWRhdGE=" {
+	if got := gjson.GetBytes(payload, "images.0.image_url").String(); !strings.HasPrefix(got, "data:image/png;base64,") {
 		t.Fatalf("image_url = %q, payload=%s", got, payload)
 	}
 	if got := executor.opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]; got != imagesEditsPath {
 		t.Fatalf("request path = %v, want %s", got, imagesEditsPath)
+	}
+
+	executor.req = cliproxyexecutor.Request{}
+	var invalidBody bytes.Buffer
+	invalidWriter := multipart.NewWriter(&invalidBody)
+	for name, value := range map[string]string{"model": "custom-web-image", "prompt": "edit this"} {
+		if errWrite := invalidWriter.WriteField(name, value); errWrite != nil {
+			t.Fatalf("write invalid %s: %v", name, errWrite)
+		}
+	}
+	invalidImage, errInvalidImage := invalidWriter.CreateFormFile("image", "reference.png")
+	if errInvalidImage != nil {
+		t.Fatalf("CreateFormFile(invalid image) error = %v", errInvalidImage)
+	}
+	if _, errWrite := invalidImage.Write([]byte("png-data")); errWrite != nil {
+		t.Fatalf("write invalid request image: %v", errWrite)
+	}
+	invalidMask, errInvalidMask := invalidWriter.CreateFormFile("mask", "mask.png")
+	if errInvalidMask != nil {
+		t.Fatalf("CreateFormFile(invalid mask) error = %v", errInvalidMask)
+	}
+	if _, errWrite := invalidMask.Write([]byte("not-an-image")); errWrite != nil {
+		t.Fatalf("write invalid request mask: %v", errWrite)
+	}
+	if errClose := invalidWriter.Close(); errClose != nil {
+		t.Fatalf("close invalid multipart writer: %v", errClose)
+	}
+	resp = performImagesEndpointRequest(t, imagesEditsPath, invalidWriter.FormDataContentType(), &invalidBody, handler.ImagesEdits)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "mask could not be decoded") {
+		t.Fatalf("invalid mask status = %d body = %s", resp.Code, resp.Body.String())
+	}
+	if executor.req.Payload != nil {
+		t.Fatalf("invalid multipart mask reached executor: %s", executor.req.Payload)
+	}
+}
+
+func TestImagesEditsWebImageTranslatesJSONMask(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("web-edit-json", "codex", []*registry.ModelInfo{{ID: internalconfig.DefaultWebImageModel}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient("web-edit-json") })
+
+	manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
+	executor := &webImageHandlerCaptureExecutor{}
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), &cliproxyauth.Auth{ID: "web-edit-json", Provider: "codex"}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	cfg := &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
+		WebImageGeneration: true,
+		WebImageModels:     []string{"custom-web-image"},
+		WebImageBaseModel:  "internal-image-model",
+	}}
+	handler := &OpenAIAPIHandler{BaseAPIHandler: handlers.NewBaseAPIHandlers(cfg, manager)}
+	maskURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskPNG(t, 100, 100, image.Rect(50, 0, 100, 50)))
+	referenceURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskPNG(t, 100, 100, image.Rect(0, 0, 100, 100)))
+	body := `{"model":"custom-web-image","prompt":"edit this","images":[{"image_url":"` + referenceURL + `"}],"mask":"` + maskURL + `"}`
+
+	resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", strings.NewReader(body), handler.ImagesEdits)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	payload := executor.opts.OriginalRequest
+	if prompt := gjson.GetBytes(payload, "prompt").String(); !strings.Contains(prompt, "top-right area") {
+		t.Fatalf("prompt = %q, payload=%s", prompt, payload)
+	}
+	if gjson.GetBytes(payload, "mask").Exists() {
+		t.Fatalf("mask leaked into routed payload: %s", payload)
+	}
+
+	executor.req = cliproxyexecutor.Request{}
+	invalidBody := `{"model":"custom-web-image","prompt":"edit this","images":[{"image_url":"` + referenceURL + `"}],"mask":"not-a-data-url"}`
+	resp = performImagesEndpointRequest(t, imagesEditsPath, "application/json", strings.NewReader(invalidBody), handler.ImagesEdits)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "mask must be provided as a data URL") {
+		t.Fatalf("status = %d body = %s", resp.Code, resp.Body.String())
+	}
+	if executor.req.Payload != nil {
+		t.Fatalf("invalid mask reached executor: %s", executor.req.Payload)
 	}
 }
 

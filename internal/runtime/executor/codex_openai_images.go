@@ -41,6 +41,11 @@ type codexOpenAIImagePreparedRequest struct {
 	Body           []byte
 	ResponseFormat string
 	StreamPrefix   string
+	// Client-requested output encoding. The codex upstream may ignore
+	// output_format; the non-stream response path re-encodes the final
+	// bytes to honor jpeg/webp (helps.EnsureImageBase64Format).
+	OutputFormat      string
+	OutputCompression int
 }
 
 type codexImageCallResult struct {
@@ -165,6 +170,9 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 			if len(results) == 0 {
 				return resp, statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"}
 			}
+			results = codexEnsureImageResultsFormat(results, prepared.OutputFormat, prepared.OutputCompression)
+			codexRefreshImageBackgroundMetadata(results, prepared.OutputFormat)
+			firstMeta = codexResponseMetadata(results, results[0])
 			out, errOutput := codexBuildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, prepared.ResponseFormat)
 			if errOutput != nil {
 				return resp, errOutput
@@ -277,7 +285,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 			case "response.output_item.done":
 				collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 			case "response.image_generation_call.partial_image":
-				frame := codexBuildImagePartialFrame(eventData, prepared.ResponseFormat, prepared.StreamPrefix)
+				frame := codexBuildImagePartialFrame(eventData, prepared.ResponseFormat, prepared.StreamPrefix, prepared.OutputFormat, prepared.OutputCompression)
 				if len(frame) > 0 && !sendPayload(frame) {
 					return
 				}
@@ -295,6 +303,9 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 					sendError(statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"})
 					return
 				}
+				// Final frames carry the deliverable image: honor the client's
+				// output_format here too, matching the partial frames above.
+				results = codexEnsureImageResultsFormat(results, prepared.OutputFormat, prepared.OutputCompression)
 				for _, img := range results {
 					frame := codexBuildImageCompletedFrame(img, usageRaw, prepared.ResponseFormat, prepared.StreamPrefix)
 					if len(frame) > 0 && !sendPayload(frame) {
@@ -491,6 +502,9 @@ func codexPrepareDirectOpenAIImageBody(req cliproxyexecutor.Request, opts clipro
 	body, contentType, errPrepare := codexPrepareDirectOpenAIImagePayload(req, opts, model, stream)
 	if errPrepare != nil {
 		return nil, "", "", errPrepare
+	}
+	if _, _, errEncoding := codexClientOutputEncodingFromJSON(body); errEncoding != nil {
+		return nil, "", "", badRequestErr(errEncoding)
 	}
 	return body, contentType, model, nil
 }
@@ -702,6 +716,44 @@ func codexPrepareOpenAIImageRequest(req cliproxyexecutor.Request, opts cliproxye
 	return codexPrepareOpenAIImageEditJSON(req.Payload, req.Model)
 }
 
+// codexClientOutputEncodingFromJSON reads and validates the client-requested
+// output encoding. A negative compression means the field was absent.
+func codexClientOutputEncodingFromJSON(rawJSON []byte) (string, int, error) {
+	formatValue := gjson.GetBytes(rawJSON, "output_format")
+	format := ""
+	if formatValue.Exists() && formatValue.Type != gjson.Null {
+		if formatValue.Type != gjson.String {
+			return "", -1, fmt.Errorf("output_format must be png, jpeg, or webp")
+		}
+		format = strings.ToLower(strings.TrimSpace(formatValue.String()))
+		if format != "png" && format != "jpeg" && format != "webp" {
+			return "", -1, fmt.Errorf("output_format must be png, jpeg, or webp")
+		}
+	}
+	compression := -1
+	if oc := gjson.GetBytes(rawJSON, "output_compression"); oc.Exists() && oc.Type != gjson.Null {
+		if oc.Type != gjson.Number || oc.Num != float64(int64(oc.Num)) || oc.Int() < 0 || oc.Int() > 100 {
+			return "", -1, fmt.Errorf("output_compression must be an integer between 0 and 100")
+		}
+		compression = int(oc.Int())
+	}
+	if errCombination := codexValidateImageOutputEncodingCombination(format, compression, gjson.GetBytes(rawJSON, "background").String()); errCombination != nil {
+		return "", -1, errCombination
+	}
+	return format, compression, nil
+}
+
+func codexValidateImageOutputEncodingCombination(format string, compression int, background string) error {
+	format = helps.NormalizeImageOutputFormat(format)
+	if compression >= 0 && format != "jpeg" && format != "webp" {
+		return fmt.Errorf("output_compression requires output_format jpeg or webp")
+	}
+	if strings.EqualFold(strings.TrimSpace(background), "transparent") && format == "jpeg" {
+		return fmt.Errorf("transparent background requires output_format png or webp")
+	}
+	return nil
+}
+
 func codexPrepareOpenAIImageGenerationJSON(rawJSON []byte, routeModel string) (codexOpenAIImagePreparedRequest, error) {
 	if !json.Valid(rawJSON) {
 		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("invalid OpenAI image generation request JSON"))
@@ -709,10 +761,16 @@ func codexPrepareOpenAIImageGenerationJSON(rawJSON []byte, routeModel string) (c
 	prompt := strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt").String())
 	tool := codexBuildOpenAIImageTool(rawJSON, routeModel, "generate", []string{"size", "quality", "background", "output_format", "moderation"}, []string{"output_compression", "partial_images"})
 	body := codexBuildImagesResponsesRequest(prompt, nil, tool)
+	outputFormat, outputCompression, errEncoding := codexClientOutputEncodingFromJSON(rawJSON)
+	if errEncoding != nil {
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(errEncoding)
+	}
 	return codexOpenAIImagePreparedRequest{
-		Body:           body,
-		ResponseFormat: codexOpenAIImageResponseFormatFromJSON(rawJSON),
-		StreamPrefix:   "image_generation",
+		Body:              body,
+		ResponseFormat:    codexOpenAIImageResponseFormatFromJSON(rawJSON),
+		StreamPrefix:      "image_generation",
+		OutputFormat:      outputFormat,
+		OutputCompression: outputCompression,
 	}, nil
 }
 
@@ -735,10 +793,16 @@ func codexPrepareOpenAIImageEditJSON(rawJSON []byte, routeModel string) (codexOp
 		tool, _ = sjson.SetBytes(tool, "input_image_mask.image_url", mask)
 	}
 	body := codexBuildImagesResponsesRequest(prompt, images, tool)
+	outputFormat, outputCompression, errEncoding := codexClientOutputEncodingFromJSON(rawJSON)
+	if errEncoding != nil {
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(errEncoding)
+	}
 	return codexOpenAIImagePreparedRequest{
-		Body:           body,
-		ResponseFormat: codexOpenAIImageResponseFormatFromJSON(rawJSON),
-		StreamPrefix:   "image_edit",
+		Body:              body,
+		ResponseFormat:    codexOpenAIImageResponseFormatFromJSON(rawJSON),
+		StreamPrefix:      "image_edit",
+		OutputFormat:      outputFormat,
+		OutputCompression: outputCompression,
 	}, nil
 }
 
@@ -796,10 +860,28 @@ func codexPrepareOpenAIImageEditMultipart(rawBody []byte, routeModel string, con
 	}
 
 	body := codexBuildImagesResponsesRequest(prompt, images, tool)
+	outputFormatValue := strings.TrimSpace(codexFormValue(form, "output_format"))
+	outputFormat := helps.NormalizeImageOutputFormat(outputFormatValue)
+	if outputFormatValue != "" && (outputFormat == "" || strings.EqualFold(outputFormatValue, "jpg")) {
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("output_format must be png, jpeg, or webp"))
+	}
+	outputCompression := -1
+	if value := strings.TrimSpace(codexFormValue(form, "output_compression")); value != "" {
+		parsed, errParse := strconv.Atoi(value)
+		if errParse != nil || parsed < 0 || parsed > 100 {
+			return codexOpenAIImagePreparedRequest{}, badRequestErr(fmt.Errorf("output_compression must be an integer between 0 and 100"))
+		}
+		outputCompression = parsed
+	}
+	if errCombination := codexValidateImageOutputEncodingCombination(outputFormat, outputCompression, codexFormValue(form, "background")); errCombination != nil {
+		return codexOpenAIImagePreparedRequest{}, badRequestErr(errCombination)
+	}
 	return codexOpenAIImagePreparedRequest{
-		Body:           body,
-		ResponseFormat: responseFormat,
-		StreamPrefix:   "image_edit",
+		Body:              body,
+		ResponseFormat:    responseFormat,
+		StreamPrefix:      "image_edit",
+		OutputFormat:      outputFormat,
+		OutputCompression: outputCompression,
 	}, nil
 }
 
@@ -991,6 +1073,95 @@ func codexExtractImageResults(completed []byte, itemsByIndex map[int64][]byte, f
 	return results, createdAt, usageRaw, firstMeta, nil
 }
 
+// codexEnsureImageResultsFormat re-encodes result payloads so the bytes match
+// the client-requested output_format (jpeg/webp). Upstream may or may not
+// honor the forwarded field; matching bytes are preserved unless compression
+// was explicitly requested. Failures leave the original bytes untouched.
+func codexEnsureImageResultsFormat(results []codexImageCallResult, format string, compression int) []codexImageCallResult {
+	if format != "jpeg" && format != "webp" {
+		return results
+	}
+	converted := make([]codexImageCallResult, len(results))
+	copy(converted, results)
+	for i := range results {
+		b64, _, ok := helps.EnsureImageBase64Format(converted[i].Result, format, compression)
+		if ok {
+			converted[i].Result = b64
+			converted[i].OutputFormat = format
+			continue
+		}
+		// Degrade truthfully without partially converting the response. The
+		// returned bytes remain upstream-native when any item cannot transcode.
+		for j := range results {
+			if _, actualJ, _ := helps.EnsureImageBase64Format(results[j].Result, "png", -1); actualJ != "" {
+				results[j].OutputFormat = actualJ
+			}
+		}
+		return results
+	}
+	return converted
+}
+
+func codexRefreshImageBackgroundMetadata(results []codexImageCallResult, format string) {
+	if format != "jpeg" && format != "webp" {
+		return
+	}
+	for i := range results {
+		if results[i].Background == "" {
+			continue
+		}
+		if actual := codexWebImageActualBackground(results[i].Result); actual != "" {
+			results[i].Background = actual
+		}
+	}
+}
+
+func codexResponseMetadata(results []codexImageCallResult, first codexImageCallResult) codexImageCallResult {
+	if len(results) == 0 {
+		return first
+	}
+	meta := first
+	format := results[0].OutputFormat
+	background := results[0].Background
+	size := results[0].Size
+	quality := results[0].Quality
+	for _, result := range results[1:] {
+		if result.OutputFormat != format {
+			meta.OutputFormat = ""
+		}
+		if result.Background != background {
+			meta.Background = ""
+		}
+		if result.Size != size {
+			meta.Size = ""
+		}
+		if result.Quality != quality {
+			meta.Quality = ""
+		}
+	}
+	return meta
+}
+
+func codexEnsureImagePartialFormat(payload []byte, format string, compression int) []byte {
+	if format != "jpeg" && format != "webp" {
+		return payload
+	}
+	b64 := strings.TrimSpace(gjson.GetBytes(payload, "partial_image_b64").String())
+	if b64 == "" {
+		return payload
+	}
+	converted, actual, ok := helps.EnsureImageBase64Format(b64, format, compression)
+	if ok {
+		payload, _ = sjson.SetBytes(payload, "partial_image_b64", converted)
+		payload, _ = sjson.SetBytes(payload, "output_format", format)
+		return payload
+	}
+	if actual != "" {
+		payload, _ = sjson.SetBytes(payload, "output_format", actual)
+	}
+	return payload
+}
+
 func codexBuildImagesAPIResponse(results []codexImageCallResult, createdAt int64, usageRaw []byte, firstMeta codexImageCallResult, responseFormat string) ([]byte, error) {
 	out := []byte(`{"created":0,"data":[]}`)
 	out, _ = sjson.SetBytes(out, "created", createdAt)
@@ -1025,7 +1196,8 @@ func codexBuildImagesAPIResponse(results []codexImageCallResult, createdAt int64
 	return out, nil
 }
 
-func codexBuildImagePartialFrame(payload []byte, responseFormat string, streamPrefix string) []byte {
+func codexBuildImagePartialFrame(payload []byte, responseFormat string, streamPrefix string, requestedFormat string, compression int) []byte {
+	payload = codexEnsureImagePartialFormat(payload, requestedFormat, compression)
 	b64 := strings.TrimSpace(gjson.GetBytes(payload, "partial_image_b64").String())
 	if b64 == "" {
 		return nil
@@ -1035,6 +1207,9 @@ func codexBuildImagePartialFrame(payload []byte, responseFormat string, streamPr
 	data := []byte(`{"type":"","partial_image_index":0}`)
 	data, _ = sjson.SetBytes(data, "type", eventName)
 	data, _ = sjson.SetBytes(data, "partial_image_index", gjson.GetBytes(payload, "partial_image_index").Int())
+	if outputFormat != "" {
+		data, _ = sjson.SetBytes(data, "output_format", outputFormat)
+	}
 	if codexNormalizeImageResponseFormat(responseFormat) == "url" {
 		data, _ = sjson.SetBytes(data, "url", "data:"+codexMimeTypeFromOutputFormat(outputFormat)+";base64,"+b64)
 	} else {
@@ -1047,6 +1222,9 @@ func codexBuildImageCompletedFrame(img codexImageCallResult, usageRaw []byte, re
 	eventName := strings.TrimSpace(streamPrefix) + ".completed"
 	data := []byte(`{"type":""}`)
 	data, _ = sjson.SetBytes(data, "type", eventName)
+	if img.OutputFormat != "" {
+		data, _ = sjson.SetBytes(data, "output_format", img.OutputFormat)
+	}
 	if codexNormalizeImageResponseFormat(responseFormat) == "url" {
 		data, _ = sjson.SetBytes(data, "url", "data:"+codexMimeTypeFromOutputFormat(img.OutputFormat)+";base64,"+img.Result)
 	} else {

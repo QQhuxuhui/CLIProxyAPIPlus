@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -24,6 +26,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
+	_ "golang.org/x/image/webp"
 )
 
 type codexWebImageGenerator interface {
@@ -63,12 +66,27 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 	}
 	size := strings.TrimSpace(gjson.GetBytes(payload, "size").String())
 	quality := strings.TrimSpace(gjson.GetBytes(payload, "quality").String())
+	inputFidelity := strings.TrimSpace(gjson.GetBytes(payload, "input_fidelity").String())
+	background := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "background").String()))
+	// Only official values affect prompting and opt in to output alpha
+	// inspection; anything else is dropped from the response metadata.
+	switch background {
+	case "opaque", "transparent", "auto":
+	default:
+		background = ""
+	}
 	promptSize := size
 	if promptSize == "" && isEdit && len(inputImages) > 0 && inputImages[0].Width > 0 && inputImages[0].Height > 0 {
 		promptSize = fmt.Sprintf("%dx%d", inputImages[0].Width, inputImages[0].Height)
 	}
+	// The web upstream ignores output_format; honor jpeg/webp by re-encoding
+	// the final bytes ourselves (see helps.EnsureImageBase64Format).
+	outputFormat, outputCompression, errEncoding := codexWebImageOutputEncodingFromJSON(payload)
+	if errEncoding != nil {
+		return cliproxyexecutor.Response{}, badRequestErr(errEncoding)
+	}
 	webRequest := webimage.Request{
-		Prompt: buildCodexWebImagePrompt(prompt, promptSize, quality, isEdit),
+		Prompt: buildCodexWebImagePrompt(prompt, promptSize, quality, inputFidelity, background, isEdit),
 		Images: inputImages,
 	}
 
@@ -81,7 +99,14 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 			credentials.AccountID, _ = auth.Metadata["account_id"].(string)
 		}
 	}
-	results, meta, errGenerate := e.webImageExec.GenerateRequest(ctx, credentials, webRequest)
+	imageCount := 1
+	if v := gjson.GetBytes(payload, "n"); v.Exists() && v.Type != gjson.Null {
+		if v.Type != gjson.Number || v.Num != float64(int64(v.Num)) || v.Int() < 1 || v.Int() > webImageMaxImagesPerRequest {
+			return cliproxyexecutor.Response{}, badRequestErr(fmt.Errorf("n must be an integer between 1 and %d for web image generation", webImageMaxImagesPerRequest))
+		}
+		imageCount = int(v.Int())
+	}
+	results, meta, errGenerate := e.generateWebImages(ctx, credentials, webRequest, imageCount)
 	if errGenerate != nil {
 		return cliproxyexecutor.Response{}, errGenerate
 	}
@@ -96,14 +121,25 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 	converted := make([]codexImageCallResult, 0, len(results))
 	for _, result := range results {
 		responseSize := codexWebImageResponseSize(promptSize, size, inputImages, isEdit, result.Base64Data)
-		converted = append(converted, codexImageCallResult{
+		convertedResult := codexImageCallResult{
 			Result:        result.Base64Data,
 			RevisedPrompt: result.RevisedPrompt,
 			OutputFormat:  result.OutputFormat,
 			Size:          responseSize,
-		})
+		}
+		converted = append(converted, convertedResult)
 	}
-	firstMeta := converted[0]
+	if outputFormat == "jpeg" || outputFormat == "webp" {
+		converted = codexEnsureImageResultsFormatAllOrNone(converted, outputFormat, outputCompression)
+	}
+	if background != "" {
+		for i := range converted {
+			// Inspect alpha after any requested transcode so metadata describes
+			// the bytes actually returned to the client.
+			converted[i].Background = codexWebImageActualBackground(converted[i].Result)
+		}
+	}
+	firstMeta := codexResponseMetadata(converted, converted[0])
 	response, errBuild := codexBuildImagesAPIResponse(converted, createdAt, nil, firstMeta, "b64_json")
 	if errBuild != nil {
 		return cliproxyexecutor.Response{}, errBuild
@@ -111,13 +147,140 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 	return cliproxyexecutor.Response{Payload: response}, nil
 }
 
+// webImageMaxImagesPerRequest mirrors the official n upper bound.
+const webImageMaxImagesPerRequest = 10
+
+func codexWebImageOutputEncodingFromJSON(payload []byte) (string, int, error) {
+	formatValue := gjson.GetBytes(payload, "output_format")
+	format := ""
+	if formatValue.Exists() && formatValue.Type != gjson.Null {
+		if formatValue.Type != gjson.String {
+			return "", -1, fmt.Errorf("output_format must be png, jpeg, or webp")
+		}
+		format = strings.ToLower(strings.TrimSpace(formatValue.String()))
+		if format != "png" && format != "jpeg" && format != "webp" {
+			return "", -1, fmt.Errorf("output_format must be png, jpeg, or webp")
+		}
+	}
+	compression := -1
+	compressionValue := gjson.GetBytes(payload, "output_compression")
+	if compressionValue.Exists() && compressionValue.Type != gjson.Null {
+		if compressionValue.Type != gjson.Number || compressionValue.Num != float64(int64(compressionValue.Num)) || compressionValue.Int() < 0 || compressionValue.Int() > 100 {
+			return "", -1, fmt.Errorf("output_compression must be an integer between 0 and 100")
+		}
+		compression = int(compressionValue.Int())
+	}
+	if errCombination := codexValidateImageOutputEncodingCombination(format, compression, gjson.GetBytes(payload, "background").String()); errCombination != nil {
+		return "", -1, errCombination
+	}
+	return format, compression, nil
+}
+
+// codexEnsureImageResultsFormatAllOrNone re-encodes every result to the
+// requested format, or none of them: output_format is a top-level field, so a
+// response can only be truthful if all items share one format. On any failure
+// the originals are kept and labeled with their actual (sniffed) format.
+func codexEnsureImageResultsFormatAllOrNone(results []codexImageCallResult, format string, compression int) []codexImageCallResult {
+	converted := make([]codexImageCallResult, len(results))
+	copy(converted, results)
+	for i := range converted {
+		b64, actual, ok := helps.EnsureImageBase64Format(converted[i].Result, format, compression)
+		if !ok {
+			for j := range results {
+				if _, actualJ, _ := helps.EnsureImageBase64Format(results[j].Result, "png", -1); actualJ != "" {
+					results[j].OutputFormat = actualJ
+				}
+			}
+			return results
+		}
+		converted[i].Result = b64
+		converted[i].OutputFormat = actual
+	}
+	return converted
+}
+
+// generateWebImages serves n>1 by running the (single-image) web generation n
+// times and concatenating the results in request order. The calls are issued
+// together, but the executor's per-account slots (WebImageMaxConcurrencyPerAccount,
+// default 1) and global slots decide how many actually run in parallel — with
+// the default config they run one after another, so latency grows ~n×. Raise
+// the per-account limit to parallelize. All-or-nothing: a failed generation
+// cancels the rest and surfaces its error — the client indexed data[0..n-1]
+// and the billing layer requires the returned count to match n.
+func (e *CodexAutoExecutor) generateWebImages(ctx context.Context, credentials webimage.Credentials, request webimage.Request, n int) ([]webimage.ImageResult, *webimage.Meta, error) {
+	if n <= 1 {
+		results, meta, err := e.webImageExec.GenerateRequest(ctx, credentials, request)
+		if err != nil {
+			return nil, nil, err
+		}
+		return codexRequireSingleWebImageResult(results, meta)
+	}
+	fanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type outcome struct {
+		results []webimage.ImageResult
+		meta    *webimage.Meta
+		err     error
+	}
+	outcomes := make([]outcome, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			results, meta, err := e.webImageExec.GenerateRequest(fanCtx, credentials, request)
+			if err == nil {
+				results, meta, err = codexRequireSingleWebImageResult(results, meta)
+			}
+			outcomes[index] = outcome{results: results, meta: meta, err: err}
+			if err != nil {
+				cancel()
+			}
+		}(i)
+	}
+	wg.Wait()
+	combined := make([]webimage.ImageResult, 0, n)
+	var meta *webimage.Meta
+	var firstErr error
+	for _, o := range outcomes {
+		if o.err != nil {
+			// Prefer the root-cause error over the cancellations it triggered.
+			if firstErr == nil || (errors.Is(firstErr, context.Canceled) && !errors.Is(o.err, context.Canceled)) {
+				firstErr = o.err
+			}
+			continue
+		}
+		if len(o.results) == 0 {
+			if firstErr == nil {
+				firstErr = statusErr{code: http.StatusBadGateway, msg: "web image upstream returned no image"}
+			}
+			continue
+		}
+		combined = append(combined, o.results...)
+		if meta == nil {
+			meta = o.meta
+		}
+	}
+	if firstErr != nil {
+		return nil, nil, firstErr
+	}
+	return combined, meta, nil
+}
+
+func codexRequireSingleWebImageResult(results []webimage.ImageResult, meta *webimage.Meta) ([]webimage.ImageResult, *webimage.Meta, error) {
+	if len(results) != 1 {
+		return nil, nil, statusErr{code: http.StatusBadGateway, msg: fmt.Sprintf("web image upstream returned %d images; expected exactly one", len(results))}
+	}
+	return results, meta, nil
+}
+
 func isCodexWebImageEditRequest(opts cliproxyexecutor.Options) bool {
 	path := strings.TrimSpace(helps.PayloadRequestPath(opts))
 	return path == codexImagesEditsPath || strings.HasSuffix(path, codexImagesEditsPath)
 }
 
-func buildCodexWebImagePrompt(prompt, size, quality string, isEdit bool) string {
-	directives := make([]string, 0, 3)
+func buildCodexWebImagePrompt(prompt, size, quality, inputFidelity, background string, isEdit bool) string {
+	directives := make([]string, 0, 5)
 	if size != "" {
 		directives = append(directives, "Requested output size: "+size+".")
 		if matches := webImageDimensionsPattern.FindStringSubmatch(size); len(matches) == 3 {
@@ -137,6 +300,19 @@ func buildCodexWebImagePrompt(prompt, size, quality string, isEdit bool) string 
 	}
 	if isEdit {
 		directives = append(directives, "Preserve the reference image's original dimensions and aspect ratio.")
+	}
+	// input_fidelity has no API surface on the web pipeline; translate the
+	// high setting into a faithfulness directive (same mechanism as size).
+	if isEdit && strings.EqualFold(strings.TrimSpace(inputFidelity), "high") {
+		directives = append(directives, "Reproduce the reference image as faithfully as possible: apply the requested change precisely, and keep faces, text and fine details outside the requested edit region identical to the original.")
+	}
+	// Background modes are translated into natural language because the web
+	// pipeline has no structured background control surface.
+	switch {
+	case strings.EqualFold(strings.TrimSpace(background), "transparent"):
+		directives = append(directives, "The image must have a fully transparent background: render only the subject on true PNG alpha transparency, with no background color, scenery, or checkerboard pattern.")
+	case strings.EqualFold(strings.TrimSpace(background), "opaque"):
+		directives = append(directives, "The image must have a fully opaque background with no transparent pixels or alpha transparency.")
 	}
 	if quality != "" {
 		directives = append(directives, "Requested output quality: "+quality+".")
@@ -173,6 +349,30 @@ func codexWebImageOutputDimensions(base64Data string) (int, int, bool) {
 		return 0, 0, false
 	}
 	return config.Width, config.Height, true
+}
+
+func codexWebImageActualBackground(base64Data string) string {
+	data, errDecode := base64.StdEncoding.DecodeString(base64Data)
+	if errDecode != nil || len(data) == 0 {
+		return ""
+	}
+	config, _, errConfig := image.DecodeConfig(bytes.NewReader(data))
+	if errConfig != nil || config.Width <= 0 || config.Height <= 0 || config.Width > 4096 || config.Height > 4096 {
+		return ""
+	}
+	img, _, errImage := image.Decode(bytes.NewReader(data))
+	if errImage != nil {
+		return ""
+	}
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if _, _, _, alpha := img.At(x, y).RGBA(); alpha < 0xffff {
+				return "transparent"
+			}
+		}
+	}
+	return "opaque"
 }
 
 func parseCodexWebImageInputsWithLimits(payload []byte, required bool, maxImages int, maxBytes int64) ([]webimage.InputImage, error) {

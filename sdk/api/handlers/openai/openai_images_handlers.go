@@ -244,8 +244,12 @@ func isWebImageModel(cfg *internalconfig.SDKConfig, model string) bool {
 }
 
 func validateWebImageGenerationRequest(rawJSON []byte) error {
-	if n := gjson.GetBytes(rawJSON, "n"); n.Exists() && n.Int() != 1 {
-		return fmt.Errorf("n must be 1 for web image generation")
+	// n>1 is served by running the web generation n times (see executeWebImage);
+	// 10 is the official upper bound.
+	if n := gjson.GetBytes(rawJSON, "n"); n.Exists() && n.Type != gjson.Null {
+		if n.Type != gjson.Number || n.Num != float64(int64(n.Num)) || n.Int() < 1 || n.Int() > 10 {
+			return fmt.Errorf("n must be an integer between 1 and 10 for web image generation")
+		}
 	}
 	if gjson.GetBytes(rawJSON, "stream").Bool() {
 		return fmt.Errorf("streaming is not supported for web image generation")
@@ -254,7 +258,61 @@ func validateWebImageGenerationRequest(rawJSON []byte) error {
 	if responseFormat != "" && !strings.EqualFold(responseFormat, "b64_json") {
 		return fmt.Errorf("response_format must be b64_json for web image generation")
 	}
+	if errEncoding := validateWebImageOutputEncodingRequest(rawJSON); errEncoding != nil {
+		return errEncoding
+	}
 	return nil
+}
+
+func validateWebImageOutputEncodingRequest(rawJSON []byte) error {
+	format := gjson.GetBytes(rawJSON, "output_format")
+	canonicalFormat := ""
+	if format.Exists() && format.Type != gjson.Null {
+		if format.Type != gjson.String {
+			return fmt.Errorf("output_format must be png, jpeg, or webp")
+		}
+		switch strings.ToLower(strings.TrimSpace(format.String())) {
+		case "png":
+			canonicalFormat = "png"
+		case "jpeg":
+			canonicalFormat = "jpeg"
+		case "webp":
+			canonicalFormat = "webp"
+		default:
+			return fmt.Errorf("output_format must be png, jpeg, or webp")
+		}
+	}
+	compression := gjson.GetBytes(rawJSON, "output_compression")
+	if compression.Exists() && compression.Type != gjson.Null {
+		if compression.Type != gjson.Number || compression.Num != float64(int64(compression.Num)) || compression.Int() < 0 || compression.Int() > 100 {
+			return fmt.Errorf("output_compression must be an integer between 0 and 100")
+		}
+		if canonicalFormat != "jpeg" && canonicalFormat != "webp" {
+			return fmt.Errorf("output_compression requires output_format jpeg or webp")
+		}
+	}
+	background := strings.ToLower(strings.TrimSpace(gjson.GetBytes(rawJSON, "background").String()))
+	if background == "transparent" && canonicalFormat == "jpeg" {
+		return fmt.Errorf("transparent background requires output_format png or webp")
+	}
+	return nil
+}
+
+func validateMultipartImageOutputEncodingRequest(form *multipart.Form) error {
+	payload := []byte(`{}`)
+	for _, field := range []string{"output_format", "background"} {
+		if value := strings.TrimSpace(firstMultipartValue(form, field)); value != "" {
+			payload, _ = sjson.SetBytes(payload, field, value)
+		}
+	}
+	if value := strings.TrimSpace(firstMultipartValue(form, "output_compression")); value != "" {
+		if parsed, errParse := strconv.ParseInt(value, 10, 64); errParse == nil {
+			payload, _ = sjson.SetBytes(payload, "output_compression", parsed)
+		} else {
+			payload, _ = sjson.SetBytes(payload, "output_compression", value)
+		}
+	}
+	return validateWebImageOutputEncodingRequest(payload)
 }
 
 func buildWebImageMultipartEditRequest(form *multipart.Form, model, prompt string, imageFiles []*multipart.FileHeader, images []string) ([]byte, error) {
@@ -269,9 +327,20 @@ func buildWebImageMultipartEditRequest(form *multipart.Form, model, prompt strin
 		payload, _ = sjson.SetBytes(payload, fmt.Sprintf("images.%d.filename", index), filename)
 		payload, _ = sjson.SetBytes(payload, fmt.Sprintf("images.%d.image_url", index), imageURL)
 	}
-	for _, field := range []string{"size", "quality"} {
+	for _, field := range []string{"size", "quality", "input_fidelity", "background", "output_format"} {
 		if value := strings.TrimSpace(firstMultipartValue(form, field)); value != "" {
 			payload, _ = sjson.SetBytes(payload, field, value)
+		}
+	}
+	// output_compression is numeric in the JSON shape; forward it as a number
+	// so the executor bridge reads it the same way for both content types.
+	if rawCompression := strings.TrimSpace(firstMultipartValue(form, "output_compression")); rawCompression != "" {
+		if parsed, errParse := strconv.ParseInt(rawCompression, 10, 64); errParse == nil {
+			payload, _ = sjson.SetBytes(payload, "output_compression", parsed)
+		} else {
+			// Preserve malformed input so the shared validator returns a clear
+			// client error instead of silently dropping the field.
+			payload, _ = sjson.SetBytes(payload, "output_compression", rawCompression)
 		}
 	}
 	responseFormat := strings.TrimSpace(firstMultipartValue(form, "response_format"))
@@ -282,7 +351,7 @@ func buildWebImageMultipartEditRequest(form *multipart.Form, model, prompt strin
 	if rawN := strings.TrimSpace(firstMultipartValue(form, "n")); rawN != "" {
 		n, errParse := strconv.ParseInt(rawN, 10, 64)
 		if errParse != nil {
-			return nil, fmt.Errorf("n must be 1 for web image generation")
+			return nil, fmt.Errorf("n must be between 1 and 10 for web image generation")
 		}
 		payload, _ = sjson.SetBytes(payload, "n", n)
 	}
@@ -694,6 +763,10 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		})
 		return
 	}
+	if errValidate := validateWebImageOutputEncodingRequest(rawJSON); errValidate != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errValidate.Error(), Type: "invalid_request_error"}})
+		return
+	}
 
 	imageModel := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
 	if imageModel == "" {
@@ -862,6 +935,10 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		})
 		return
 	}
+	if errValidate := validateMultipartImageOutputEncodingRequest(form); errValidate != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errValidate.Error(), Type: "invalid_request_error"}})
+		return
+	}
 
 	imageModel := strings.TrimSpace(c.PostForm("model"))
 	if imageModel == "" {
@@ -951,9 +1028,24 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	}
 	stream := parseBoolField(c.PostForm("stream"), false)
 	if webImageModel {
-		if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
-			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: masks are not supported for web image edits", Type: "invalid_request_error"}})
-			return
+		// The web pipeline cannot forward a mask upstream; translate it into a
+		// prompt region directive instead (same mechanism as the size hint).
+		if maskFiles := form.File["mask"]; len(maskFiles) > 0 && maskFiles[0] != nil {
+			maskBytes, errMask := webImageMaskFileBytes(maskFiles[0])
+			if errMask == nil {
+				var directive string
+				directive, errMask = webImageMaskRegionDirective(maskBytes)
+				if errMask == nil && len(images) > 0 {
+					errMask = webImageMaskMatchesReferenceDimensions(maskBytes, images[0], int(webImageMaxBytes))
+				}
+				if errMask == nil && directive != "" {
+					prompt = prompt + "\n\n" + directive
+				}
+			}
+			if errMask != nil {
+				c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errMask.Error(), Type: "invalid_request_error"}})
+				return
+			}
 		}
 		webRequest, errBuild := buildWebImageMultipartEditRequest(form, imageModel, prompt, imageFiles, images)
 		if errBuild != nil {
@@ -1084,6 +1176,10 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		})
 		return
 	}
+	if errValidate := validateWebImageOutputEncodingRequest(rawJSON); errValidate != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errValidate.Error(), Type: "invalid_request_error"}})
+		return
+	}
 
 	imageModel := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
 	if imageModel == "" {
@@ -1120,9 +1216,34 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	}
 	stream := gjson.GetBytes(rawJSON, "stream").Bool()
 	if webImageModel {
+		// The web pipeline cannot forward a mask upstream; translate it into a
+		// prompt region directive instead (same mechanism as the size hint).
 		if gjson.GetBytes(rawJSON, "mask").Exists() {
-			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: masks are not supported for web image edits", Type: "invalid_request_error"}})
-			return
+			maskBytes, errMask := webImageMaskBytesFromJSON(rawJSON)
+			if errMask == nil {
+				var directive string
+				directive, errMask = webImageMaskRegionDirective(maskBytes)
+				if errMask == nil {
+					referenceImages := collectXAIImagesFromJSON(rawJSON)
+					if len(referenceImages) > 0 {
+						maxReferenceBytes := internalconfig.DefaultWebImageMaxBytes
+						if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.WebImageMaxBytes > 0 {
+							maxReferenceBytes = h.BaseAPIHandler.Cfg.WebImageMaxBytes
+						}
+						errMask = webImageMaskMatchesReferenceDimensions(maskBytes, referenceImages[0], int(maxReferenceBytes))
+					}
+				}
+				if errMask == nil && directive != "" {
+					rawJSON, _ = sjson.SetBytes(rawJSON, "prompt", prompt+"\n\n"+directive)
+				}
+			}
+			if errMask != nil {
+				c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + errMask.Error(), Type: "invalid_request_error"}})
+				return
+			}
+			// The mask never leaves this process; drop the (potentially large)
+			// inline payload before the request travels further.
+			rawJSON, _ = sjson.DeleteBytes(rawJSON, "mask")
 		}
 		if len(collectXAIImagesFromJSON(rawJSON)) == 0 {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: image is required", Type: "invalid_request_error"}})

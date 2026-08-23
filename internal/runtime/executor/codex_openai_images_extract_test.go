@@ -90,3 +90,44 @@ func TestCodexExtractImageResults_FallbackList(t *testing.T) {
 		t.Fatalf("firstMeta.OutputFormat = %q, want webp", firstMeta.OutputFormat)
 	}
 }
+
+func TestCodexEnsureImageResultsFormatIsAtomic(t *testing.T) {
+	original := encodeTestOutputPNG(t, false)
+	results := []codexImageCallResult{
+		{Result: original, OutputFormat: "png"},
+		{Result: "AA==", OutputFormat: "png"},
+	}
+	converted := codexEnsureImageResultsFormat(results, "webp", 80)
+	if converted[0].Result != original {
+		t.Fatal("a failed item must prevent partial conversion of earlier items")
+	}
+	if converted[0].OutputFormat != "png" {
+		t.Fatalf("first item format = %q, want png after atomic fallback", converted[0].OutputFormat)
+	}
+}
+
+func TestCodexPrepareOpenAIImageGenerationRejectsInvalidOutputEncoding(t *testing.T) {
+	for _, payload := range []string{
+		`{"prompt":"draw","output_format":"gif"}`,
+		`{"prompt":"draw","output_compression":10.5}`,
+		`{"prompt":"draw","output_compression":101}`,
+		`{"prompt":"draw","output_compression":50}`,
+		`{"prompt":"draw","output_format":"png","output_compression":50}`,
+		`{"prompt":"draw","background":"transparent","output_format":"jpeg"}`,
+	} {
+		if _, errPrepare := codexPrepareOpenAIImageGenerationJSON([]byte(payload), "gpt-image-2"); errPrepare == nil {
+			t.Fatalf("invalid output encoding should be rejected: %s", payload)
+		}
+	}
+}
+
+func TestCodexResponseMetadataOmitsConflictingTopLevelValues(t *testing.T) {
+	results := []codexImageCallResult{
+		{OutputFormat: "png", Background: "opaque", Size: "1024x1024", Quality: "high"},
+		{OutputFormat: "jpeg", Background: "transparent", Size: "1536x1024", Quality: "medium"},
+	}
+	meta := codexResponseMetadata(results, results[0])
+	if meta.OutputFormat != "" || meta.Background != "" || meta.Size != "" || meta.Quality != "" {
+		t.Fatalf("conflicting metadata must be omitted, got %+v", meta)
+	}
+}

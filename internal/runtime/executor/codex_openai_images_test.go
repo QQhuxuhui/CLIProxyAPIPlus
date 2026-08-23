@@ -38,6 +38,76 @@ func codexOpenAIImageTestOptions(path string, stream bool) cliproxyexecutor.Opti
 	}
 }
 
+func TestCodexPrepareDirectOpenAIImageRejectsIncompatibleOutputEncoding(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		payload     []byte
+		contentType string
+	}{
+		{
+			name:    "generation png compression",
+			path:    codexImagesGenerationsPath,
+			payload: []byte(`{"model":"gpt-image-2","prompt":"draw","output_format":"png","output_compression":50}`),
+		},
+		{
+			name:    "json edit transparent jpeg",
+			path:    codexImagesEditsPath,
+			payload: []byte(`{"model":"gpt-image-2","prompt":"edit","images":[{"image_url":"data:image/png;base64,AA=="}],"background":"transparent","output_format":"jpeg"}`),
+		},
+	}
+
+	var multipartBody bytes.Buffer
+	writer := multipart.NewWriter(&multipartBody)
+	for key, value := range map[string]string{
+		"model":              "gpt-image-2",
+		"prompt":             "edit",
+		"output_format":      "png",
+		"output_compression": "50",
+	} {
+		if errWrite := writer.WriteField(key, value); errWrite != nil {
+			t.Fatalf("write %s: %v", key, errWrite)
+		}
+	}
+	file, errFile := writer.CreateFormFile("image", "reference.png")
+	if errFile != nil {
+		t.Fatalf("create image part: %v", errFile)
+	}
+	if _, errWrite := file.Write([]byte("image")); errWrite != nil {
+		t.Fatalf("write image: %v", errWrite)
+	}
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("close multipart: %v", errClose)
+	}
+	tests = append(tests, struct {
+		name        string
+		path        string
+		payload     []byte
+		contentType string
+	}{
+		name:        "multipart edit png compression",
+		path:        codexImagesEditsPath,
+		payload:     multipartBody.Bytes(),
+		contentType: writer.FormDataContentType(),
+	})
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			opts := codexOpenAIImageTestOptions(test.path, false)
+			if test.contentType != "" {
+				opts.Headers = http.Header{"Content-Type": []string{test.contentType}}
+			}
+			_, _, _, errPrepare := codexPrepareDirectOpenAIImageBody(cliproxyexecutor.Request{
+				Model:   "gpt-image-2",
+				Payload: test.payload,
+			}, opts, false)
+			if errPrepare == nil {
+				t.Fatal("invalid encoding combination was accepted")
+			}
+		})
+	}
+}
+
 func TestCodexExecutorDirectOpenAIImageGenerationUsesImagesEndpoint(t *testing.T) {
 	var gotPath string
 	var gotAuth string
@@ -196,7 +266,7 @@ func TestCodexExecutorDirectOpenAIImageEditUsesImagesEditEndpointForJSON(t *test
 	executor := NewCodexExecutor(&config.Config{})
 	_, errExecute := executor.Execute(context.Background(), newCodexOpenAIImageTestAuth(server.URL), cliproxyexecutor.Request{
 		Model:   "gpt-image-2",
-		Payload: []byte(`{"model":"gpt-image-2","prompt":"Replace the background","images":[{"file_id":"file-abc123"}],"mask":{"file_id":"file-mask123"},"size":"1024x1024","quality":"high","output_format":"png","output_compression":100,"stream":false}`),
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"Replace the background","images":[{"file_id":"file-abc123"}],"mask":{"file_id":"file-mask123"},"size":"1024x1024","quality":"high","output_format":"webp","output_compression":100,"stream":false}`),
 	}, codexOpenAIImageTestOptions(codexImagesEditsPath, false))
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
