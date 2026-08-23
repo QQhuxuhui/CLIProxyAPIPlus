@@ -120,6 +120,24 @@ test('statusError falls back to the raw text for plain conductor labels', () => 
   assert.deepEqual(plain(logic.statusError({ status_message: '[1,2]' })), { text: '[1,2]', tip: '[1,2]' });
 });
 
+test('statusError collapses the codex invalidated-credential message to one label', () => {
+  const message = 'credential invalidated: 3 consecutive 401 responses, re-login required (web image credential was rejected (token_invalidated))';
+  assert.deepEqual(plain(logic.statusError({ status_message: message })), { text: 'credential invalidated', tip: message });
+  assert.deepEqual(plain(logic.statusError({ status_message: message.replace('3 consecutive', '7 consecutive') })).text, 'credential invalidated');
+  // Plain web-image labels keep the upstream code so the filter can tell them apart.
+  assert.deepEqual(plain(logic.statusError({ status_message: 'web image credential was rejected (token_invalidated)' })), {
+    text: 'web image credential was rejected (token_invalidated)',
+    tip: 'web image credential was rejected (token_invalidated)',
+  });
+});
+
+test('authFailures reads the consecutive 401 counter defensively', () => {
+  assert.equal(logic.authFailures({ auth_failures: 3 }), 3);
+  assert.equal(logic.authFailures({ auth_failures: '2' }), 2);
+  assert.equal(logic.authFailures({ auth_failures: -1 }), 0);
+  assert.equal(logic.authFailures({}), 0);
+});
+
 test('statusError falls back to status when the structured body carries no code', () => {
   const body = JSON.stringify({ error: { status: 'UNAVAILABLE' } });
   assert.deepEqual(plain(logic.statusError({ status_message: body })), { text: 'UNAVAILABLE', tip: 'UNAVAILABLE' });

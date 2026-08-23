@@ -133,6 +133,16 @@ func (e *Executor) GenerateRequest(ctx context.Context, credentials Credentials,
 	return []ImageResult{{Base64Data: imageData, OutputFormat: outputFormat}}, &Meta{CreatedAt: time.Now().Unix()}, nil
 }
 
+// freeLimitCooldown returns how long an account should be parked after the
+// upstream reports its free-plan image quota as exhausted.
+func (e *Executor) freeLimitCooldown() time.Duration {
+	value := ""
+	if e.cfg != nil {
+		value = e.cfg.WebImageFreeLimitCooldown
+	}
+	return e.duration(value, config.DefaultWebImageFreeLimitCooldown)
+}
+
 func (e *Executor) duration(value, fallback string) time.Duration {
 	duration, errParse := time.ParseDuration(strings.TrimSpace(value))
 	if errParse == nil && duration > 0 {

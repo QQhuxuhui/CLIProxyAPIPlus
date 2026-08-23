@@ -26,12 +26,14 @@ const (
 
 // StatusError carries a scrubbed failure classification for the Codex bridge.
 type StatusError struct {
-	Status     int
-	Kind       string
-	Stage      string
-	Msg        string
-	RetryAfter time.Duration
-	Scoped     bool
+	Status int
+	Kind   string
+	Stage  string
+	Msg    string
+	// RetryAfterDelay carries the upstream backoff hint (Retry-After header or
+	// a configured quota cooldown) so the conductor can schedule the cooldown.
+	RetryAfterDelay time.Duration
+	Scoped          bool
 }
 
 func (e *StatusError) Error() string {
@@ -57,6 +59,15 @@ func (e *StatusError) StatusCode() int {
 // RequestScoped reports whether this failure is unrelated to credential health.
 func (e *StatusError) RequestScoped() bool {
 	return e != nil && e.Scoped
+}
+
+// RetryAfter exposes the backoff hint to the conductor cooldown scheduler.
+func (e *StatusError) RetryAfter() *time.Duration {
+	if e == nil || e.RetryAfterDelay <= 0 {
+		return nil
+	}
+	delay := e.RetryAfterDelay
+	return &delay
 }
 
 func preserveContextError(err error) error {

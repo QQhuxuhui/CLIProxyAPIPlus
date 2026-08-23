@@ -22,6 +22,7 @@ type CooldownStateRecord struct {
 	AuthFile       string     `json:"-"`
 	Model          string     `json:"model,omitempty"`
 	Status         string     `json:"status,omitempty"`
+	AuthFailures   int        `json:"auth_failures,omitempty"`
 	NextRetryAfter time.Time  `json:"next_retry_after"`
 	Reason         string     `json:"reason,omitempty"`
 	Quota          QuotaState `json:"quota,omitempty"`

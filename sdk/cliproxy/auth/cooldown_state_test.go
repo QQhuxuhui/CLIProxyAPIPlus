@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 type recordingCooldownStateStore struct {
@@ -311,5 +313,73 @@ func TestManager_RestoreCooldownStates(t *testing.T) {
 	}
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("restore cleanup saved cooldown state %d times, want 1", got)
+	}
+}
+
+func TestManager_RestoreCodexInvalidationWithQuotaReason(t *testing.T) {
+	now := time.Now()
+	parkUntil := now.Add(codexAuthFailureCooldown)
+	source := &Auth{
+		ID:             "codex-invalidated-quota",
+		Provider:       "codex",
+		Status:         StatusError,
+		StatusMessage:  "credential invalidated: 3 consecutive 401 responses, re-login required (unauthorized)",
+		Unavailable:    true,
+		NextRetryAfter: parkUntil,
+		AuthFailures:   codexAuthFailureThreshold,
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: parkUntil,
+		},
+		LastError: &Error{Message: "unauthorized", HTTPStatus: 401},
+	}
+	record, ok := authCooldownStateRecord(source, now)
+	if !ok {
+		t.Fatal("expected auth cooldown record")
+	}
+	store := &recordingCooldownStateStore{load: []CooldownStateRecord{record}}
+	manager := NewManager(nil, nil, nil)
+	manager.SetCooldownStateStore(store)
+	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), &Auth{ID: source.ID, Provider: "codex"}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	if errRestore := manager.RestoreCooldownStates(context.Background()); errRestore != nil {
+		t.Fatalf("restore cooldowns: %v", errRestore)
+	}
+	restored, _ := manager.GetByID(source.ID)
+	if restored.AuthFailures != codexAuthFailureThreshold {
+		t.Fatalf("AuthFailures = %d, want %d", restored.AuthFailures, codexAuthFailureThreshold)
+	}
+	if blocked, _, _ := isAuthBlockedForModel(restored, "another-codex-model", time.Now()); !blocked {
+		t.Fatal("restored invalidated credential remained selectable for another model")
+	}
+}
+
+func TestManager_RestoreCodexInvalidationWhenCoolingDisabled(t *testing.T) {
+	now := time.Now()
+	parkUntil := now.Add(codexAuthFailureCooldown)
+	store := &recordingCooldownStateStore{load: []CooldownStateRecord{{
+		Provider:       "codex",
+		AuthID:         "codex-disabled-cooling-restore",
+		Status:         "cooling",
+		AuthFailures:   codexAuthFailureThreshold,
+		NextRetryAfter: parkUntil,
+		Reason:         "credential invalidated",
+		LastError:      &Error{Message: "unauthorized", HTTPStatus: 401},
+		UpdatedAt:      now,
+	}}}
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&config.Config{DisableCooling: true})
+	manager.SetCooldownStateStore(store)
+	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), &Auth{ID: "codex-disabled-cooling-restore", Provider: "codex"}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	if errRestore := manager.RestoreCooldownStates(context.Background()); errRestore != nil {
+		t.Fatalf("restore cooldowns: %v", errRestore)
+	}
+	restored, _ := manager.GetByID("codex-disabled-cooling-restore")
+	if !codexAuthFailureParkActive(restored, time.Now()) {
+		t.Fatalf("mandatory invalidation was not restored: %#v", restored)
 	}
 }

@@ -169,6 +169,7 @@ disable-image-generation: false
 # web-image-base-model: "" # Required when the feature is enabled.
 # web-image-poll-timeout: "120s"
 # web-image-total-deadline: "150s"
+# web-image-free-limit-cooldown: "3h" # How long a codex account is parked after ChatGPT reports its free-plan image limit.
 # web-image-poll-interval: "1s"
 # web-image-pow-timeout: "20s"
 # web-image-max-bytes: 20971520

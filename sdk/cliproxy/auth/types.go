@@ -95,6 +95,9 @@ type Auth struct {
 
 	Success int64 `json:"-"`
 	Failed  int64 `json:"-"`
+	// AuthFailures counts consecutive 401 results since the last success. It
+	// drives the codex "dead credential" escalation in MarkResult.
+	AuthFailures int `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`

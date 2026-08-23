@@ -179,6 +179,7 @@
   /* Raw upstream bodies can be long; the cell truncates and the hover tip carries the full text. */
   .error-detail { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; color: #dc2626; font-variant-numeric: tabular-nums; cursor: help; }
   .request-count { font-variant-numeric: tabular-nums; cursor: help; }
+  .auth-failures { display: inline-block; margin-left: 6px; padding: 0 6px; color: #991b1b; background: #fee2e2; border-radius: 999px; font-size: 11px; font-variant-numeric: tabular-nums; cursor: help; }
 
   /* Multi-select + batch delete */
   .data-table th.select-col, .data-table td.select-col { width: 36px; padding-right: 0; }
@@ -820,10 +821,14 @@
       }
       return null;
     }
+    // The conductor parks a codex credential after repeated 401s with a message
+    // that embeds the running count; collapse it to one stable filter label.
+    var INVALIDATED_PATTERN = /^credential invalidated: \d+ consecutive 401 responses, re-login required/;
     // Returns { text, tip }: text is the compact cell label, tip the full detail.
     function statusError(entry) {
       var message = String(entry && entry.status_message || '').trim();
       if (!message) return { text: '', tip: '' };
+      if (INVALIDATED_PATTERN.test(message)) return { text: 'credential invalidated', tip: message };
       var body = parseErrorBody(message);
       var error = body ? body.error : null;
       if (error && typeof error === 'object' && !Array.isArray(error)) {
@@ -847,6 +852,8 @@
       var number = Number(value);
       return isFinite(number) && number > 0 ? Math.floor(number) : 0;
     }
+    // Consecutive 401 results since the last success (auth_failures in auth-files).
+    function authFailures(entry) { return requestCount(entry && entry.auth_failures); }
     // success/failed ride along in the auth-files payload as in-process counters,
     // so no extra request is needed. They reset when the server restarts.
     function requestStats(entry) {
@@ -896,7 +903,7 @@
       return out;
     }
     return {
-      accountPlan: accountPlan, localDateKey: localDateKey, filterAccounts: filterAccounts,
+      accountPlan: accountPlan, authFailures: authFailures, localDateKey: localDateKey, filterAccounts: filterAccounts,
       paginate: paginate, preserveSelectedOption: preserveSelectedOption,
       statusError: statusError, requestStats: requestStats, formatSuccessRate: formatSuccessRate,
       accountKey: accountKey, pruneSelection: pruneSelection, selectionState: selectionState,
@@ -1095,9 +1102,13 @@
   // bodies, the OAuth reason for flat ones, the raw text otherwise.
   function errorCell(a) {
     var detail = AccountViewLogic.statusError(a);
-    if (!detail.text) return '<td></td>';
+    var failures = AccountViewLogic.authFailures(a);
+    var badge = failures > 0
+      ? '<span class="auth-failures" tabindex="0" data-tip="连续 401 次数：' + failures + '（成功后清零；codex 达到 3 次后跳过 24 小时）">401×' + failures + '</span>'
+      : '';
+    if (!detail.text) return '<td>' + badge + '</td>';
     return '<td><span class="error-detail" tabindex="0" data-tip="' + escapeHtml(detail.tip) + '">' +
-      escapeHtml(detail.text) + '</span></td>';
+      escapeHtml(detail.text) + '</span>' + badge + '</td>';
   }
 
   function requestCells(a) {

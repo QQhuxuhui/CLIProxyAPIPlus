@@ -773,6 +773,66 @@ func TestPollConversationHonorsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestPollConversationReturnsRateLimitWhenRetryAfterExceedsPollBudget(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	cfg.WebImagePollInterval = "1ms"
+	executor := NewExecutor(cfg, WithBaseURL(server.URL))
+	defer executor.Close()
+	credentials := Credentials{AccessToken: "token", AuthID: "auth"}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+
+	errPoll := executor.pollConversation(context.Background(), session, credentials, &generationState{conversationID: "conversation"}, time.Now().Add(20*time.Millisecond))
+	var statusError *StatusError
+	if !errorsAs(errPoll, &statusError) || statusError.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("pollConversation() error = %#v, want 429", errPoll)
+	}
+	if retryAfter := statusError.RetryAfter(); retryAfter == nil || *retryAfter != time.Minute {
+		t.Fatalf("RetryAfter() = %v, want 1m", retryAfter)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestPollConversationPreservesCancellationWithoutDeadline(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	executor := NewExecutor(cfg)
+	defer executor.Close()
+	credentials := Credentials{AccessToken: "token", AuthID: "auth"}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	session.Client.Transport = webImageRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"60"}},
+			Body:       io.NopCloser(strings.NewReader(`{"detail":"slow down"}`)),
+			Request:    request,
+		}, nil
+	})
+
+	errPoll := executor.pollConversation(ctx, session, credentials, &generationState{conversationID: "conversation"}, time.Now().Add(20*time.Millisecond))
+	if !errors.Is(errPoll, context.Canceled) {
+		t.Fatalf("pollConversation() error = %v, want context canceled", errPoll)
+	}
+}
+
 func TestPollConversationClassifiesCompletedQuotaMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"status":"finished_successfully","message":{"content":{"parts":["You've hit the Free plan limit for image generations requests."]}}}`)
@@ -957,4 +1017,99 @@ type webImageRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function webImageRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+func TestClassifyHTTPErrorSurfacesAuthStatusAndCode(t *testing.T) {
+	response := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Your authentication token has been invalidated.","code":"token_invalidated"},"status":401}`)),
+	}
+	var statusError *StatusError
+	if !errorsAs(classifyHTTPError("bootstrap", response), &statusError) {
+		t.Fatal("expected StatusError")
+	}
+	if statusError.StatusCode() != http.StatusUnauthorized || statusError.Kind != ErrorKindAuth || statusError.RequestScoped() {
+		t.Fatalf("unexpected classification: %#v", statusError)
+	}
+	if statusError.Error() != "web image credential was rejected (token_invalidated)" {
+		t.Fatalf("unexpected message: %q", statusError.Error())
+	}
+	if statusError.RetryAfter() != nil {
+		t.Fatalf("expected no retry-after hint, got %v", *statusError.RetryAfter())
+	}
+}
+
+func TestClassifyHTTPErrorMapsRateLimitToTooManyRequests(t *testing.T) {
+	header := http.Header{}
+	header.Set("Retry-After", "60")
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: header, Body: io.NopCloser(strings.NewReader(`{"detail":"slow down"}`))}
+	var statusError *StatusError
+	if !errorsAs(classifyHTTPError("conversation", response), &statusError) {
+		t.Fatal("expected StatusError")
+	}
+	if statusError.StatusCode() != http.StatusTooManyRequests || statusError.Kind != ErrorKindRateLimit {
+		t.Fatalf("unexpected classification: %#v", statusError)
+	}
+	if retryAfter := statusError.RetryAfter(); retryAfter == nil || *retryAfter != time.Minute {
+		t.Fatalf("expected 60s retry-after, got %v", retryAfter)
+	}
+}
+
+func TestPollConversationFreePlanLimitUsesConfiguredCooldown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"finished_successfully","message":{"content":{"parts":["You've hit the Free plan limit for image generations requests."]}}}`)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	cfg.WebImagePollInterval = "1ms"
+	cfg.WebImageFreeLimitCooldown = "90m"
+	executor := NewExecutor(cfg, WithBaseURL(server.URL))
+	defer executor.Close()
+	credentials := Credentials{AccessToken: "token", AuthID: "auth"}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+	state := generationState{conversationID: "conversation", chatRequirementsToken: "requirements"}
+	errPoll := executor.pollConversation(context.Background(), session, credentials, &state, time.Now().Add(20*time.Millisecond))
+	var statusError *StatusError
+	if !errorsAs(errPoll, &statusError) || statusError.Kind != ErrorKindRateLimit || statusError.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("pollConversation() error = %#v", errPoll)
+	}
+	if statusError.Error() != "web image free plan image limit reached" {
+		t.Fatalf("unexpected message: %q", statusError.Error())
+	}
+	if retryAfter := statusError.RetryAfter(); retryAfter == nil || *retryAfter != 90*time.Minute {
+		t.Fatalf("expected 90m cooldown, got %v", retryAfter)
+	}
+}
+
+func TestPollConversationCompletedWithoutAssetIsRequestScoped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"finished_successfully","message":{"content":{"parts":["Please upload the photo you want me to edit."]}}}`)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.SetWebImageDefaults()
+	cfg.WebImagePollInterval = "1ms"
+	executor := NewExecutor(cfg, WithBaseURL(server.URL))
+	defer executor.Close()
+	credentials := Credentials{AccessToken: "token", AuthID: "auth"}
+	session, errSession := executor.sessions.Get(credentials)
+	if errSession != nil {
+		t.Fatalf("session error = %v", errSession)
+	}
+	state := generationState{conversationID: "conversation", chatRequirementsToken: "requirements"}
+	errPoll := executor.pollConversation(context.Background(), session, credentials, &state, time.Now().Add(20*time.Millisecond))
+	var statusError *StatusError
+	if !errorsAs(errPoll, &statusError) || statusError.StatusCode() != http.StatusBadGateway || statusError.Kind != ErrorKindProtocol {
+		t.Fatalf("pollConversation() error = %#v", errPoll)
+	}
+	if !statusError.RequestScoped() {
+		t.Fatal("expected completed-without-asset to be request scoped so the conductor does not rotate credentials")
+	}
 }

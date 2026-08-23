@@ -87,6 +87,11 @@ const (
 	quotaBackoffBase          = time.Second
 	quotaBackoffMax           = 30 * time.Minute
 	transientErrorCooldown    = time.Minute
+	// codexAuthFailureThreshold is the number of consecutive 401 results after
+	// which a codex credential is parked for codexAuthFailureCooldown so the
+	// selector skips it until the account is re-authenticated.
+	codexAuthFailureThreshold = 3
+	codexAuthFailureCooldown  = 24 * time.Hour
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -566,7 +571,13 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 		if !quotaCooldownDisabledForAuthWithConfig(auth, cfg) && !auth.Disabled && auth.Status != StatusDisabled {
 			continue
 		}
+		credentialParkUntil := auth.NextRetryAfter
+		credentialParked := codexAuthFailureParkActive(auth, now) && !auth.Disabled && auth.Status != StatusDisabled
 		if clearCooldownStateForAuth(auth, now) {
+			if credentialParked {
+				auth.Unavailable = true
+				auth.NextRetryAfter = credentialParkUntil
+			}
 			snapshots = append(snapshots, auth.Clone())
 		}
 	}
@@ -642,7 +653,10 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 		return false
 	}
 	auth := m.auths[authID]
-	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) {
+	mandatoryCodexInvalidation := strings.TrimSpace(record.Model) == "" &&
+		record.AuthFailures >= codexAuthFailureThreshold &&
+		auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex")
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || (m.cooldownDisabledForAuth(auth) && !mandatoryCodexInvalidation) {
 		return false
 	}
 	updatedAt := record.UpdatedAt
@@ -659,6 +673,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	if model == "" {
 		auth.Unavailable = true
 		auth.Status = StatusError
+		auth.AuthFailures = record.AuthFailures
 		auth.NextRetryAfter = record.NextRetryAfter
 		auth.Quota = quota
 		auth.UpdatedAt = updatedAt
@@ -870,12 +885,19 @@ func (m *Manager) cooldownStateSnapshot() ([]CooldownStateRecord, CooldownStateS
 }
 
 func (m *Manager) cooldownStateRecordsForAuthLocked(auth *Auth, now time.Time) []CooldownStateRecord {
-	if auth == nil || auth.ID == "" || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) {
+	if auth == nil || auth.ID == "" || auth.Disabled || auth.Status == StatusDisabled {
+		return nil
+	}
+	coolingDisabled := m.cooldownDisabledForAuth(auth)
+	if coolingDisabled && !codexAuthFailureParkActive(auth, now) {
 		return nil
 	}
 	records := make([]CooldownStateRecord, 0, 1+len(auth.ModelStates))
 	if record, ok := authCooldownStateRecord(auth, now); ok {
 		records = append(records, record)
+	}
+	if coolingDisabled {
+		return records
 	}
 	for model, state := range auth.ModelStates {
 		if record, ok := modelCooldownStateRecord(auth, model, state, now); ok {
@@ -908,6 +930,7 @@ func cooldownStateRecordEqual(a, b CooldownStateRecord) bool {
 		a.Status != b.Status ||
 		a.Reason != b.Reason ||
 		!a.NextRetryAfter.Equal(b.NextRetryAfter) ||
+		a.AuthFailures != b.AuthFailures ||
 		!a.UpdatedAt.Equal(b.UpdatedAt) ||
 		!cooldownQuotaEqual(a.Quota, b.Quota) {
 		return false
@@ -944,6 +967,7 @@ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bo
 		AuthID:         auth.ID,
 		AuthFile:       cooldownAuthFile(auth),
 		Status:         "cooling",
+		AuthFailures:   auth.AuthFailures,
 		NextRetryAfter: auth.NextRetryAfter,
 		Reason:         cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError),
 		Quota:          auth.Quota,
@@ -2181,19 +2205,48 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.mu.Unlock()
 		return nil, nil
 	}
+	now := time.Now()
+	trackCooldownState := m.cooldownStore != nil
+	var cooldownRecordsBefore []CooldownStateRecord
+	if trackCooldownState {
+		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(existing, now)
+	}
 	if !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
 		auth.indexAssigned = existing.indexAssigned
 	}
+	credentialsChanged := codexCredentialMaterialChanged(existing, auth)
+	invalidatedCredentialsChanged := credentialsChanged && codexCredentialInvalidated(existing)
 	auth.Success = existing.Success
 	auth.Failed = existing.Failed
 	auth.recentRequests = existing.recentRequests
-	if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
+	if invalidatedCredentialsChanged {
+		auth.AuthFailures = 0
+		auth.ModelStates = codexModelStatesWithoutUnauthorized(existing.ModelStates)
+		auth.Unavailable = false
+		auth.NextRetryAfter = time.Time{}
+		auth.Quota = QuotaState{}
+		auth.LastError = nil
+		auth.StatusMessage = ""
+	} else {
+		if credentialsChanged {
+			auth.AuthFailures = 0
+		} else {
+			auth.AuthFailures = existing.AuthFailures
+		}
+		if codexAuthFailureParkActive(existing, time.Now()) {
+			auth.Unavailable = existing.Unavailable
+			auth.NextRetryAfter = existing.NextRetryAfter
+			auth.LastError = cloneError(existing.LastError)
+			auth.StatusMessage = existing.StatusMessage
+			auth.Status = existing.Status
+		}
+	}
+	if !invalidatedCredentialsChanged && !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 		if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
 		}
 	}
-	now := time.Now()
 	clearedCooldown := false
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		clearedCooldown = clearCooldownStateForAuth(auth, now)
@@ -2201,6 +2254,11 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.EnsureIndex()
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	cooldownStateChanged := false
+	if trackCooldownState {
+		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(authClone, now)
+		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+	}
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
@@ -2211,7 +2269,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	if clearedCooldown {
+	if clearedCooldown || cooldownStateChanged {
 		m.persistCooldownStates(ctx)
 	}
 	return auth.Clone(), nil
@@ -3697,20 +3755,31 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	var setModelQuotaResetAt time.Time
 	var authSnapshot *Auth
 	cooldownStateChanged := false
+	var credentialParkUntil time.Time
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
+		statusCode := statusCodeFromResult(result.Error)
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
 		if trackCooldownState {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
+		if codexCredentialInvalidated(auth) && (result.Success || statusCode != http.StatusUnauthorized) {
+			clearCodexCredentialInvalidation(auth, now)
+		}
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
 			auth.Success++
+			auth.AuthFailures = 0
 		} else {
 			auth.Failed++
+			if statusCode == http.StatusUnauthorized {
+				auth.AuthFailures++
+			} else {
+				auth.AuthFailures = 0
+			}
 		}
 
 		if result.Success {
@@ -3744,7 +3813,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.StatusMessage = result.Error.Message
 					}
 
-					statusCode := statusCodeFromResult(result.Error)
 					if isModelSupportResultError(result.Error) {
 						next := now.Add(12 * time.Hour)
 						state.NextRetryAfter = next
@@ -3763,7 +3831,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							NextRecoverAt: next,
 							BackoffLevel:  backoffLevel,
 						}
-					} else if isInvalidGrantResultError(result.Error) {
+					} else if isInvalidGrantResultError(result.Error) && statusCode != http.StatusUnauthorized {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
 						} else {
@@ -3774,14 +3842,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					} else {
 						switch statusCode {
 						case 401:
-							if disableCooling {
-								state.NextRetryAfter = time.Time{}
-							} else {
-								next := now.Add(30 * time.Minute)
-								state.NextRetryAfter = next
+							next := time.Time{}
+							if parked, until := codexAuthFailureParkUntil(auth, now); parked {
+								next = until
+								credentialParkUntil = until
+								state.StatusMessage = auth.StatusMessage
+								suspendReason = "unauthorized"
+								shouldSuspendModel = true
+							} else if !disableCooling {
+								next = now.Add(30 * time.Minute)
 								suspendReason = "unauthorized"
 								shouldSuspendModel = true
 							}
+							state.NextRetryAfter = next
 						case 402, 403:
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
@@ -3901,6 +3974,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
 			}
 		}
+		if !credentialParkUntil.IsZero() {
+			auth.Unavailable = true
+			auth.NextRetryAfter = credentialParkUntil
+			auth.Status = StatusError
+		}
 
 		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
@@ -3990,6 +4068,14 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	if auth == nil {
 		return
 	}
+	credentialParkUntil := auth.NextRetryAfter
+	credentialParked := codexAuthFailureParkActive(auth, now)
+	defer func() {
+		if credentialParked {
+			auth.Unavailable = true
+			auth.NextRetryAfter = credentialParkUntil
+		}
+	}()
 	if len(auth.ModelStates) == 0 {
 		clearAggregatedAvailability(auth)
 		return
@@ -4068,7 +4154,10 @@ func clearAggregatedAvailability(auth *Auth) {
 
 func hasModelError(auth *Auth, now time.Time) bool {
 	if auth == nil || len(auth.ModelStates) == 0 {
-		return false
+		return codexAuthFailureParkActive(auth, now)
+	}
+	if codexAuthFailureParkActive(auth, now) {
+		return true
 	}
 	for _, state := range auth.ModelStates {
 		if state == nil {
@@ -4133,6 +4222,89 @@ func statusCodeFromError(err error) int {
 		return sc.StatusCode()
 	}
 	return 0
+}
+
+// codexAuthFailureParkUntil reports whether a codex credential has crossed the
+// consecutive-401 threshold and, if so, until when it should be skipped. It
+// rewrites the auth status message so operators can tell a dead credential
+// (re-login required) apart from a transient rejection.
+func codexAuthFailureParkUntil(auth *Auth, now time.Time) (bool, time.Time) {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") || auth.AuthFailures < codexAuthFailureThreshold {
+		return false, time.Time{}
+	}
+	auth.StatusMessage = fmt.Sprintf("credential invalidated: %d consecutive 401 responses, re-login required (%s)", auth.AuthFailures, auth.StatusMessage)
+	return true, now.Add(codexAuthFailureCooldown)
+}
+
+func codexAuthFailureParkActive(auth *Auth, now time.Time) bool {
+	return auth != nil &&
+		strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") &&
+		codexCredentialInvalidated(auth) &&
+		auth.Unavailable &&
+		auth.NextRetryAfter.After(now)
+}
+
+func codexCredentialInvalidated(auth *Auth) bool {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	return auth.AuthFailures >= codexAuthFailureThreshold ||
+		strings.HasPrefix(strings.TrimSpace(auth.StatusMessage), "credential invalidated:")
+}
+
+func codexCredentialMaterialChanged(existing, incoming *Auth) bool {
+	if existing == nil || incoming == nil ||
+		!strings.EqualFold(strings.TrimSpace(existing.Provider), "codex") ||
+		!strings.EqualFold(strings.TrimSpace(incoming.Provider), "codex") {
+		return false
+	}
+	for _, key := range []string{"access_token", "refresh_token", "id_token"} {
+		previous := authMetadataString(existing, key)
+		next := authMetadataString(incoming, key)
+		if next != "" && next != previous {
+			return true
+		}
+	}
+	return false
+}
+
+func codexModelStatesWithoutUnauthorized(states map[string]*ModelState) map[string]*ModelState {
+	if len(states) == 0 {
+		return nil
+	}
+	filtered := make(map[string]*ModelState, len(states))
+	for model, state := range states {
+		if state != nil && state.LastError != nil && state.LastError.StatusCode() == http.StatusUnauthorized {
+			continue
+		}
+		filtered[model] = state
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func clearCodexCredentialInvalidation(auth *Auth, now time.Time) bool {
+	if auth == nil || !codexCredentialInvalidated(auth) {
+		return false
+	}
+	auth.AuthFailures = 0
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	if strings.HasPrefix(strings.TrimSpace(auth.StatusMessage), "credential invalidated:") {
+		auth.StatusMessage = ""
+	}
+	if auth.LastError != nil && auth.LastError.StatusCode() == http.StatusUnauthorized {
+		auth.LastError = nil
+	}
+	auth.ModelStates = codexModelStatesWithoutUnauthorized(auth.ModelStates)
+	updateAggregatedAvailability(auth, now)
+	if !hasModelError(auth, now) {
+		auth.Status = StatusActive
+	}
+	auth.UpdatedAt = now
+	return true
 }
 
 func isUnauthorizedError(err error) bool {
@@ -4446,7 +4618,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = next
 		return
 	}
-	if isInvalidGrantResultError(resultErr) {
+	if isInvalidGrantResultError(resultErr) && statusCode != http.StatusUnauthorized {
 		auth.StatusMessage = "invalid_grant"
 		if disableCooling {
 			auth.NextRetryAfter = time.Time{}
@@ -4458,11 +4630,13 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	switch statusCode {
 	case 401:
 		auth.StatusMessage = "unauthorized"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
+		next := time.Time{}
+		if parked, until := codexAuthFailureParkUntil(auth, now); parked {
+			next = until
+		} else if !disableCooling {
+			next = now.Add(30 * time.Minute)
 		}
+		auth.NextRetryAfter = next
 	case 402, 403:
 		auth.StatusMessage = "payment_required"
 		if disableCooling {

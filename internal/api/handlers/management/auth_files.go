@@ -486,6 +486,14 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
+	entry["auth_failures"] = auth.AuthFailures
+	if auth.LastError != nil {
+		entry["last_error"] = gin.H{
+			"code":        auth.LastError.Code,
+			"message":     auth.LastError.Message,
+			"http_status": auth.LastError.HTTPStatus,
+		}
+	}
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email

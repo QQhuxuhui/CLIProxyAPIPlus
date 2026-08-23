@@ -47,12 +47,21 @@ func (e *Executor) pollConversation(ctx context.Context, session *Session, crede
 		if errConversation != nil {
 			var statusError *StatusError
 			if errors.As(errConversation, &statusError) && statusError.Kind == ErrorKindRateLimit {
-				retryDelay := rateLimitDelay
-				if statusError.RetryAfter > retryDelay {
-					retryDelay = statusError.RetryAfter
+				if errContext := ctx.Err(); errContext != nil {
+					return errContext
 				}
-				if remaining := time.Until(pollDeadline); retryDelay > remaining {
-					retryDelay = remaining
+				retryDelay := rateLimitDelay
+				if statusError.RetryAfterDelay > retryDelay {
+					retryDelay = statusError.RetryAfterDelay
+				}
+				if remaining := time.Until(pollDeadline); retryDelay >= remaining {
+					contextEndsFirst := false
+					if contextDeadline, ok := ctx.Deadline(); ok {
+						contextEndsFirst = contextDeadline.Before(pollDeadline)
+					}
+					if !contextEndsFirst {
+						return statusError
+					}
 				}
 				if errWait := waitPoll(ctx, retryDelay); errWait != nil {
 					return errWait
@@ -77,14 +86,23 @@ func (e *Executor) pollConversation(ctx context.Context, session *Session, crede
 		if hasDirectAsset(state.assetRefs) {
 			return nil
 		}
-		if state.done && containsPollText(conversationResponse.Body, "free plan limit", "image generation limit", "limit for image generations", "rate limit") {
-			return &StatusError{Status: http.StatusServiceUnavailable, Kind: ErrorKindRateLimit, Stage: "poll", Msg: "web image upstream rate limit reached"}
+		if state.done && containsPollText(conversationResponse.Body, "free plan limit", "image generation limit", "limit for image generations") {
+			// The account's image quota is exhausted for a long window; report it
+			// as a 429 with an explicit cooldown so the conductor parks the
+			// account instead of re-probing it every transient-error cooldown.
+			return &StatusError{Status: http.StatusTooManyRequests, Kind: ErrorKindRateLimit, Stage: "poll", Msg: "web image free plan image limit reached", RetryAfterDelay: e.freeLimitCooldown()}
+		}
+		if state.done && containsPollText(conversationResponse.Body, "rate limit") {
+			return &StatusError{Status: http.StatusTooManyRequests, Kind: ErrorKindRateLimit, Stage: "poll", Msg: "web image upstream rate limit reached"}
 		}
 		if state.done && len(state.assetRefs) > 0 {
 			return nil
 		}
 		if state.done {
-			return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "poll", Msg: "web image generation completed without an asset"}
+			// The upstream finished the turn without producing an image (content
+			// policy refusal or a text-only answer). That outcome is decided by
+			// the prompt, so rotating to another credential cannot change it.
+			return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "poll", Msg: "web image generation completed without an asset", Scoped: true}
 		}
 		if state.failed {
 			return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindUpstream, Stage: "poll", Msg: "web image generation failed upstream"}

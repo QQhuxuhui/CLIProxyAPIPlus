@@ -13,6 +13,7 @@ const (
 	DefaultWebImageModel                          = "gpt-image-web"
 	DefaultWebImagePollTimeout                    = "120s"
 	DefaultWebImageTotalDeadline                  = "150s"
+	DefaultWebImageFreeLimitCooldown              = "3h"
 	DefaultWebImagePollInterval                   = "1s"
 	DefaultWebImagePoWTimeout                     = "20s"
 	DefaultWebImageMaxBytes                 int64 = 20 * 1024 * 1024
@@ -87,6 +88,7 @@ type WebImageConfig struct {
 	WebImageBaseModel                string   `yaml:"web-image-base-model,omitempty" json:"web-image-base-model,omitempty"`
 	WebImagePollTimeout              string   `yaml:"web-image-poll-timeout,omitempty" json:"web-image-poll-timeout,omitempty"`
 	WebImageTotalDeadline            string   `yaml:"web-image-total-deadline,omitempty" json:"web-image-total-deadline,omitempty"`
+	WebImageFreeLimitCooldown        string   `yaml:"web-image-free-limit-cooldown,omitempty" json:"web-image-free-limit-cooldown,omitempty"`
 	WebImagePollInterval             string   `yaml:"web-image-poll-interval,omitempty" json:"web-image-poll-interval,omitempty"`
 	WebImagePoWTimeout               string   `yaml:"web-image-pow-timeout,omitempty" json:"web-image-pow-timeout,omitempty"`
 	WebImageMaxBytes                 int64    `yaml:"web-image-max-bytes,omitempty" json:"web-image-max-bytes,omitempty"`
@@ -107,6 +109,7 @@ func (c *SDKConfig) SetWebImageDefaults() {
 	c.WebImageModels = []string{DefaultWebImageModel}
 	c.WebImagePollTimeout = DefaultWebImagePollTimeout
 	c.WebImageTotalDeadline = DefaultWebImageTotalDeadline
+	c.WebImageFreeLimitCooldown = DefaultWebImageFreeLimitCooldown
 	c.WebImagePollInterval = DefaultWebImagePollInterval
 	c.WebImagePoWTimeout = DefaultWebImagePoWTimeout
 	c.WebImageMaxBytes = DefaultWebImageMaxBytes
@@ -144,6 +147,7 @@ func (c *SDKConfig) NormalizeWebImageConfig() {
 	c.WebImageBaseModel = strings.TrimSpace(c.WebImageBaseModel)
 	c.WebImagePollTimeout = positiveDurationOrDefault(c.WebImagePollTimeout, DefaultWebImagePollTimeout)
 	c.WebImageTotalDeadline = positiveDurationOrDefault(c.WebImageTotalDeadline, DefaultWebImageTotalDeadline)
+	c.WebImageFreeLimitCooldown = positiveDurationOrDefault(c.WebImageFreeLimitCooldown, DefaultWebImageFreeLimitCooldown)
 	c.WebImagePollInterval = positiveDurationOrDefault(c.WebImagePollInterval, DefaultWebImagePollInterval)
 	c.WebImagePoWTimeout = positiveDurationOrDefault(c.WebImagePoWTimeout, DefaultWebImagePoWTimeout)
 	if c.WebImageMaxBytes <= 0 {

@@ -162,6 +162,10 @@ func TestQuotaMonitorHTMLHasErrorAndRequestColumns(t *testing.T) {
 		"error_description",
 		`class="error-detail"`,
 		`class="request-count"`,
+		`class="auth-failures"`,
+		"AccountViewLogic.authFailures",
+		"INVALIDATED_PATTERN",
+		".auth-failures {",
 		".error-detail {",
 		".request-count {",
 	} {

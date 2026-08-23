@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -115,15 +116,34 @@ func classifyHTTPError(stage string, response *http.Response) error {
 		return &StatusError{Status: http.StatusServiceUnavailable, Kind: ErrorKindChallenge, Stage: stage, Msg: "web image browser challenge rejected"}
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return &StatusError{Status: http.StatusServiceUnavailable, Kind: ErrorKindAuth, Stage: stage, Msg: "web image credential was rejected"}
+		// Surface the real auth status so the conductor treats the failure as a
+		// credential problem (cooldown + consecutive-failure escalation) instead
+		// of a transient upstream error that keeps the account in rotation.
+		msg := "web image credential was rejected"
+		if code := upstreamErrorCode(text); code != "" {
+			msg += " (" + code + ")"
+		}
+		return &StatusError{Status: status, Kind: ErrorKindAuth, Stage: stage, Msg: msg}
 	}
 	if status == http.StatusTooManyRequests {
-		return &StatusError{Status: http.StatusServiceUnavailable, Kind: ErrorKindRateLimit, Stage: stage, Msg: "web image upstream rate limit reached", RetryAfter: retryAfterDuration(response.Header.Get("Retry-After"))}
+		return &StatusError{Status: http.StatusTooManyRequests, Kind: ErrorKindRateLimit, Stage: stage, Msg: "web image upstream rate limit reached", RetryAfterDelay: retryAfterDuration(response.Header.Get("Retry-After"))}
 	}
 	if status == http.StatusBadRequest && (strings.Contains(text, "moderation") || strings.Contains(text, "safety") || strings.Contains(text, "policy")) {
 		return &StatusError{Status: http.StatusBadRequest, Kind: ErrorKindModeration, Stage: stage, Msg: "web image prompt was rejected"}
 	}
 	return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindUpstream, Stage: stage, Msg: "web image upstream returned an error"}
+}
+
+var upstreamErrorCodePattern = regexp.MustCompile(`"code"\s*:\s*"([a-z0-9_]{1,64})"`)
+
+// upstreamErrorCode extracts the short machine readable error code (for example
+// token_invalidated) from an upstream JSON error body without leaking the body.
+func upstreamErrorCode(lowerBody string) string {
+	match := upstreamErrorCodePattern.FindStringSubmatch(lowerBody)
+	if len(match) != 2 {
+		return ""
+	}
+	return match[1]
 }
 
 func retryAfterDuration(raw string) time.Duration {
