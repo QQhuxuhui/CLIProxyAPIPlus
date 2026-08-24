@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,75 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	return NewServer(cfg, authManager, accessManager, configPath, opts...)
+}
+
+func TestNewServerAppliesQuotaCooldownBase(t *testing.T) {
+	t.Cleanup(func() { auth.SetQuotaCooldownBaseSeconds(0) })
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	cfg := &proxyconfig.Config{
+		Port:                     0,
+		AuthDir:                  authDir,
+		Debug:                    true,
+		QuotaCooldownBaseSeconds: 60,
+	}
+	authManager := auth.NewManager(nil, nil, nil)
+	server := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+	if server == nil {
+		t.Fatal("expected server")
+	}
+
+	const authID = "server-quota-cooldown-base"
+	if _, errRegister := authManager.Register(context.Background(), &auth.Auth{ID: authID, Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	authManager.MarkResult(context.Background(), auth.Result{
+		AuthID: authID,
+		Error:  &auth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	updated, ok := authManager.GetByID(authID)
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if got := time.Until(updated.NextRetryAfter); got < 59*time.Second || got > 61*time.Second {
+		t.Fatalf("expected approximately 60s cooldown, got %s", got)
+	}
+}
+
+func TestServerUpdateClientsAppliesQuotaCooldownBase(t *testing.T) {
+	t.Cleanup(func() { auth.SetQuotaCooldownBaseSeconds(0) })
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	cfg := &proxyconfig.Config{Port: 0, AuthDir: authDir, Debug: true}
+	authManager := auth.NewManager(nil, nil, nil)
+	server := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+	nextCfg := *cfg
+	nextCfg.QuotaCooldownBaseSeconds = 60
+	server.UpdateClients(&nextCfg)
+
+	const authID = "server-update-quota-cooldown-base"
+	if _, errRegister := authManager.Register(context.Background(), &auth.Auth{ID: authID, Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	authManager.MarkResult(context.Background(), auth.Result{
+		AuthID: authID,
+		Error:  &auth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+	updated, ok := authManager.GetByID(authID)
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if got := time.Until(updated.NextRetryAfter); got < 59*time.Second || got > 61*time.Second {
+		t.Fatalf("expected approximately 60s cooldown after update, got %s", got)
+	}
 }
 
 func TestHealthz(t *testing.T) {

@@ -95,6 +95,11 @@ type Config struct {
 	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
 	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
 
+	// QuotaCooldownBaseSeconds controls the starting cooldown for quota (429)
+	// errors that carry no upstream retry hint. The cooldown doubles per repeated
+	// failure up to the 30 minute cap. 0 keeps the legacy 1 second base.
+	QuotaCooldownBaseSeconds int `yaml:"quota-cooldown-base-seconds" json:"quota-cooldown-base-seconds"`
+
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
@@ -736,6 +741,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.DisableCooling = false
 	cfg.SaveCooldownStatus = true
 	cfg.TransientErrorCooldownSeconds = 0
+	cfg.QuotaCooldownBaseSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.SetWebImageDefaults()
 	cfg.WebsocketAuth = true

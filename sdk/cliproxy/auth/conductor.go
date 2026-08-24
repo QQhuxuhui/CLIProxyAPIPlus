@@ -96,6 +96,7 @@ const (
 
 var quotaCooldownDisabled atomic.Bool
 var transientErrorCooldownSeconds atomic.Int64
+var quotaCooldownBaseSeconds atomic.Int64
 
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
@@ -106,6 +107,13 @@ func SetQuotaCooldownDisabled(disable bool) {
 // 0 keeps the legacy default; negative values disable transient error cooldowns.
 func SetTransientErrorCooldownSeconds(seconds int) {
 	transientErrorCooldownSeconds.Store(int64(seconds))
+}
+
+// SetQuotaCooldownBaseSeconds configures the starting cooldown for quota (429)
+// errors that carry no upstream retry hint. The cooldown doubles per repeated
+// failure up to quotaBackoffMax. Values <= 0 keep the legacy one second base.
+func SetQuotaCooldownBaseSeconds(seconds int) {
+	quotaCooldownBaseSeconds.Store(int64(seconds))
 }
 
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
@@ -4514,7 +4522,7 @@ func isCloudflareChallengeResultError(err *Error) bool {
 func nextCloudflareCooldown(backoffLevel int, disableCooling bool, now time.Time) (time.Time, int) {
 	var next time.Time
 	if !disableCooling {
-		cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
+		cooldown, nextLevel := nextQuotaCooldownWithBase(backoffLevel, disableCooling, quotaBackoffBase)
 		if cooldown < 10*time.Second {
 			cooldown = 10 * time.Second
 		}
@@ -4698,15 +4706,37 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int)
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
 func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) {
+	base := quotaBackoffBase
+	if secs := quotaCooldownBaseSeconds.Load(); secs > 0 {
+		maxSeconds := int64(quotaBackoffMax / time.Second)
+		if secs >= maxSeconds {
+			base = quotaBackoffMax
+		} else {
+			base = time.Duration(secs) * time.Second
+		}
+	}
+	return nextQuotaCooldownWithBase(prevLevel, disableCooling, base)
+}
+
+func nextQuotaCooldownWithBase(prevLevel int, disableCooling bool, base time.Duration) (time.Duration, int) {
 	if prevLevel < 0 {
 		prevLevel = 0
 	}
 	if disableCooling {
 		return 0, prevLevel
 	}
-	cooldown := quotaBackoffBase * time.Duration(1<<prevLevel)
-	if cooldown < quotaBackoffBase {
-		cooldown = quotaBackoffBase
+	if base <= 0 {
+		base = quotaBackoffBase
+	}
+	if base >= quotaBackoffMax {
+		return quotaBackoffMax, prevLevel
+	}
+	cooldown := base
+	for level := 0; level < prevLevel; level++ {
+		if cooldown >= quotaBackoffMax/2 {
+			return quotaBackoffMax, prevLevel
+		}
+		cooldown *= 2
 	}
 	if cooldown >= quotaBackoffMax {
 		return quotaBackoffMax, prevLevel

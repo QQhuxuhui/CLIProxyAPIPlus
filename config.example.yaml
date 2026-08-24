@@ -143,6 +143,12 @@ save-cooldown-status: true
 # Set to 0 to keep the legacy 60-second cooldown; set to -1 to disable transient error cooldowns.
 transient-error-cooldown-seconds: 0
 
+# Starting cooldown in seconds for quota (429) errors that carry no upstream retry hint.
+# The cooldown doubles per repeated failure, capped at 30 minutes.
+# Set to 0 to keep the legacy 1-second base. Recommended 60 for large OAuth pools where
+# upstream 429 bodies carry no retry hint (e.g. Antigravity RESOURCE_EXHAUSTED).
+quota-cooldown-base-seconds: 0
+
 # When true, globally disable Claude request cloaking (the Claude Code CLI disguise and
 # system prompt replacement), so the original system prompt is passed through to Claude as-is.
 # Individual credentials can still override this: a claude-api-key entry via its "cloak.mode",

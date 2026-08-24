@@ -766,6 +766,7 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 	maxInterval := time.Duration(cfg.MaxRetryInterval) * time.Second
 	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval, cfg.MaxRetryCredentials)
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
+	coreauth.SetQuotaCooldownBaseSeconds(cfg.QuotaCooldownBaseSeconds)
 }
 
 func (s *Service) configureCooldownStateStore(cfg *config.Config) {

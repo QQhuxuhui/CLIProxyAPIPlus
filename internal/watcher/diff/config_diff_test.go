@@ -93,6 +93,14 @@ func TestBuildConfigChangeDetails_NoChanges(t *testing.T) {
 	}
 }
 
+func TestBuildConfigChangeDetails_QuotaCooldownBase(t *testing.T) {
+	oldCfg := &config.Config{QuotaCooldownBaseSeconds: 0}
+	newCfg := &config.Config{QuotaCooldownBaseSeconds: 60}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "quota-cooldown-base-seconds: 0 -> 60")
+}
+
 func TestBuildConfigChangeDetails_GeminiVertexHeaders(t *testing.T) {
 	oldCfg := &config.Config{
 		GeminiKey: []config.GeminiKey{
