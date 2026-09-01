@@ -2291,6 +2291,11 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	payload = geminiToAntigravity(modelName, payload, projectID)
 	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
+	// Drop an "auto" image aspect ratio: cloudcode-pa (antigravity) forwards it to
+	// Gemini, which rejects "auto" with 400 INVALID_ARGUMENT. Removing it lets the
+	// model choose (following the input image when present). See the shared helper.
+	payload = stripAutoImageAspectRatio(payload, "request.generationConfig.imageConfig")
+
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
 		if modelInfo := registry.LookupModelInfo(modelName, "antigravity"); modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {

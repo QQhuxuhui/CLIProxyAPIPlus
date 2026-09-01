@@ -906,7 +906,32 @@ func capGeminiMaxOutputTokens(body []byte, modelName string) []byte {
 	return body
 }
 
+// stripAutoImageAspectRatio removes an "auto" aspect ratio (case-insensitive,
+// whitespace-trimmed) located at imageConfigPath+".aspectRatio". Gemini rejects
+// "auto" as an invalid enum (only fixed ratios like 1:1/16:9/9:16/... are
+// accepted), so forwarding it makes the upstream fail with a 400
+// INVALID_ARGUMENT. Dropping the field lets the model pick a ratio itself
+// (following the input image when one is provided), which is the semantics
+// callers expect from "auto". If the imageConfig object is left empty it is
+// removed as well. imageConfigPath differs per request shape: the plain Gemini
+// payload uses "generationConfig.imageConfig", the antigravity-wrapped payload
+// uses "request.generationConfig.imageConfig".
+func stripAutoImageAspectRatio(rawJSON []byte, imageConfigPath string) []byte {
+	arPath := imageConfigPath + ".aspectRatio"
+	if ar := gjson.GetBytes(rawJSON, arPath); ar.Exists() && ar.Type == gjson.String && strings.EqualFold(strings.TrimSpace(ar.String()), "auto") {
+		rawJSON, _ = sjson.DeleteBytes(rawJSON, arPath)
+		if imgCfg := gjson.GetBytes(rawJSON, imageConfigPath); imgCfg.Exists() && imgCfg.IsObject() && len(imgCfg.Map()) == 0 {
+			rawJSON, _ = sjson.DeleteBytes(rawJSON, imageConfigPath)
+		}
+	}
+	return rawJSON
+}
+
 func fixGeminiImageAspectRatio(modelName string, rawJSON []byte) []byte {
+	// Silently drop an "auto" aspect ratio ahead of the 2.5 handling below, so
+	// the 2.5 branch no longer forces a square white canvas for "auto" and 3.x
+	// models no longer forward the invalid enum to the upstream.
+	rawJSON = stripAutoImageAspectRatio(rawJSON, "generationConfig.imageConfig")
 	if modelName == "gemini-2.5-flash-image-preview" {
 		aspectRatioResult := gjson.GetBytes(rawJSON, "generationConfig.imageConfig.aspectRatio")
 		if aspectRatioResult.Exists() {
