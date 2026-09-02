@@ -34,6 +34,10 @@ type StatusError struct {
 	// a configured quota cooldown) so the conductor can schedule the cooldown.
 	RetryAfterDelay time.Duration
 	Scoped          bool
+	// Busy marks a per-account concurrency-limit signal: the credential is
+	// healthy but already at its slot limit, so the conductor should rotate to
+	// another credential without penalising this one.
+	Busy bool
 }
 
 func (e *StatusError) Error() string {
@@ -59,6 +63,13 @@ func (e *StatusError) StatusCode() int {
 // RequestScoped reports whether this failure is unrelated to credential health.
 func (e *StatusError) RequestScoped() bool {
 	return e != nil && e.Scoped
+}
+
+// AccountBusy reports whether this failure is a per-account concurrency-limit
+// signal. The credential is healthy but busy, so the conductor should rotate to
+// another credential without penalising this one.
+func (e *StatusError) AccountBusy() bool {
+	return e != nil && e.Busy
 }
 
 // RetryAfter exposes the backoff hint to the conductor cooldown scheduler.

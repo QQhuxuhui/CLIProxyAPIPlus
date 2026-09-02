@@ -101,8 +101,9 @@ func (e *Executor) pollConversation(ctx context.Context, session *Session, crede
 		if state.done {
 			// The upstream finished the turn without producing an image (content
 			// policy refusal or a text-only answer). That outcome is decided by
-			// the prompt, so rotating to another credential cannot change it.
-			return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindProtocol, Stage: "poll", Msg: "web image generation completed without an asset", Scoped: true}
+			// the prompt, so rotating to another credential cannot change it — a
+			// client-side (400) request problem, not an upstream (502) fault.
+			return &StatusError{Status: http.StatusBadRequest, Kind: ErrorKindModeration, Stage: "poll", Msg: "图片被内容风控拒绝：提示词可能违反内容政策，未生成图片，请调整提示词后重试", Scoped: true}
 		}
 		if state.failed {
 			return &StatusError{Status: http.StatusBadGateway, Kind: ErrorKindUpstream, Stage: "poll", Msg: "web image generation failed upstream"}

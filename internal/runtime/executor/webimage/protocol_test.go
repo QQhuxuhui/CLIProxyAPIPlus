@@ -1106,7 +1106,10 @@ func TestPollConversationCompletedWithoutAssetIsRequestScoped(t *testing.T) {
 	state := generationState{conversationID: "conversation", chatRequirementsToken: "requirements"}
 	errPoll := executor.pollConversation(context.Background(), session, credentials, &state, time.Now().Add(20*time.Millisecond))
 	var statusError *StatusError
-	if !errorsAs(errPoll, &statusError) || statusError.StatusCode() != http.StatusBadGateway || statusError.Kind != ErrorKindProtocol {
+	// A finished turn with no asset is decided by the prompt (moderation or a
+	// text-only answer), so it surfaces as a client-side 400 that must not
+	// rotate or penalise credentials.
+	if !errorsAs(errPoll, &statusError) || statusError.StatusCode() != http.StatusBadRequest || statusError.Kind != ErrorKindModeration {
 		t.Fatalf("pollConversation() error = %#v", errPoll)
 	}
 	if !statusError.RequestScoped() {

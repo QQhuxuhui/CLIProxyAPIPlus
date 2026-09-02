@@ -3,6 +3,7 @@ package webimage
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -170,11 +171,20 @@ func (e *Executor) acquire(ctx context.Context, authID string) (func(), error) {
 	e.accountRefs[authID]++
 	e.accountMu.Unlock()
 
+	if errCtx := ctx.Err(); errCtx != nil {
+		e.releaseAccountReference(authID, accountSlots)
+		return nil, errCtx
+	}
+	// Acquire the per-account slot without blocking. If the account is already at
+	// its concurrency limit (mid-generation), signal the conductor to rotate to an
+	// idle credential instead of head-of-line blocking on this one — under a burst
+	// that blocking is what makes requests queue on a busy account while other
+	// accounts sit idle. The account is healthy, so this must not cool it.
 	select {
 	case accountSlots <- struct{}{}:
-	case <-ctx.Done():
+	default:
 		e.releaseAccountReference(authID, accountSlots)
-		return nil, ctx.Err()
+		return nil, &StatusError{Status: http.StatusTooManyRequests, Kind: ErrorKindRateLimit, Stage: "acquire", Msg: "web image account at per-account concurrency limit", Busy: true}
 	}
 
 	select {

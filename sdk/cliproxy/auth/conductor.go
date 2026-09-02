@@ -2594,10 +2594,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var busyErr error
 	for {
 		if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, lastErr
+			}
+			if busyErr != nil {
+				return cliproxyexecutor.Response{}, busyErr
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
@@ -2609,6 +2613,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
+			}
+			// All candidates were exhausted after skipping busy accounts: surface
+			// the capacity signal (retryable) rather than a generic pick failure.
+			if lastErr == nil && busyErr != nil {
+				return cliproxyexecutor.Response{}, busyErr
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
@@ -2656,6 +2665,17 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
+				}
+				if ce, okCap := errors.AsType[cliproxyexecutor.CapacityError](errExec); okCap && ce != nil && ce.AccountBusy() {
+					// The credential is healthy but at its per-account concurrency
+					// limit. Rotate to an idle credential without penalising it (no
+					// MarkResult, so its health is untouched). The skip still counts
+					// toward the retry-credentials budget, which bounds how many
+					// accounts a single request probes before returning the capacity
+					// signal — cheap non-blocking probes, but bounded so a fully
+					// saturated pool sheds load fast instead of rescanning everything.
+					busyErr = errExec
+					break
 				}
 				if isRequestScopedError(errExec) {
 					return cliproxyexecutor.Response{}, errExec

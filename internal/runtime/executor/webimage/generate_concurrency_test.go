@@ -2,17 +2,17 @@ package webimage
 
 import (
 	"context"
-	"runtime"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-func TestAcquireWaitingForAccountDoesNotReserveGlobalSlot(t *testing.T) {
-	previousMaxProcs := runtime.GOMAXPROCS(1)
-	defer runtime.GOMAXPROCS(previousMaxProcs)
-
+// A busy account must not block: acquire returns a retryable capacity signal
+// immediately so the conductor can rotate to an idle account instead of queuing
+// on the occupied one, while other accounts stay acquirable.
+func TestAcquireBusyAccountReturnsBusyWithoutBlocking(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.SetWebImageDefaults()
 	cfg.WebImageMaxConcurrency = 1
@@ -25,33 +25,39 @@ func TestAcquireWaitingForAccountDoesNotReserveGlobalSlot(t *testing.T) {
 	executor.accountSlots["account-a"] = occupiedAccountSlot
 	executor.accountMu.Unlock()
 
-	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
-	waiterStarted := make(chan struct{})
-	waiterDone := make(chan error, 1)
+	done := make(chan error, 1)
 	go func() {
-		close(waiterStarted)
-		release, errAcquire := executor.acquire(waiterCtx, "account-a")
+		release, errAcquire := executor.acquire(context.Background(), "account-a")
 		if errAcquire == nil {
 			release()
 		}
-		waiterDone <- errAcquire
-	}()
-	<-waiterStarted
-	runtime.Gosched()
-	defer func() {
-		cancelWaiter()
-		select {
-		case <-waiterDone:
-		case <-time.After(time.Second):
-			t.Error("account-a waiter did not stop")
-		}
+		done <- errAcquire
 	}()
 
-	otherCtx, cancelOther := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer cancelOther()
-	releaseOther, errOther := executor.acquire(otherCtx, "account-b")
+	var errBusy error
+	select {
+	case errBusy = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("acquire on a busy account blocked; want immediate busy signal")
+	}
+	if errBusy == nil {
+		t.Fatal("acquire on a busy account returned no error; want busy capacity signal")
+	}
+	var statusErr *StatusError
+	if !errors.As(errBusy, &statusErr) {
+		t.Fatalf("busy error type = %T, want *StatusError", errBusy)
+	}
+	if !statusErr.AccountBusy() {
+		t.Fatal("StatusError.AccountBusy() = false, want true for a per-account limit hit")
+	}
+	if statusErr.StatusCode() != 429 {
+		t.Fatalf("busy StatusError code = %d, want 429", statusErr.StatusCode())
+	}
+
+	// A different account is unaffected and still acquires successfully.
+	releaseOther, errOther := executor.acquire(context.Background(), "account-b")
 	if errOther != nil {
-		t.Fatalf("account-b acquire error = %v, want success while account-a waits", errOther)
+		t.Fatalf("account-b acquire error = %v, want success while account-a is busy", errOther)
 	}
 	releaseOther()
 }

@@ -161,6 +161,16 @@ type RequestScopedError interface {
 	RequestScoped() bool
 }
 
+// CapacityError marks a failure caused by the selected credential being at its
+// concurrency limit (busy) rather than by its health. The conductor should
+// rotate to another credential without penalising this one, and may treat an
+// all-busy pool as a retryable capacity condition. Implemented by executors
+// (e.g. web image) that cap concurrent work per credential.
+type CapacityError interface {
+	error
+	AccountBusy() bool
+}
+
 // QuotaDetail carries structured upstream 429 quota information across the
 // executor -> conductor boundary. It is provider-neutral: any executor may
 // populate it from a structured rate-limit/quota response.
