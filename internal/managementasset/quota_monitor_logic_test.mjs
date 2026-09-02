@@ -292,3 +292,18 @@ test('refresh policy requires active current range and sixty seconds', () => {
   assert.equal(modelLogic.shouldRefreshOnActivate(1000, 61000), true);
   assert.equal(modelLogic.shouldRefreshOnActivate(2000, 61000), false);
 });
+
+test('selectedEmails keeps list order, drops duplicates, and counts accounts without email', () => {
+  const entries = [
+    { name: 'a.json', email: 'a@x.com' },
+    { name: 'b.json' },
+    { name: 'c.json', email: ' a@x.com ' },
+    { name: 'd.json', email: 'd@x.com' },
+    { name: 'e.json', email: 'e@x.com' },
+  ];
+  assert.deepEqual(plain(logic.selectedEmails(['d.json', 'a.json', 'b.json', 'c.json'], entries)), {
+    emails: ['a@x.com', 'd@x.com'],
+    missing: 1,
+  });
+  assert.deepEqual(plain(logic.selectedEmails([], entries)), { emails: [], missing: 0 });
+});
