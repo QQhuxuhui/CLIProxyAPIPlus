@@ -15,6 +15,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	log "github.com/sirupsen/logrus"
 )
 
 const maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20 // 1 MiB
@@ -60,14 +61,16 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		c.Writer = wrapper
 		attachRequestLogSources(c, logger, loggerEnabled)
 
+		// Finalize logging after request processing. It is deferred so a handler panic
+		// (recovered by an outer middleware) still releases streaming temp files and goroutines.
+		defer func() {
+			if errFinalize := wrapper.Finalize(c); errFinalize != nil {
+				log.WithError(errFinalize).Debug("request logging: failed to finalize request log")
+			}
+		}()
+
 		// Process the request
 		c.Next()
-
-		// Finalize logging after request processing
-		if err = wrapper.Finalize(c); err != nil {
-			// Log error but don't interrupt the response
-			// In a real implementation, you might want to use a proper logger here
-		}
 	}
 }
 
@@ -166,8 +169,10 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 			return nil, err
 		}
 
-		// Restore the body for the actual request processing
+		// Restore the body for the actual request processing.
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		// Stash the raw bytes so handlers can reuse them instead of reading the body again.
+		c.Set(logging.CapturedRequestBodyContextKey, bodyBytes)
 		body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
 	}
 

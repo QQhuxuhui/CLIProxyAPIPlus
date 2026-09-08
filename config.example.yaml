@@ -132,6 +132,19 @@ max-retry-credentials: 0
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
+# Maximum number of API requests processed concurrently. Requests above the cap wait for
+# a free slot before their body is read, which keeps memory bounded under bursts of large
+# requests. Requests that cannot be admitted within concurrent-request-wait-timeout are
+# answered with 503 (never 429, so downstream proxies do not treat it as a rate limit).
+# Management endpoints, health probes, OPTIONS preflights and websocket upgrades are never gated.
+# Set to 0 (default) to disable the limit.
+max-concurrent-requests: 0
+
+# How long a request may wait for a free concurrency slot before it is rejected with 503.
+# Accepts duration strings such as "30s" or "1m30s". Default: 60s.
+# Only used when max-concurrent-requests is greater than 0.
+concurrent-request-wait-timeout: 60s
+
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 

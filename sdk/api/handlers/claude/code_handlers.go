@@ -66,7 +66,7 @@ func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	// Extract raw JSON data from the incoming request
-	rawJSON, err := c.GetRawData()
+	rawJSON, err := handlers.RawRequestBody(c)
 	// If data retrieval fails, return a 400 Bad Request error.
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -95,7 +95,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 	// Extract raw JSON data from the incoming request
-	rawJSON, err := c.GetRawData()
+	rawJSON, err := handlers.RawRequestBody(c)
 	// If data retrieval fails, return a 400 Bad Request error.
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{

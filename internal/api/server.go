@@ -220,6 +220,11 @@ type Server struct {
 	requestLogger logging.RequestLogger
 	loggerToggle  func(bool)
 
+	// concurrencyGate caps the number of API requests processed at the same time.
+	// It is registered ahead of the request logging middleware so that request bodies
+	// are only read once a slot has been acquired.
+	concurrencyGate *middleware.ConcurrencyGate
+
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
 
@@ -289,6 +294,17 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+
+	// Concurrency gate: registered before every body-reading middleware (request
+	// logging included) so that a burst of large requests cannot be buffered in memory
+	// all at once. It is a no-op while max-concurrent-requests is 0, and stays
+	// registered so the limit can be enabled or resized on configuration reload.
+	concurrencyGate := middleware.NewConcurrencyGate(middleware.ConcurrencyGateConfig{
+		Limit:       cfg.MaxConcurrentRequests,
+		WaitTimeout: cfg.ConcurrentRequestWaitTimeoutDuration(),
+	})
+	engine.Use(concurrencyGate.Handler())
+
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -327,6 +343,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		accessManager:       accessManager,
 		requestLogger:       requestLogger,
 		loggerToggle:        toggle,
+		concurrencyGate:     concurrencyGate,
 		configFilePath:      configFilePath,
 		currentPath:         wd,
 		envManagementSecret: envManagementSecret,
@@ -398,10 +415,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
 	}
 
-	// Create HTTP server
+	// Create HTTP server.
+	// ReadHeaderTimeout bounds slow-header (Slowloris) connections and IdleTimeout reaps
+	// idle keep-alive connections. ReadTimeout and WriteTimeout are deliberately left
+	// unset so that slow request bodies and long streaming responses keep working.
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           engine,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	return s
@@ -1668,6 +1690,23 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+// applyConcurrencyGateConfig re-applies the concurrency gate tunables after a
+// configuration reload. Both max-concurrent-requests and concurrent-request-wait-timeout
+// are hot-reloadable; in-flight requests keep the previous limit until they finish.
+func (s *Server) applyConcurrencyGateConfig(cfg *config.Config) {
+	if s == nil || s.concurrencyGate == nil || cfg == nil {
+		return
+	}
+	previousLimit := s.concurrencyGate.Limit()
+	s.concurrencyGate.Update(middleware.ConcurrencyGateConfig{
+		Limit:       cfg.MaxConcurrentRequests,
+		WaitTimeout: cfg.ConcurrentRequestWaitTimeoutDuration(),
+	})
+	if newLimit := s.concurrencyGate.Limit(); newLimit != previousLimit {
+		log.Infof("max-concurrent-requests updated: %d -> %d", previousLimit, newLimit)
+	}
+}
+
 func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 	if s == nil || s.accessManager == nil || newCfg == nil {
 		return false
@@ -1797,6 +1836,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		s.exampleAPIKeySafeModeActive.Store(exampleAPIKeySafeModeRequired)
 	}
 	s.cfg = cfg
+	s.applyConcurrencyGateConfig(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)

@@ -44,6 +44,7 @@ type ResponseWriterWrapper struct {
 	headers             map[string][]string        // headers stores the response headers.
 	logOnErrorOnly      bool                       // logOnErrorOnly enables logging only when an error response is detected.
 	firstChunkTimestamp time.Time                  // firstChunkTimestamp captures TTFB for streaming responses.
+	finalized           bool                       // finalized marks that Finalize already ran.
 }
 
 // NewResponseWriterWrapper creates and initializes a new ResponseWriterWrapper.
@@ -159,8 +160,10 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 	contentType := w.ResponseWriter.Header().Get("Content-Type")
 	w.isStreaming = w.detectStreaming(contentType)
 
-	// If streaming, initialize streaming log writer
-	if w.isStreaming && w.logger.IsEnabled() {
+	// If streaming, initialize streaming log writer.
+	// Skip it once Finalize ran, otherwise a late write (for example from a recovery
+	// middleware after a handler panic) would allocate temp files nobody closes.
+	if w.isStreaming && !w.finalized && w.logger.IsEnabled() {
 		streamWriter, err := w.logger.LogStreamingRequest(
 			w.requestInfo.URL,
 			w.requestInfo.Method,
@@ -169,13 +172,15 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 			w.requestInfo.RequestID,
 		)
 		if err == nil {
-			w.streamWriter = streamWriter
-			w.chunkChannel = make(chan []byte, 100) // Buffered channel for async writes
+			chunkChannel := make(chan []byte, 100) // Buffered channel for async writes
 			doneChan := make(chan struct{})
+			w.streamWriter = streamWriter
+			w.chunkChannel = chunkChannel
 			w.streamDone = doneChan
 
-			// Start async chunk processor
-			go w.processStreamingChunks(doneChan)
+			// Start async chunk processor. The writer and channel are passed as arguments
+			// so the goroutine never reads wrapper fields that Finalize resets concurrently.
+			go processStreamingChunks(streamWriter, chunkChannel, doneChan)
 
 			// Write status immediately
 			_ = streamWriter.WriteStatus(statusCode, w.headers)
@@ -237,19 +242,19 @@ func (w *ResponseWriterWrapper) detectStreaming(contentType string) bool {
 
 // processStreamingChunks runs in a separate goroutine to process response chunks from the chunkChannel.
 // It asynchronously writes each chunk to the streaming log writer.
-func (w *ResponseWriterWrapper) processStreamingChunks(done chan struct{}) {
+func processStreamingChunks(streamWriter logging.StreamingLogWriter, chunkChannel <-chan []byte, done chan struct{}) {
 	if done == nil {
 		return
 	}
 
 	defer close(done)
 
-	if w.streamWriter == nil || w.chunkChannel == nil {
+	if streamWriter == nil || chunkChannel == nil {
 		return
 	}
 
-	for chunk := range w.chunkChannel {
-		w.streamWriter.WriteChunkAsync(chunk)
+	for chunk := range chunkChannel {
+		streamWriter.WriteChunkAsync(chunk)
 	}
 }
 
@@ -261,6 +266,11 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	if w.logger == nil {
 		return nil
 	}
+	// Finalize is deferred by the middleware; guard against a second call.
+	if w.finalized {
+		return nil
+	}
+	w.finalized = true
 
 	finalStatusCode := w.statusCode
 	if finalStatusCode == 0 {
@@ -286,6 +296,10 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	apiResponseSource := w.extractAPIResponseSource(c)
 	apiWebsocketTimelineSource := w.extractAPIWebsocketTimelineSource(c)
 	if !w.logger.IsEnabled() && !forceLog {
+		// Release streaming resources first: logging may have been switched off while this
+		// stream was still in flight, and skipping this would leak the async writer
+		// goroutine and its temp files.
+		w.discardStreamingResources()
 		cleanupFileBodySources(websocketTimelineSource, apiRequestSource, apiResponseSource, apiWebsocketTimelineSource)
 		return nil
 	}
@@ -362,6 +376,39 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	}
 
 	return w.logRequest(w.extractRequestBody(c), finalStatusCode, w.cloneHeaders(), w.extractResponseBody(c), w.extractWebsocketTimeline(c), websocketTimelineSource, w.extractAPIRequest(c), apiRequestSource, w.extractAPIResponse(c), apiResponseSource, w.extractAPIWebsocketTimeline(c), apiWebsocketTimelineSource, w.extractAPIResponseTimestamp(c), slicesAPIResponseError, forceLog)
+}
+
+// discardableStreamWriter is implemented by streaming log writers that can release their
+// resources without emitting a log entry.
+type discardableStreamWriter interface {
+	Discard() error
+}
+
+// discardStreamingResources closes the chunk channel, waits for the streaming goroutine and
+// releases the stream writer without writing a log entry.
+func (w *ResponseWriterWrapper) discardStreamingResources() {
+	if w.chunkChannel != nil {
+		close(w.chunkChannel)
+		w.chunkChannel = nil
+	}
+	if w.streamDone != nil {
+		<-w.streamDone
+		w.streamDone = nil
+	}
+	if w.streamWriter == nil {
+		return
+	}
+	streamWriter := w.streamWriter
+	w.streamWriter = nil
+	if discardable, ok := streamWriter.(discardableStreamWriter); ok {
+		if errDiscard := discardable.Discard(); errDiscard != nil {
+			log.WithError(errDiscard).Warn("failed to discard streaming request log")
+		}
+		return
+	}
+	if errClose := streamWriter.Close(); errClose != nil {
+		log.WithError(errClose).Warn("failed to close streaming request log")
+	}
 }
 
 func (w *ResponseWriterWrapper) cloneHeaders() map[string][]string {

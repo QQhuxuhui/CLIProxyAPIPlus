@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
@@ -25,6 +26,25 @@ const (
 	DefaultPprofAddr             = "127.0.0.1:8316"
 	DefaultAuthDir               = "~/.cli-proxy-api"
 )
+
+// DefaultConcurrentRequestWaitTimeout is applied when concurrent-request-wait-timeout
+// is empty or cannot be parsed.
+const DefaultConcurrentRequestWaitTimeout = 60 * time.Second
+
+// ConcurrentRequestWaitTimeoutDuration resolves concurrent-request-wait-timeout to a
+// duration, falling back to DefaultConcurrentRequestWaitTimeout for empty, invalid or
+// non-positive values.
+func (cfg *Config) ConcurrentRequestWaitTimeoutDuration() time.Duration {
+	if cfg == nil {
+		return DefaultConcurrentRequestWaitTimeout
+	}
+	if raw := strings.TrimSpace(cfg.ConcurrentRequestWaitTimeout); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return DefaultConcurrentRequestWaitTimeout
+}
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -111,6 +131,16 @@ type Config struct {
 	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
+
+	// MaxConcurrentRequests caps the number of downstream API requests processed at the
+	// same time. Requests above the cap wait for a free slot and are answered with
+	// 503 (never 429) once ConcurrentRequestWaitTimeout elapses.
+	// 0 (default) or a negative value disables the limit.
+	MaxConcurrentRequests int `yaml:"max-concurrent-requests" json:"max-concurrent-requests"`
+	// ConcurrentRequestWaitTimeout bounds how long a request waits for a free concurrency
+	// slot. Accepts duration strings like "30s", "1m30s". Empty or invalid values use the
+	// default 60s. Only meaningful when MaxConcurrentRequests > 0.
+	ConcurrentRequestWaitTimeout string `yaml:"concurrent-request-wait-timeout,omitempty" json:"concurrent-request-wait-timeout,omitempty"`
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
@@ -800,6 +830,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.MaxRetryCredentials < 0 {
 		cfg.MaxRetryCredentials = 0
+	}
+
+	if cfg.MaxConcurrentRequests < 0 {
+		cfg.MaxConcurrentRequests = 0
 	}
 
 	cfg.NormalizePluginsConfig()

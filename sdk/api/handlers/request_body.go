@@ -9,7 +9,40 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 )
+
+// RawRequestBody returns the raw request body without any Content-Encoding decoding.
+// When the request logging middleware already read the body, the captured bytes are
+// reused so the payload is not held twice in memory. Otherwise it falls back to the
+// standard gin body read.
+//
+// The returned slice may be shared with the request logger; callers must not modify
+// it in place.
+func RawRequestBody(c *gin.Context) ([]byte, error) {
+	if raw, ok := capturedRequestBody(c); ok {
+		return raw, nil
+	}
+	return c.GetRawData()
+}
+
+// capturedRequestBody returns the request body bytes stashed by the request logging
+// middleware, if that middleware is installed and captured the body for this request.
+func capturedRequestBody(c *gin.Context) ([]byte, bool) {
+	if c == nil {
+		return nil, false
+	}
+	value, exists := c.Get(logging.CapturedRequestBodyContextKey)
+	if !exists {
+		return nil, false
+	}
+	raw, ok := value.([]byte)
+	if !ok {
+		return nil, false
+	}
+	return raw, true
+}
 
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
@@ -18,8 +51,9 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 }
 
 // ReadRequestBodyLimited reads and decodes a request while bounding the decoded body.
+// The returned slice may be shared with the request logger; callers must not modify it in place.
 func ReadRequestBodyLimited(c *gin.Context, maxBytes int64) ([]byte, error) {
-	raw, err := c.GetRawData()
+	raw, err := RawRequestBody(c)
 	if err != nil {
 		return nil, err
 	}

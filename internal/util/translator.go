@@ -68,6 +68,9 @@ func Walk(value gjson.Result, path, field string, paths *[]string) {
 // The function performs the rename in two steps:
 // 1. Sets the value at the new key path
 // 2. Deletes the old key path
+//
+// Callers that already hold the document as bytes should prefer RenameKeyBytes,
+// which avoids the string round trips performed here.
 func RenameKey(jsonStr, oldKeyPath, newKeyPath string) (string, error) {
 	value := gjson.Get(jsonStr, oldKeyPath)
 
@@ -75,17 +78,52 @@ func RenameKey(jsonStr, oldKeyPath, newKeyPath string) (string, error) {
 		return "", fmt.Errorf("old key '%s' does not exist", oldKeyPath)
 	}
 
-	interimJSON, errSet := sjson.SetRawBytes([]byte(jsonStr), newKeyPath, []byte(value.Raw))
+	renamed, err := renameKeyRaw([]byte(jsonStr), oldKeyPath, newKeyPath, value.Raw)
+	if err != nil {
+		return "", err
+	}
+	return string(renamed), nil
+}
+
+// RenameKeyBytes is the []byte counterpart of RenameKey. It moves the value at
+// oldKeyPath to newKeyPath and removes the old key.
+//
+// Parameters:
+//   - rawJSON: The JSON document to modify
+//   - oldKeyPath: The dot-notation path to the key that should be renamed
+//   - newKeyPath: The dot-notation path where the value should be moved to
+//
+// Returns:
+//   - []byte: A new buffer holding the modified JSON document
+//   - error: An error if the operation fails
+//
+// The input buffer is never modified in place, so it stays usable after the
+// call. Every sjson operation allocates a full copy of the document, so this
+// helper is deliberately limited to two of them.
+func RenameKeyBytes(rawJSON []byte, oldKeyPath, newKeyPath string) ([]byte, error) {
+	value := gjson.GetBytes(rawJSON, oldKeyPath)
+
+	if !value.Exists() {
+		return nil, fmt.Errorf("old key '%s' does not exist", oldKeyPath)
+	}
+
+	return renameKeyRaw(rawJSON, oldKeyPath, newKeyPath, value.Raw)
+}
+
+// renameKeyRaw writes rawValue at newKeyPath and removes oldKeyPath. The input
+// buffer is only read; the returned slice is a new buffer.
+func renameKeyRaw(rawJSON []byte, oldKeyPath, newKeyPath, rawValue string) ([]byte, error) {
+	interimJSON, errSet := sjson.SetRawBytes(rawJSON, newKeyPath, []byte(rawValue))
 	if errSet != nil {
-		return "", fmt.Errorf("failed to set new key '%s': %w", newKeyPath, errSet)
+		return nil, fmt.Errorf("failed to set new key '%s': %w", newKeyPath, errSet)
 	}
 
 	finalJSON, errDelete := sjson.DeleteBytes(interimJSON, oldKeyPath)
 	if errDelete != nil {
-		return "", fmt.Errorf("failed to delete old key '%s': %w", oldKeyPath, errDelete)
+		return nil, fmt.Errorf("failed to delete old key '%s': %w", oldKeyPath, errDelete)
 	}
 
-	return string(finalJSON), nil
+	return finalJSON, nil
 }
 
 // FixJSON converts non-standard JSON that uses single quotes for strings into

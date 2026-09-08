@@ -6,6 +6,7 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -35,31 +36,33 @@ import (
 // Returns:
 //   - []byte: The transformed request data in Gemini API format
 func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
-	rawJSON := inputRawJSON
-	template := `{"project":"","request":{},"model":""}`
-	templateBytes, _ := sjson.SetRawBytes([]byte(template), "request", rawJSON)
-	templateBytes, _ = sjson.SetBytes(templateBytes, "model", modelName)
-	template = string(templateBytes)
-	template, _ = sjson.Delete(template, "request.model")
+	// rawJSON is built here and never aliases the caller's buffer, so sjson is
+	// allowed to reuse it in place instead of copying the whole document again.
+	inPlace := &sjson.Options{Optimistic: true, ReplaceInPlace: true}
 
-	template, errFixCLIToolResponse := fixCLIToolResponse(template)
+	rawJSON, _ := sjson.SetRawBytesOptions([]byte(`{"project":"","request":{},"model":""}`), "request", inputRawJSON, inPlace)
+	rawJSON, _ = sjson.SetBytesOptions(rawJSON, "model", modelName, inPlace)
+	rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.model")
+
+	rawJSON, errFixCLIToolResponse := fixCLIToolResponseBytes(rawJSON)
 	if errFixCLIToolResponse != nil {
 		return []byte{}
 	}
 
-	systemInstructionResult := gjson.Get(template, "request.system_instruction")
+	systemInstructionResult := gjson.GetBytes(rawJSON, "request.system_instruction")
 	if systemInstructionResult.Exists() {
-		templateBytes, _ = sjson.SetRawBytes([]byte(template), "request.systemInstruction", []byte(systemInstructionResult.Raw))
-		template = string(templateBytes)
-		template, _ = sjson.Delete(template, "request.system_instruction")
+		rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.systemInstruction", []byte(systemInstructionResult.Raw))
+		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.system_instruction")
 	}
-	rawJSON = []byte(template)
 
-	// Normalize roles in request.contents: default to valid values if missing/invalid
+	// Normalize roles in request.contents: default to valid values if missing/invalid.
+	// The role is rewritten on the content object itself and all rewrites are
+	// spliced back at once, instead of copying the document per content.
 	contents := gjson.GetBytes(rawJSON, "request.contents")
 	if contents.Exists() {
 		prevRole := ""
 		idx := 0
+		var roleEdits []rawJSONEdit
 		contents.ForEach(func(_ gjson.Result, value gjson.Result) bool {
 			role := value.Get("role").String()
 			valid := role == "user" || role == "model"
@@ -72,32 +75,55 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				} else {
 					newRole = "user"
 				}
-				path := fmt.Sprintf("request.contents.%d.role", idx)
-				rawJSON, _ = sjson.SetBytes(rawJSON, path, newRole)
+				contentRaw, errSetRole := sjson.SetBytes([]byte(value.Raw), "role", newRole)
+				if errSetRole == nil {
+					roleEdits = append(roleEdits, rawJSONEdit{
+						start: value.Index,
+						end:   value.Index + len(value.Raw),
+						path:  fmt.Sprintf("request.contents.%d", idx),
+						raw:   contentRaw,
+					})
+				}
 				role = newRole
 			}
 			prevRole = role
 			idx++
 			return true
 		})
+		rawJSON = applyRawJSONEdits(rawJSON, roleEdits)
 	}
 
+	// Tool declarations are inspected from a single snapshot: renaming
+	// "parameters" in one declaration never affects the other declarations, so
+	// each declaration is rewritten on its own and spliced back at once.
 	toolsResult := gjson.GetBytes(rawJSON, "request.tools")
 	if toolsResult.Exists() && toolsResult.IsArray() {
+		var declarationEdits []rawJSONEdit
 		toolResults := toolsResult.Array()
 		for i := 0; i < len(toolResults); i++ {
-			functionDeclarationsResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations", i))
+			functionDeclarationsResult := toolResults[i].Get("function_declarations")
 			if functionDeclarationsResult.Exists() && functionDeclarationsResult.IsArray() {
 				functionDeclarationsResults := functionDeclarationsResult.Array()
 				for j := 0; j < len(functionDeclarationsResults); j++ {
-					parametersResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j))
-					if parametersResult.Exists() {
-						strJson, _ := util.RenameKey(string(rawJSON), fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j), fmt.Sprintf("request.tools.%d.function_declarations.%d.parametersJsonSchema", i, j))
-						rawJSON = []byte(strJson)
+					declaration := functionDeclarationsResults[j]
+					if !declaration.Get("parameters").Exists() {
+						continue
 					}
+					renamed, errRename := util.RenameKeyBytes([]byte(declaration.Raw), "parameters", "parametersJsonSchema")
+					if errRename != nil {
+						log.WithError(errRename).Debug("antigravity gemini translator: failed to rename function declaration parameters")
+						continue
+					}
+					declarationEdits = append(declarationEdits, rawJSONEdit{
+						start: declaration.Index,
+						end:   declaration.Index + len(declaration.Raw),
+						path:  fmt.Sprintf("request.tools.%d.function_declarations.%d", i, j),
+						raw:   renamed,
+					})
 				}
 			}
 		}
+		rawJSON = applyRawJSONEdits(rawJSON, declarationEdits)
 	}
 
 	if strings.Contains(strings.ToLower(modelName), "claude") {
@@ -107,6 +133,48 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings")
+}
+
+// rawJSONEdit records a rewritten JSON value together with its byte range and
+// its path inside the document it came from.
+type rawJSONEdit struct {
+	start int
+	end   int
+	path  string
+	raw   []byte
+}
+
+// applyRawJSONEdits splices non-overlapping rewrites, ordered by offset, into
+// the document with a single copy. Every sjson write allocates a full copy of
+// the document, so rewriting sub-objects and merging them here keeps the cost
+// linear in the document size. When gjson did not report usable offsets the
+// edits are applied by path instead, which is slower but equivalent.
+func applyRawJSONEdits(document []byte, edits []rawJSONEdit) []byte {
+	if len(edits) == 0 {
+		return document
+	}
+
+	grown := 0
+	cursor := 0
+	for _, edit := range edits {
+		if edit.start <= 0 || edit.start < cursor || edit.end > len(document) || document[edit.start] != '{' {
+			for _, fallback := range edits {
+				document, _ = sjson.SetRawBytes(document, fallback.path, fallback.raw)
+			}
+			return document
+		}
+		cursor = edit.end
+		grown += len(edit.raw) - (edit.end - edit.start)
+	}
+
+	out := make([]byte, 0, len(document)+grown)
+	cursor = 0
+	for _, edit := range edits {
+		out = append(out, document[cursor:edit.start]...)
+		out = append(out, edit.raw...)
+		cursor = edit.end
+	}
+	return append(out, document[cursor:]...)
 }
 
 func sanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {
@@ -366,18 +434,27 @@ func parseFunctionResponseRaw(response gjson.Result, fallbackName string) string
 //   - string: The processed JSON string with grouped function calls and responses
 //   - error: An error if the processing fails
 func fixCLIToolResponse(input string) (string, error) {
-	// Parse the input JSON to extract the conversation structure
-	parsed := gjson.Parse(input)
+	result, err := fixCLIToolResponseBytes([]byte(input))
+	if err != nil {
+		return input, err
+	}
+	return string(result), nil
+}
 
+// fixCLIToolResponseBytes is the []byte implementation of fixCLIToolResponse.
+// The rewritten contents are collected as raw JSON slices and serialized once,
+// because appending them one by one with sjson copies the whole document per
+// element. The input buffer is owned by this function and may be reused.
+func fixCLIToolResponseBytes(input []byte) ([]byte, error) {
 	// Extract the contents array which contains the conversation messages
-	contents := parsed.Get("request.contents")
+	contents := gjson.GetBytes(input, "request.contents")
 	if !contents.Exists() {
 		// log.Debugf(input)
 		return input, fmt.Errorf("contents not found in input")
 	}
 
 	// Initialize data structures for processing and grouping
-	contentsWrapper := []byte(`{"contents":[]}`)
+	var rewrittenContents []string         // Raw JSON of the rebuilt contents array
 	var pendingGroups []*FunctionCallGroup // Groups awaiting completion with responses
 	var collectedResponses []gjson.Result  // Standalone responses to be matched
 
@@ -410,16 +487,8 @@ func fixCLIToolResponse(input string) (string, error) {
 				collectedResponses = collectedResponses[group.ResponsesNeeded:]
 
 				// Create merged function response content
-				functionResponseContent := []byte(`{"parts":[],"role":"function"}`)
-				for ri, response := range groupResponses {
-					partRaw := parseFunctionResponseRaw(response, group.CallNames[ri])
-					if partRaw != "" {
-						functionResponseContent, _ = sjson.SetRawBytes(functionResponseContent, "parts.-1", []byte(partRaw))
-					}
-				}
-
-				if gjson.GetBytes(functionResponseContent, "parts.#").Int() > 0 {
-					contentsWrapper, _ = sjson.SetRawBytes(contentsWrapper, "contents.-1", functionResponseContent)
+				if functionResponseContent := buildFunctionResponseContent(groupResponses, group.CallNames); functionResponseContent != "" {
+					rewrittenContents = append(rewrittenContents, functionResponseContent)
 				}
 			}
 
@@ -442,7 +511,7 @@ func fixCLIToolResponse(input string) (string, error) {
 					log.Warnf("failed to parse model content")
 					return true
 				}
-				contentsWrapper, _ = sjson.SetRawBytes(contentsWrapper, "contents.-1", []byte(value.Raw))
+				rewrittenContents = append(rewrittenContents, value.Raw)
 
 				// Create a new group for tracking responses
 				group := &FunctionCallGroup{
@@ -456,7 +525,7 @@ func fixCLIToolResponse(input string) (string, error) {
 					log.Warnf("failed to parse content")
 					return true
 				}
-				contentsWrapper, _ = sjson.SetRawBytes(contentsWrapper, "contents.-1", []byte(value.Raw))
+				rewrittenContents = append(rewrittenContents, value.Raw)
 			}
 		} else {
 			// Non-model content (user, etc.)
@@ -464,7 +533,7 @@ func fixCLIToolResponse(input string) (string, error) {
 				log.Warnf("failed to parse content")
 				return true
 			}
-			contentsWrapper, _ = sjson.SetRawBytes(contentsWrapper, "contents.-1", []byte(value.Raw))
+			rewrittenContents = append(rewrittenContents, value.Raw)
 		}
 
 		return true
@@ -476,22 +545,50 @@ func fixCLIToolResponse(input string) (string, error) {
 			groupResponses := collectedResponses[:group.ResponsesNeeded]
 			collectedResponses = collectedResponses[group.ResponsesNeeded:]
 
-			functionResponseContent := []byte(`{"parts":[],"role":"function"}`)
-			for ri, response := range groupResponses {
-				partRaw := parseFunctionResponseRaw(response, group.CallNames[ri])
-				if partRaw != "" {
-					functionResponseContent, _ = sjson.SetRawBytes(functionResponseContent, "parts.-1", []byte(partRaw))
-				}
-			}
-
-			if gjson.GetBytes(functionResponseContent, "parts.#").Int() > 0 {
-				contentsWrapper, _ = sjson.SetRawBytes(contentsWrapper, "contents.-1", functionResponseContent)
+			if functionResponseContent := buildFunctionResponseContent(groupResponses, group.CallNames); functionResponseContent != "" {
+				rewrittenContents = append(rewrittenContents, functionResponseContent)
 			}
 		}
 	}
 
-	// Update the original JSON with the new contents
-	result, _ := sjson.SetRawBytes([]byte(input), "request.contents", []byte(gjson.GetBytes(contentsWrapper, "contents").Raw))
+	// Serialize the rebuilt contents array once and update the original JSON
+	var contentsBuffer bytes.Buffer
+	contentsBuffer.Grow(len(contents.Raw) + 64)
+	contentsBuffer.WriteByte('[')
+	for i, contentRaw := range rewrittenContents {
+		if i > 0 {
+			contentsBuffer.WriteByte(',')
+		}
+		contentsBuffer.WriteString(contentRaw)
+	}
+	contentsBuffer.WriteByte(']')
 
-	return string(result), nil
+	result, _ := sjson.SetRawBytesOptions(input, "request.contents", contentsBuffer.Bytes(), &sjson.Options{Optimistic: true, ReplaceInPlace: true})
+
+	return result, nil
+}
+
+// buildFunctionResponseContent merges a group of function responses into a
+// single "function" role content. It returns an empty string when the group
+// produced no usable part.
+func buildFunctionResponseContent(groupResponses []gjson.Result, callNames []string) string {
+	var builder strings.Builder
+	builder.WriteString(`{"parts":[`)
+	count := 0
+	for ri, response := range groupResponses {
+		partRaw := parseFunctionResponseRaw(response, callNames[ri])
+		if partRaw == "" {
+			continue
+		}
+		if count > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(partRaw)
+		count++
+	}
+	if count == 0 {
+		return ""
+	}
+	builder.WriteString(`],"role":"function"}`)
+	return builder.String()
 }

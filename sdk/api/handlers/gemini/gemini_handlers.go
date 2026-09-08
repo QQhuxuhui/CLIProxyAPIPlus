@@ -151,7 +151,7 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 	}
 
 	method := action[1]
-	rawJSON, _ := c.GetRawData()
+	rawJSON, _ := handlers.RawRequestBody(c)
 
 	switch method {
 	case "generateContent":

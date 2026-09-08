@@ -39,6 +39,11 @@ const (
 	APIResponseSourceContextKey          = "API_RESPONSE_SOURCE"
 	APIResponseCapturedContextKey        = "API_RESPONSE_CAPTURED"
 	APIWebsocketTimelineSourceContextKey = "API_WEBSOCKET_TIMELINE_SOURCE"
+
+	// CapturedRequestBodyContextKey holds the raw request body bytes already read by the
+	// request logging middleware. Handlers reuse these bytes instead of reading the body
+	// a second time, which would keep two full copies alive for the whole request.
+	CapturedRequestBodyContextKey = "CAPTURED_REQUEST_BODY"
 )
 
 type homeRequestLogClient interface {
@@ -488,11 +493,30 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 			logsDir = filepath.Join(configDir, logsDir)
 		}
 	}
-	return &FileRequestLogger{
+	logger := &FileRequestLogger{
 		enabled:           enabled,
 		logsDir:           logsDir,
 		errorLogsMaxFiles: errorLogsMaxFiles,
 		homeEnabled:       false,
+	}
+	logger.sweepOrphanTempFiles()
+	return logger
+}
+
+// sweepOrphanTempFiles removes request/response body temp files left behind by a previous
+// process (for example after an OOM kill). Files younger than orphanTempFileMinAge are kept
+// because they may belong to in-flight requests.
+func (l *FileRequestLogger) sweepOrphanTempFiles() {
+	if l == nil || strings.TrimSpace(l.logsDir) == "" {
+		return
+	}
+	deleted, errSweep := sweepOrphanTempFiles(l.logsDir, orphanTempFileMinAge)
+	if errSweep != nil {
+		log.WithError(errSweep).Warn("failed to sweep orphan request log temp files")
+		return
+	}
+	if deleted > 0 {
+		log.Infof("removed %d orphan request log temp file(s) from %s", deleted, l.logsDir)
 	}
 }
 
@@ -864,6 +888,10 @@ func (l *FileRequestLogger) sanitizeForFilename(path string) string {
 
 // cleanupOldErrorLogs keeps only the newest errorLogsMaxFiles forced error log files.
 func (l *FileRequestLogger) cleanupOldErrorLogs() error {
+	// Reclaim temp files orphaned by earlier crashed requests; they are never removed by the
+	// error log retention pass below.
+	l.sweepOrphanTempFiles()
+
 	if l.errorLogsMaxFiles <= 0 {
 		return nil
 	}
@@ -1859,6 +1887,20 @@ func (w *FileStreamingLogWriter) Close() error {
 	return writeErr
 }
 
+// Discard releases the streaming resources without writing the log file.
+// It is used when request logging was turned off while the stream was still in flight,
+// so the async writer goroutine exits and the temp files are removed.
+//
+// Returns:
+//   - error: An error if releasing resources fails, nil otherwise
+func (w *FileStreamingLogWriter) Discard() error {
+	if w == nil {
+		return nil
+	}
+	w.logFilePath = ""
+	return w.Close()
+}
+
 // asyncWriter runs in a goroutine to buffer chunks from the channel.
 // It continuously reads chunks from the channel and appends them to a temp file for later assembly.
 func (w *FileStreamingLogWriter) asyncWriter() {
@@ -2001,6 +2043,12 @@ func (w *NoOpStreamingLogWriter) SetFirstChunkTimestamp(_ time.Time) {}
 //   - error: Always returns nil
 func (w *NoOpStreamingLogWriter) Close() error { return nil }
 
+// Discard is a no-op implementation that does nothing and always returns nil.
+//
+// Returns:
+//   - error: Always returns nil
+func (w *NoOpStreamingLogWriter) Discard() error { return nil }
+
 type homeStreamingLogWriter struct {
 	url       string
 	method    string
@@ -2116,6 +2164,19 @@ func (w *homeStreamingLogWriter) SetFirstChunkTimestamp(timestamp time.Time) {
 		w.firstChunkTS = timestamp
 		w.apiResponseTS = timestamp
 	}
+}
+
+// Discard stops the async writer without forwarding the log to home.
+func (w *homeStreamingLogWriter) Discard() error {
+	if w == nil {
+		return nil
+	}
+	if w.chunkChan != nil {
+		close(w.chunkChan)
+		<-w.doneChan
+		w.chunkChan = nil
+	}
+	return nil
 }
 
 func (w *homeStreamingLogWriter) Close() error {

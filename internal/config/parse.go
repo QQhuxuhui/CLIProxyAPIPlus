@@ -79,6 +79,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		cfg.MaxRetryCredentials = 0
 	}
 
+	if cfg.MaxConcurrentRequests < 0 {
+		cfg.MaxConcurrentRequests = 0
+	}
+
 	cfg.NormalizePluginsConfig()
 	cfg.NormalizeWebImageConfig()
 
