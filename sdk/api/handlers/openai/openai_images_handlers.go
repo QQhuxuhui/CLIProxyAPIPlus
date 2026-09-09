@@ -28,6 +28,7 @@ const (
 	defaultImagesMainModel      = "gpt-5.4-mini"
 	gptImage15Model             = "gpt-image-1.5"
 	defaultImagesToolModel      = "gpt-image-2"
+	gptImage25Model             = "gpt-image-2.5"
 	defaultXAIImagesModel       = "grok-imagine-image"
 	xaiImagesQualityModel       = "grok-imagine-image-quality"
 	xaiImagesHandlerType        = "openai-image"
@@ -370,7 +371,7 @@ func firstMultipartValue(form *multipart.Form, field string) string {
 
 func isCodexImagesToolModel(model string) bool {
 	baseModel := imagesModelBase(model)
-	return baseModel == gptImage15Model || baseModel == defaultImagesToolModel
+	return baseModel == gptImage15Model || baseModel == defaultImagesToolModel || baseModel == gptImage25Model
 }
 
 func isOpenAICompatImagesModel(model string) bool {

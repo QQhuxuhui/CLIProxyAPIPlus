@@ -1677,7 +1677,7 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 
 func isOpenAIImageOnlyModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
-	case "gpt-image-1.5", "gpt-image-2", "gpt-image-web":
+	case "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5", "gpt-image-web":
 		return true
 	default:
 		return false

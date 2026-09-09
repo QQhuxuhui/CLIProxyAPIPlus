@@ -9,6 +9,7 @@ import (
 const (
 	codexBuiltinImage15ModelID      = "gpt-image-1.5"
 	codexBuiltinImageModelID        = "gpt-image-2"
+	codexBuiltinImage25ModelID      = "gpt-image-2.5"
 	codexBuiltinWebImageModelID     = "gpt-image-web"
 	xaiBuiltinImageModelID          = "grok-imagine-image"
 	xaiBuiltinImageQualityModelID   = "grok-imagine-image-quality"
@@ -115,7 +116,7 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models, codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo(), codexBuiltinWebImageModelInfo())
+	return upsertModelInfos(models, codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo(), codexBuiltinImage25ModelInfo(), codexBuiltinWebImageModelInfo())
 }
 
 // WithXAIBuiltins injects hard-coded xAI image/video model definitions that should
@@ -153,6 +154,18 @@ func codexBuiltinImageModelInfo() *ModelInfo {
 		Type:        "openai",
 		DisplayName: "GPT Image 2",
 		Version:     codexBuiltinImageModelID,
+	}
+}
+
+func codexBuiltinImage25ModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          codexBuiltinImage25ModelID,
+		Object:      "model",
+		Created:     1704067200, // 2024-01-01
+		OwnedBy:     "openai",
+		Type:        "openai",
+		DisplayName: "GPT Image 2.5",
+		Version:     codexBuiltinImage25ModelID,
 	}
 }
 
