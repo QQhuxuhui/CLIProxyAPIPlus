@@ -93,6 +93,21 @@ func (c *SessionCache) Set(sessionID, authID string) {
 	c.mu.Unlock()
 }
 
+// GetOrSet atomically returns a live binding or installs the proposed auth.
+func (c *SessionCache) GetOrSet(sessionID, authID string) string {
+	if sessionID == "" || authID == "" {
+		return ""
+	}
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.entries[sessionID]; ok && now.Before(entry.expiresAt) {
+		return entry.authID
+	}
+	c.entries[sessionID] = sessionEntry{authID: authID, expiresAt: now.Add(c.ttl)}
+	return authID
+}
+
 // Invalidate removes a specific session binding.
 func (c *SessionCache) Invalidate(sessionID string) {
 	if sessionID == "" {

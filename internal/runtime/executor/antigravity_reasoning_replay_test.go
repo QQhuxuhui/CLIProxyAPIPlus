@@ -144,14 +144,55 @@ func TestPrepareAntigravityGeminiReasoningReplayPayloadAppendsStaleThoughtSignat
 	}
 }
 
-func TestAntigravityReasoningReplayScopeUsesStableSessionWithoutSessionId(t *testing.T) {
+func TestAntigravityReasoningReplayScopeRejectsMessageDerivedSession(t *testing.T) {
 	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"stable-user-text"}]}]}}`)
-	scope := antigravityReasoningReplayScopeFromPayload("gemini-3-flash-agent", payload)
-	if !scope.valid() {
-		t.Fatal("scope should be valid from stable session hash")
+	scope := antigravityReasoningReplayScopeFromRequest(context.Background(), "gemini-3-flash-agent", cliproxyexecutor.Request{Payload: payload}, cliproxyexecutor.Options{}, payload)
+	if scope.valid() {
+		t.Fatalf("message-only request produced replay scope %q", scope.sessionKey)
 	}
-	if !strings.HasPrefix(scope.sessionKey, "session:") {
-		t.Fatalf("sessionKey = %q", scope.sessionKey)
+}
+
+func TestAntigravityReasoningReplayExplicitSessionIsolation(t *testing.T) {
+	internalcache.ClearAntigravityReasoningReplayCache()
+	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
+
+	model := "gemini-3-flash-agent"
+	stableA := "session:stable-a"
+	stableB := "session:stable-b"
+	scopeA := antigravityReasoningReplayScopeForStableSession(model, stableA)
+	item := []byte(`{"type":"thought_signature","contentIndex":1,"partIndex":0,"thoughtSignature":"isolated-signature-1234"}`)
+	if !internalcache.CacheAntigravityReasoningReplayItems(model, scopeA.sessionKey, [][]byte{item}) {
+		t.Fatal("cache write failed")
+	}
+	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"same"}]},{"role":"model","parts":[{"text":"answer"}]},{"role":"user","parts":[{"text":"next"}]}]}}`)
+
+	outA, _, errA := prepareAntigravityGeminiReasoningReplayPayloadWithSession(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, stableA, true, payload)
+	if errA != nil {
+		t.Fatal(errA)
+	}
+	if !strings.Contains(string(outA), "isolated-signature-1234") {
+		t.Fatalf("stable-a did not receive its replay item: %s", outA)
+	}
+	outB, _, errB := prepareAntigravityGeminiReasoningReplayPayloadWithSession(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, stableB, true, payload)
+	if errB != nil {
+		t.Fatal(errB)
+	}
+	if strings.Contains(string(outB), "isolated-signature-1234") {
+		t.Fatalf("stable-b received stable-a replay item: %s", outB)
+	}
+}
+
+func TestAntigravityEphemeralSessionDisablesReasoningReplay(t *testing.T) {
+	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"same"}]}]}}`)
+	out, scope, err := prepareAntigravityGeminiReasoningReplayPayloadWithSession(context.Background(), "gemini-3-flash-agent", cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, "", false, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.valid() {
+		t.Fatalf("ephemeral request produced replay scope %q", scope.sessionKey)
+	}
+	if string(out) != string(payload) {
+		t.Fatalf("ephemeral replay changed payload: %s", out)
 	}
 }
 

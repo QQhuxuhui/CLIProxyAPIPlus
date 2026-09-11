@@ -212,6 +212,29 @@ func TestKVGetConvertsRedisNilToMiss(t *testing.T) {
 	}
 }
 
+func TestKVCompareAndSwapSendsCASCommand(t *testing.T) {
+	client, commands := newRedisCommandTestClient(t, func(args []string) string {
+		if len(args) > 0 && strings.EqualFold(args[0], "CAS") {
+			return ":1\r\n"
+		}
+		return "-ERR unexpected command\r\n"
+	})
+	swapped, err := client.KVCompareAndSwap(context.Background(), "key", []byte("old"), true, []byte("new"), 1500*time.Millisecond)
+	if err != nil || !swapped {
+		t.Fatalf("KVCompareAndSwap() = %v, %v", swapped, err)
+	}
+	want := []string{"cas", "key", "1", "old", "new", "px", "1500"}
+	got := commands.Last()
+	if len(got) != len(want) {
+		t.Fatalf("CAS command = %v, want %v", got, want)
+	}
+	for i := range want {
+		if !strings.EqualFold(got[i], want[i]) {
+			t.Fatalf("CAS command = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestKVMGetConvertsNilItemsToMiss(t *testing.T) {
 	client, _ := newRedisCommandTestClient(t, func(args []string) string {
 		if len(args) > 0 && strings.EqualFold(args[0], "MGET") {

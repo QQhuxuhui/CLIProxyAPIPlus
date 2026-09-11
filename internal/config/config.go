@@ -381,8 +381,9 @@ type RoutingConfig struct {
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Session IDs are extracted from multiple sources:
-	// metadata.user_id (Claude Code session format), X-Session-ID, Session_id (Codex),
-	// X-Client-Request-Id (PI), metadata.user_id, conversation_id, or message hash.
+	// Claude Code session metadata, Session_id (Codex), X-Session-ID,
+	// X-Session-Affinity, explicit body session/conversation fields,
+	// X-Client-Request-Id (PI), metadata.user_id, or a message hash fallback.
 	// Automatic failover is always enabled when bound auth becomes unavailable.
 	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
 

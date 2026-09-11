@@ -7,9 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -242,7 +240,9 @@ func parseMetaFloat(metadata map[string]any, key string) (float64, bool) {
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
-	cfg *config.Config
+	cfg      *config.Config
+	lockOnce sync.Once
+	locks    *antigravitySessionLockManager
 }
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
@@ -253,7 +253,17 @@ type AntigravityExecutor struct {
 // Returns:
 //   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
-	return &AntigravityExecutor{cfg: cfg}
+	e := &AntigravityExecutor{cfg: cfg}
+	e.sessionLocks()
+	return e
+}
+
+func (e *AntigravityExecutor) sessionLocks() *antigravitySessionLockManager {
+	if e == nil {
+		return nil
+	}
+	e.lockOnce.Do(func() { e.locks = newAntigravitySessionLockManager(defaultAntigravitySessionLockEntries) })
+	return e.locks
 }
 
 // The former antigravityTransport/antigravityTransportOnce singleton has been
@@ -673,10 +683,16 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		d := remaining
 		return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
 	}
+	stableSessionKey, upstreamSessionID, stableSession := antigravitySessionForRequest(ctx, req, opts)
+	releaseSession, errAcquire := e.sessionLocks().Acquire(ctx, sessionLockKey(upstreamSessionID, stableSession))
+	if errAcquire != nil {
+		return resp, errAcquire
+	}
+	defer releaseSession()
 
 	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
 	if isClaude || strings.Contains(baseModel, "gemini-3-pro") || strings.Contains(baseModel, "gemini-3.1-flash-image") {
-		return e.executeClaudeNonStream(ctx, auth, req, opts)
+		return e.executeClaudeNonStream(ctx, auth, req, opts, upstreamSessionID)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
@@ -741,14 +757,14 @@ attemptLoop:
 			replayScope := antigravityReasoningReplayScope{}
 			if antigravityUsesReasoningReplayCache(baseModel) {
 				var errReplay error
-				requestPayload, replayScope, errReplay = prepareAntigravityGeminiReasoningReplayPayload(ctx, baseModel, req, opts, requestPayload)
+				requestPayload, replayScope, errReplay = prepareAntigravityGeminiReasoningReplayPayloadWithSession(ctx, baseModel, req, opts, stableSessionKey, stableSession, requestPayload)
 				if errReplay != nil {
 					err = errReplay
 					return resp, err
 				}
 			}
 
-			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL)
+			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL, upstreamSessionID)
 			if errReq != nil {
 				err = errReq
 				return resp, err
@@ -891,7 +907,7 @@ attemptLoop:
 }
 
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
-func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, upstreamSessionID string) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
 		return resp, homeKVUnavailableStatusErr(errCooldown)
@@ -961,7 +977,7 @@ attemptLoop:
 					helps.MarkCreditsUsed(ctx)
 				}
 			}
-			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL)
+			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, upstreamSessionID)
 			if errReq != nil {
 				err = errReq
 				return resp, err
@@ -1377,6 +1393,17 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		d := remaining
 		return nil, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
 	}
+	stableSessionKey, upstreamSessionID, stableSession := antigravitySessionForRequest(ctx, req, opts)
+	releaseSession, errAcquire := e.sessionLocks().Acquire(ctx, sessionLockKey(upstreamSessionID, stableSession))
+	if errAcquire != nil {
+		return nil, errAcquire
+	}
+	releaseOnReturn := true
+	defer func() {
+		if releaseOnReturn {
+			releaseSession()
+		}
+	}()
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -1443,13 +1470,13 @@ attemptLoop:
 			replayScope := antigravityReasoningReplayScope{}
 			if antigravityUsesReasoningReplayCache(baseModel) {
 				var errReplay error
-				requestPayload, replayScope, errReplay = prepareAntigravityGeminiReasoningReplayPayload(ctx, baseModel, req, opts, requestPayload)
+				requestPayload, replayScope, errReplay = prepareAntigravityGeminiReasoningReplayPayloadWithSession(ctx, baseModel, req, opts, stableSessionKey, stableSession, requestPayload)
 				if errReplay != nil {
 					err = errReplay
 					return nil, err
 				}
 			}
-			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL)
+			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, upstreamSessionID)
 			if errReq != nil {
 				err = errReq
 				return nil, err
@@ -1581,6 +1608,7 @@ attemptLoop:
 			}
 			replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
 			out := make(chan cliproxyexecutor.StreamChunk)
+			releaseOnReturn = false
 			go func(resp *http.Response) {
 				defer close(out)
 				defer func() {
@@ -1590,6 +1618,7 @@ attemptLoop:
 					if errClose := resp.Body.Close(); errClose != nil {
 						log.Errorf("antigravity executor: close response line error: %v", errClose)
 					}
+					releaseSession()
 				}()
 				scanner := bufio.NewScanner(resp.Body)
 				scanner.Buffer(nil, streamScannerBuffer)
@@ -2259,7 +2288,7 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 	}
 }
 
-func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string) (*http.Request, error) {
+func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, sessionIDs ...string) (*http.Request, error) {
 	if token == "" {
 		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
@@ -2291,7 +2320,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errProject != nil {
 		return nil, errProject
 	}
-	payload = geminiToAntigravity(modelName, payload, projectID)
+	payload = geminiToAntigravity(modelName, payload, projectID, sessionIDs...)
 	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
 	// Drop an "auto" image aspect ratio: cloudcode-pa (antigravity) forwards it to
@@ -2835,7 +2864,7 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
-func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
+func geminiToAntigravity(modelName string, payload []byte, projectID string, sessionIDs ...string) []byte {
 	template := payload
 	template, _ = sjson.SetBytes(template, "model", modelName)
 	template, _ = sjson.SetBytes(template, "userAgent", "antigravity")
@@ -2861,7 +2890,17 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
 	} else if reqType != "web_search" {
 		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
-		template, _ = sjson.SetBytes(template, "request.sessionId", generateStableSessionID(payload))
+		sessionID := ""
+		if len(sessionIDs) > 0 {
+			sessionID = strings.TrimSpace(sessionIDs[0])
+		}
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(gjson.GetBytes(template, "request.sessionId").String())
+		}
+		if sessionID == "" {
+			sessionID = generateSessionID()
+		}
+		template, _ = sjson.SetBytes(template, "request.sessionId", sessionID)
 	}
 
 	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
@@ -2885,21 +2924,4 @@ func generateSessionID() string {
 	n := randSource.Int63n(9_000_000_000_000_000_000)
 	randSourceMutex.Unlock()
 	return "-" + strconv.FormatInt(n, 10)
-}
-
-func generateStableSessionID(payload []byte) string {
-	contents := gjson.GetBytes(payload, "request.contents")
-	if contents.IsArray() {
-		for _, content := range contents.Array() {
-			if content.Get("role").String() == "user" {
-				text := content.Get("parts.0.text").String()
-				if text != "" {
-					h := sha256.Sum256([]byte(text))
-					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
-					return "-" + strconv.FormatInt(n, 10)
-				}
-			}
-		}
-	}
-	return generateSessionID()
 }

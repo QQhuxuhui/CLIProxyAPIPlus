@@ -8,11 +8,34 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+type coldStartBarrierSelector struct {
+	next    atomic.Int32
+	arrived chan struct{}
+	release chan struct{}
+}
+
+type selectorCallerContext struct{ caller string }
+
+func (c selectorCallerContext) Get(key string) (any, bool) {
+	if key != "userApiKey" || c.caller == "" {
+		return nil, false
+	}
+	return c.caller, true
+}
+
+func (s *coldStartBarrierSelector) Pick(_ context.Context, _, _ string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	index := int(s.next.Add(1) - 1)
+	s.arrived <- struct{}{}
+	<-s.release
+	return auths[index%len(auths)], nil
+}
 
 func TestFillFirstSelectorPick_Deterministic(t *testing.T) {
 	t.Parallel()
@@ -457,6 +480,48 @@ func TestExtractSessionID(t *testing.T) {
 				t.Errorf("extractSessionID() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTruncateSessionIDDoesNotExposeRawValue(t *testing.T) {
+	t.Parallel()
+
+	raw := "sensitive-session-value"
+	first := truncateSessionID(raw)
+	second := truncateSessionID(raw)
+	if first == "" || first != second || strings.Contains(first, "sensitive") || strings.Contains(first, raw[:8]) {
+		t.Fatalf("session log tag = %q", first)
+	}
+}
+
+func TestExtractSessionIDExplicitBodySessionBeatsMessageHash(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"session_id":"stable-1","messages":[{"role":"user","content":"same"}]}`)
+	if got := ExtractSessionID(nil, payload, nil); got != "session:stable-1" {
+		t.Fatalf("ExtractSessionID() = %q, want session:stable-1", got)
+	}
+}
+
+func TestExtractSessionIDExecutionMetadataIsStable(t *testing.T) {
+	t.Parallel()
+
+	metadata := map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "exec-1"}
+	payload := []byte(`{"messages":[{"role":"user","content":"different"}]}`)
+	if got := ExtractSessionID(nil, payload, metadata); got != "execution:exec-1" {
+		t.Fatalf("ExtractSessionID() = %q, want execution:exec-1", got)
+	}
+}
+
+func TestExtractSessionIDDifferentExplicitSessionsDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	first := []byte(`{"session_id":"stable-a","messages":[{"role":"user","content":"same"}]}`)
+	second := []byte(`{"session_id":"stable-b","messages":[{"role":"user","content":"same"}]}`)
+	gotFirst := ExtractSessionID(nil, first, nil)
+	gotSecond := ExtractSessionID(nil, second, nil)
+	if gotFirst == gotSecond {
+		t.Fatalf("explicit sessions collided: %q", gotFirst)
 	}
 }
 
@@ -1273,5 +1338,67 @@ func TestSessionAffinitySelector_Concurrent(t *testing.T) {
 	case err := <-errCh:
 		t.Fatalf("concurrent Pick() error = %v", err)
 	default:
+	}
+}
+
+func TestSessionAffinitySelectorConcurrentColdStartUsesOneAuth(t *testing.T) {
+	t.Parallel()
+
+	fallback := &coldStartBarrierSelector{arrived: make(chan struct{}, 2), release: make(chan struct{})}
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: fallback, TTL: time.Minute})
+	defer selector.Stop()
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	opts := cliproxyexecutor.Options{OriginalRequest: []byte(`{"session_id":"cold-session"}`)}
+
+	results := make(chan *Auth, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			got, err := selector.Pick(context.Background(), "antigravity", "gemini-test", opts, auths)
+			results <- got
+			errs <- err
+		}()
+	}
+	<-fallback.arrived
+	<-fallback.arrived
+	close(fallback.release)
+
+	first := <-results
+	second := <-results
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || second == nil || first.ID != second.ID {
+		t.Fatalf("concurrent cold start selected different auths: first=%v second=%v", first, second)
+	}
+}
+
+func TestSessionAffinitySelectorScopesBindingByCaller(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelector(&RoundRobinSelector{})
+	defer selector.Stop()
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	opts := cliproxyexecutor.Options{OriginalRequest: []byte(`{"session_id":"shared-session"}`)}
+	ctxA := context.WithValue(context.Background(), "gin", selectorCallerContext{caller: "caller-a"})
+	ctxB := context.WithValue(context.Background(), "gin", selectorCallerContext{caller: "caller-b"})
+
+	first, errFirst := selector.Pick(ctxA, "antigravity", "gemini-test", opts, auths)
+	if errFirst != nil {
+		t.Fatal(errFirst)
+	}
+	second, errSecond := selector.Pick(ctxB, "antigravity", "gemini-test", opts, auths)
+	if errSecond != nil {
+		t.Fatal(errSecond)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("different callers shared affinity binding %q", first.ID)
+	}
+	firstAgain, errAgain := selector.Pick(ctxA, "antigravity", "gemini-test", opts, auths)
+	if errAgain != nil || firstAgain.ID != first.ID {
+		t.Fatalf("caller-a binding changed: first=%q again=%v error=%v", first.ID, firstAgain, errAgain)
 	}
 }

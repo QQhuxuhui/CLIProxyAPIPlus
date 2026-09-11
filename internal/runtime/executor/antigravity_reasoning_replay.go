@@ -16,8 +16,9 @@ import (
 )
 
 type antigravityReasoningReplayScope struct {
-	modelName  string
-	sessionKey string
+	modelName     string
+	sessionKey    string
+	cacheSnapshot internalcache.AntigravityReasoningReplaySnapshot
 }
 
 func (s antigravityReasoningReplayScope) valid() bool {
@@ -27,19 +28,23 @@ func (s antigravityReasoningReplayScope) valid() bool {
 func antigravityReasoningReplayScopeFromPayload(modelName string, payload []byte) antigravityReasoningReplayScope {
 	sessionID := antigravityReplaySessionIDFromPayload(payload)
 	if sessionID == "" {
-		if stable := strings.TrimSpace(generateStableSessionID(payload)); stable != "" {
-			sessionID = strings.TrimPrefix(stable, "-")
-			if sessionID == "" {
-				sessionID = stable
-			}
-		}
-	}
-	if sessionID == "" {
 		return antigravityReasoningReplayScope{}
 	}
 	return antigravityReasoningReplayScope{
 		modelName:  strings.TrimSpace(modelName),
 		sessionKey: "session:" + sessionID,
+	}
+}
+
+func antigravityReasoningReplayScopeForStableSession(modelName, stableKey string) antigravityReasoningReplayScope {
+	modelName = strings.TrimSpace(modelName)
+	stableKey = strings.TrimSpace(stableKey)
+	if modelName == "" || stableKey == "" {
+		return antigravityReasoningReplayScope{}
+	}
+	return antigravityReasoningReplayScope{
+		modelName:  modelName,
+		sessionKey: "session:" + antigravityStableUpstreamSessionID(stableKey),
 	}
 }
 
@@ -121,6 +126,14 @@ func prepareAntigravityGeminiReasoningReplayPayload(ctx context.Context, modelNa
 	return applyAntigravityReasoningReplayCache(ctx, modelName, req, opts, payload)
 }
 
+func prepareAntigravityGeminiReasoningReplayPayloadWithSession(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stableKey string, stable bool, payload []byte) ([]byte, antigravityReasoningReplayScope, error) {
+	if !stable || strings.TrimSpace(stableKey) == "" || !antigravityUsesReasoningReplayCache(modelName) {
+		return payload, antigravityReasoningReplayScope{}, nil
+	}
+	scope := antigravityReasoningReplayScopeForStableSession(modelName, stableKey)
+	return applyAntigravityReasoningReplayCacheForScope(ctx, scope, payload)
+}
+
 func clearAntigravityReasoningReplayOnInvalidSignature(ctx context.Context, scope antigravityReasoningReplayScope, statusCode int, body []byte) error {
 	if !scope.valid() {
 		return nil
@@ -132,15 +145,21 @@ func clearAntigravityReasoningReplayOnInvalidSignature(ctx context.Context, scop
 	if !strings.Contains(bodyText, "thoughtsignature") && !strings.Contains(bodyText, "thought_signature") && !strings.Contains(bodyText, "signature") {
 		return nil
 	}
-	return internalcache.DeleteAntigravityReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey)
+	_, err := internalcache.DeleteAntigravityReasoningReplayItemsIfUnchanged(ctx, scope.modelName, scope.sessionKey, scope.cacheSnapshot)
+	return err
 }
 
 func applyAntigravityReasoningReplayCache(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, payload []byte) ([]byte, antigravityReasoningReplayScope, error) {
 	scope := antigravityReasoningReplayScopeFromRequest(ctx, modelName, req, opts, payload)
+	return applyAntigravityReasoningReplayCacheForScope(ctx, scope, payload)
+}
+
+func applyAntigravityReasoningReplayCacheForScope(ctx context.Context, scope antigravityReasoningReplayScope, payload []byte) ([]byte, antigravityReasoningReplayScope, error) {
 	if !scope.valid() {
 		return payload, scope, nil
 	}
-	items, ok, err := internalcache.GetAntigravityReasoningReplayItemsRequired(ctx, scope.modelName, scope.sessionKey)
+	items, snapshot, ok, err := internalcache.GetAntigravityReasoningReplayItemsWithSnapshotRequired(ctx, scope.modelName, scope.sessionKey)
+	scope.cacheSnapshot = snapshot
 	if err != nil || !ok || len(items) == 0 {
 		return payload, scope, err
 	}
@@ -627,8 +646,8 @@ func (a *antigravityReasoningReplayAccumulator) Flush(ctx context.Context) {
 	if a == nil || !a.scope.valid() || len(a.items) == 0 {
 		return
 	}
-	if !internalcache.CacheAntigravityReasoningReplayItemsBestEffort(ctx, a.scope.modelName, a.scope.sessionKey, a.items) {
-		_ = internalcache.DeleteAntigravityReasoningReplayItemRequired(ctx, a.scope.modelName, a.scope.sessionKey)
+	if _, errReplace := internalcache.ReplaceAntigravityReasoningReplayItemsIfUnchanged(ctx, a.scope.modelName, a.scope.sessionKey, a.scope.cacheSnapshot, a.items); errReplace != nil {
+		return
 	}
 }
 

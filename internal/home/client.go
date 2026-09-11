@@ -46,7 +46,20 @@ var (
 	ErrAuthNotFound   = errors.New("home auth not found")
 	ErrConfigNotFound = errors.New("home config not found")
 	ErrModelsNotFound = errors.New("home models not found")
+	// ErrCompareAndSwapUnsupported reports a Home deployment without CAS support.
+	ErrCompareAndSwapUnsupported = errors.New("home compare-and-swap is unsupported")
 )
+
+func isHomeCommandUnsupported(err error) bool {
+	for err != nil {
+		message := strings.ToLower(strings.TrimSpace(err.Error()))
+		if strings.Contains(message, "unknown command") || strings.Contains(message, "unsupported command") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
 
 type clusterNode struct {
 	IP          string    `json:"ip"`
@@ -89,6 +102,7 @@ type Client struct {
 	sub *redis.Client
 
 	heartbeatOK       atomic.Bool
+	casUnsupported    atomic.Bool
 	clusterNodes      []clusterNode
 	reconnectFailures int
 }
@@ -640,6 +654,39 @@ func (c *Client) KVSetNX(ctx context.Context, key string, value []byte, ttl time
 		opts.EX = ttl
 	}
 	return c.KVSet(ctx, key, value, opts)
+}
+
+// KVCompareAndSwap atomically replaces a Home value when its current state matches.
+func (c *Client) KVCompareAndSwap(ctx context.Context, key string, expected []byte, expectedExists bool, value []byte, ttl time.Duration) (bool, error) {
+	if c == nil {
+		return false, ErrNotConnected
+	}
+	if c.casUnsupported.Load() {
+		return false, ErrCompareAndSwapUnsupported
+	}
+	cmd, errClient := c.commandClient()
+	if errClient != nil {
+		return false, errClient
+	}
+	expectedFlag := "0"
+	if expectedExists {
+		expectedFlag = "1"
+	}
+	args := []any{"CAS", key, expectedFlag, expected, value}
+	if milliseconds := durationCeil(ttl, time.Millisecond); milliseconds > 0 {
+		args = append(args, "PX", milliseconds)
+	}
+	result, errCAS := cmd.Do(ctx, args...).Int64()
+	if errCAS != nil {
+		if isHomeCommandUnsupported(errCAS) {
+			if c.casUnsupported.CompareAndSwap(false, true) {
+				log.Warn("home kv: CAS is unsupported; reasoning replay updates are disabled until Home is upgraded")
+			}
+			return false, ErrCompareAndSwapUnsupported
+		}
+		return false, errCAS
+	}
+	return result == 1, nil
 }
 
 func (c *Client) KVDel(ctx context.Context, keys ...string) (int64, error) {

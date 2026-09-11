@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -33,16 +34,30 @@ const (
 type antigravityReasoningReplayEntry struct {
 	Items     [][]byte
 	Timestamp time.Time
+	Revision  uint64
+	Deleted   bool
+}
+
+// AntigravityReasoningReplaySnapshot identifies the cache state read by one request.
+type AntigravityReasoningReplaySnapshot struct {
+	raw      []byte
+	loaded   bool
+	found    bool
+	revision uint64
+	epoch    uint64
 }
 
 var (
-	antigravityReasoningReplayMu      sync.Mutex
-	antigravityReasoningReplayEntries = make(map[string]antigravityReasoningReplayEntry)
+	antigravityReasoningReplayMu       sync.Mutex
+	antigravityReasoningReplayEntries  = make(map[string]antigravityReasoningReplayEntry)
+	antigravityReasoningReplayRevision uint64
+	antigravityReasoningReplayEpoch    uint64
 )
 
 type antigravityReasoningReplayKVClient interface {
 	KVGet(ctx context.Context, key string) ([]byte, bool, error)
 	KVSet(ctx context.Context, key string, value []byte, opts homekv.KVSetOptions) (bool, error)
+	KVCompareAndSwap(ctx context.Context, key string, expected []byte, expectedExists bool, value []byte, ttl time.Duration) (bool, error)
 	KVDel(ctx context.Context, keys ...string) (int64, error)
 	KVExpire(ctx context.Context, key string, ttl time.Duration) (bool, error)
 }
@@ -96,9 +111,11 @@ func CacheAntigravityReasoningReplayItemsBestEffort(ctx context.Context, modelNa
 	now := time.Now()
 	antigravityReasoningReplayMu.Lock()
 	defer antigravityReasoningReplayMu.Unlock()
+	antigravityReasoningReplayRevision++
 	antigravityReasoningReplayEntries[key] = antigravityReasoningReplayEntry{
 		Items:     normalized,
 		Timestamp: now,
+		Revision:  antigravityReasoningReplayRevision,
 	}
 	if len(antigravityReasoningReplayEntries) > AntigravityReasoningReplayCacheMaxEntries {
 		evictOldestAntigravityReasoningReplayEntries(AntigravityReasoningReplayCacheEvictBatchSize)
@@ -126,27 +143,37 @@ func GetAntigravityReasoningReplayItems(modelName, sessionKey string) ([][]byte,
 
 // GetAntigravityReasoningReplayItemsRequired retrieves replay items for request-time paths.
 func GetAntigravityReasoningReplayItemsRequired(ctx context.Context, modelName, sessionKey string) ([][]byte, bool, error) {
+	items, _, found, err := GetAntigravityReasoningReplayItemsWithSnapshotRequired(ctx, modelName, sessionKey)
+	return items, found, err
+}
+
+// GetAntigravityReasoningReplayItemsWithSnapshotRequired returns replay items and their exact cache generation.
+func GetAntigravityReasoningReplayItemsWithSnapshotRequired(ctx context.Context, modelName, sessionKey string) ([][]byte, AntigravityReasoningReplaySnapshot, bool, error) {
 	key := antigravityReasoningReplayCacheKey(modelName, sessionKey)
 	if key == "" {
-		return nil, false, nil
+		return nil, AntigravityReasoningReplaySnapshot{}, false, nil
 	}
 	client, homeMode, errClient := currentAntigravityReasoningReplayKVClient()
 	if homeMode {
 		if errClient != nil {
-			return nil, false, errClient
+			return nil, AntigravityReasoningReplaySnapshot{}, false, errClient
 		}
 		raw, found, errGet := client.KVGet(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey))
 		if errGet != nil || !found {
-			return nil, false, errGet
+			return nil, AntigravityReasoningReplaySnapshot{loaded: true, found: found}, false, errGet
 		}
+		snapshot := AntigravityReasoningReplaySnapshot{raw: append([]byte(nil), raw...), loaded: true, found: true}
 		var homeItems [][]byte
 		if errUnmarshal := json.Unmarshal(raw, &homeItems); errUnmarshal != nil {
-			return nil, false, errUnmarshal
+			return nil, snapshot, false, errUnmarshal
 		}
 		if _, errExpire := client.KVExpire(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey), AntigravityReasoningReplayCacheTTL); errExpire != nil {
-			return nil, false, errExpire
+			return nil, snapshot, false, errExpire
 		}
-		return cloneAntigravityReasoningReplayItems(homeItems), true, nil
+		if len(homeItems) == 0 {
+			return nil, snapshot, false, nil
+		}
+		return cloneAntigravityReasoningReplayItems(homeItems), snapshot, true, nil
 	}
 
 	cacheCleanupOnce.Do(startCacheCleanup)
@@ -155,15 +182,93 @@ func GetAntigravityReasoningReplayItemsRequired(ctx context.Context, modelName, 
 	defer antigravityReasoningReplayMu.Unlock()
 	entry, ok := antigravityReasoningReplayEntries[key]
 	if !ok {
-		return nil, false, nil
+		return nil, AntigravityReasoningReplaySnapshot{loaded: true, epoch: antigravityReasoningReplayEpoch}, false, nil
 	}
 	if now.Sub(entry.Timestamp) > AntigravityReasoningReplayCacheTTL {
-		delete(antigravityReasoningReplayEntries, key)
-		return nil, false, nil
+		antigravityReasoningReplayRevision++
+		entry = antigravityReasoningReplayEntry{Timestamp: now, Revision: antigravityReasoningReplayRevision, Deleted: true}
+		antigravityReasoningReplayEntries[key] = entry
 	}
 	entry.Timestamp = now
 	antigravityReasoningReplayEntries[key] = entry
-	return cloneAntigravityReasoningReplayItems(entry.Items), true, nil
+	snapshot := AntigravityReasoningReplaySnapshot{loaded: true, found: true, revision: entry.Revision, epoch: antigravityReasoningReplayEpoch}
+	if entry.Deleted || len(entry.Items) == 0 {
+		return nil, snapshot, false, nil
+	}
+	return cloneAntigravityReasoningReplayItems(entry.Items), snapshot, true, nil
+}
+
+// ReplaceAntigravityReasoningReplayItemsIfUnchanged publishes only against the generation read by the request.
+func ReplaceAntigravityReasoningReplayItemsIfUnchanged(ctx context.Context, modelName, sessionKey string, snapshot AntigravityReasoningReplaySnapshot, items [][]byte) (bool, error) {
+	key := antigravityReasoningReplayCacheKey(modelName, sessionKey)
+	if key == "" {
+		return false, nil
+	}
+	normalized, ok := normalizeAntigravityReasoningReplayItems(items)
+	if !ok {
+		return false, nil
+	}
+	if !snapshot.loaded {
+		return CacheAntigravityReasoningReplayItemsBestEffort(ctx, modelName, sessionKey, normalized), nil
+	}
+	client, homeMode, errClient := currentAntigravityReasoningReplayKVClient()
+	if homeMode {
+		if errClient != nil {
+			return false, errClient
+		}
+		raw, errMarshal := json.Marshal(normalized)
+		if errMarshal != nil {
+			return false, errMarshal
+		}
+		swapped, errCAS := client.KVCompareAndSwap(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey), snapshot.raw, snapshot.found, raw, AntigravityReasoningReplayCacheTTL)
+		if errors.Is(errCAS, homekv.ErrCompareAndSwapUnsupported) {
+			return false, nil
+		}
+		return swapped, errCAS
+	}
+	antigravityReasoningReplayMu.Lock()
+	defer antigravityReasoningReplayMu.Unlock()
+	entry, found := antigravityReasoningReplayEntries[key]
+	if found != snapshot.found || (found && entry.Revision != snapshot.revision) || (!found && snapshot.epoch != antigravityReasoningReplayEpoch) {
+		return false, nil
+	}
+	antigravityReasoningReplayRevision++
+	antigravityReasoningReplayEntries[key] = antigravityReasoningReplayEntry{Items: normalized, Timestamp: time.Now(), Revision: antigravityReasoningReplayRevision}
+	if len(antigravityReasoningReplayEntries) > AntigravityReasoningReplayCacheMaxEntries {
+		evictOldestAntigravityReasoningReplayEntries(AntigravityReasoningReplayCacheEvictBatchSize)
+	}
+	return true, nil
+}
+
+// DeleteAntigravityReasoningReplayItemsIfUnchanged clears only the generation read by the request.
+func DeleteAntigravityReasoningReplayItemsIfUnchanged(ctx context.Context, modelName, sessionKey string, snapshot AntigravityReasoningReplaySnapshot) (bool, error) {
+	key := antigravityReasoningReplayCacheKey(modelName, sessionKey)
+	if key == "" {
+		return false, nil
+	}
+	if !snapshot.loaded {
+		return true, DeleteAntigravityReasoningReplayItemRequired(ctx, modelName, sessionKey)
+	}
+	client, homeMode, errClient := currentAntigravityReasoningReplayKVClient()
+	if homeMode {
+		if errClient != nil {
+			return false, errClient
+		}
+		deleted, errCAS := client.KVCompareAndSwap(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey), snapshot.raw, snapshot.found, []byte("[]"), AntigravityReasoningReplayCacheTTL)
+		if errors.Is(errCAS, homekv.ErrCompareAndSwapUnsupported) {
+			return false, nil
+		}
+		return deleted, errCAS
+	}
+	antigravityReasoningReplayMu.Lock()
+	defer antigravityReasoningReplayMu.Unlock()
+	entry, found := antigravityReasoningReplayEntries[key]
+	if found != snapshot.found || (found && entry.Revision != snapshot.revision) || (!found && snapshot.epoch != antigravityReasoningReplayEpoch) {
+		return false, nil
+	}
+	antigravityReasoningReplayRevision++
+	antigravityReasoningReplayEntries[key] = antigravityReasoningReplayEntry{Timestamp: time.Now(), Revision: antigravityReasoningReplayRevision, Deleted: true}
+	return true, nil
 }
 
 // DeleteAntigravityReasoningReplayItem removes one replay item after upstream rejects
@@ -185,11 +290,12 @@ func DeleteAntigravityReasoningReplayItemRequired(ctx context.Context, modelName
 		if errClient != nil {
 			return errClient
 		}
-		_, errDel := client.KVDel(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey))
-		return errDel
+		_, errSet := client.KVSet(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey), []byte("[]"), homekv.KVSetOptions{EX: AntigravityReasoningReplayCacheTTL})
+		return errSet
 	}
 	antigravityReasoningReplayMu.Lock()
-	delete(antigravityReasoningReplayEntries, key)
+	antigravityReasoningReplayRevision++
+	antigravityReasoningReplayEntries[key] = antigravityReasoningReplayEntry{Timestamp: time.Now(), Revision: antigravityReasoningReplayRevision, Deleted: true}
 	antigravityReasoningReplayMu.Unlock()
 	return nil
 }
@@ -198,6 +304,7 @@ func DeleteAntigravityReasoningReplayItemRequired(ctx context.Context, modelName
 func ClearAntigravityReasoningReplayCache() {
 	antigravityReasoningReplayMu.Lock()
 	antigravityReasoningReplayEntries = make(map[string]antigravityReasoningReplayEntry)
+	antigravityReasoningReplayEpoch++
 	antigravityReasoningReplayMu.Unlock()
 }
 
@@ -334,14 +441,20 @@ func evictOldestAntigravityReasoningReplayEntries(count int) {
 	for i := 0; i < count; i++ {
 		delete(antigravityReasoningReplayEntries, candidates[i].key)
 	}
+	antigravityReasoningReplayEpoch++
 }
 
 func purgeExpiredAntigravityReasoningReplayCache(now time.Time) {
 	antigravityReasoningReplayMu.Lock()
+	removed := false
 	for key, entry := range antigravityReasoningReplayEntries {
 		if now.Sub(entry.Timestamp) > AntigravityReasoningReplayCacheTTL {
 			delete(antigravityReasoningReplayEntries, key)
+			removed = true
 		}
+	}
+	if removed {
+		antigravityReasoningReplayEpoch++
 	}
 	antigravityReasoningReplayMu.Unlock()
 }

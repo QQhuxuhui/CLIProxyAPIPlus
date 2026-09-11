@@ -20,7 +20,14 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
 
 	model := "gemini-3-flash-agent"
-	sessionKey := "session:pr3900-invalid-sig"
+	payload := []byte(`{"sessionId":"pr3900-invalid-sig","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"user","parts":[{"functionResponse":{"id":"id1","name":"Bash","response":{"result":"ok"}}}]}]}}`)
+	executionReq := cliproxyexecutor.Request{Model: model, Payload: payload}
+	executionOpts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity, Stream: false}
+	stableKey, _, stable := antigravitySessionForRequest(context.Background(), executionReq, executionOpts)
+	if !stable {
+		t.Fatal("explicit session should resolve as stable")
+	}
+	sessionKey := antigravityReasoningReplayScopeForStableSession(model, stableKey).sessionKey
 	bad := []byte(`{"type":"thought_signature","thoughtSignature":"INVALID_REPLAY_SIGNATURE_PR3900_XXXXXXXXX","contentIndex":1,"partIndex":0}`)
 	if !internalcache.CacheAntigravityReasoningReplayItems(model, sessionKey, [][]byte{bad}) {
 		t.Fatal("failed to seed replay cache")
@@ -47,14 +54,7 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 		},
 	}
 
-	payload := []byte(`{"sessionId":"pr3900-invalid-sig","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"user","parts":[{"functionResponse":{"id":"id1","name":"Bash","response":{"result":"ok"}}}]}]}}`)
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   model,
-		Payload: payload,
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatAntigravity,
-		Stream:       false,
-	})
+	_, err := exec.Execute(context.Background(), auth, executionReq, executionOpts)
 	if err == nil {
 		t.Fatal("expected upstream 400 error")
 	}

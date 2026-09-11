@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -406,14 +407,8 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 }
 
 // Pick selects an auth with session affinity when possible.
-// Priority for session ID extraction:
-//  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority
-//  2. X-Session-ID header
-//  3. Session_id header (Codex)
-//  4. X-Client-Request-Id header (PI)
-//  5. metadata.user_id (non-Claude Code format)
-//  6. conversation_id field in request body
-//  7. Stable hash from first few messages content (fallback)
+// Explicit Claude Code, Codex, generic header, and request-body session signals
+// take priority over user-level and message-derived fallbacks.
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
@@ -421,6 +416,8 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	entry := selectorLogEntry(ctx)
 	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	primaryID = scopeSessionAffinityID(ctx, primaryID)
+	fallbackID = scopeSessionAffinityID(ctx, fallbackID)
 	if primaryID == "" {
 		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
 		return s.fallback.Pick(ctx, provider, model, opts, auths)
@@ -468,9 +465,45 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil {
 		return nil, err
 	}
-	s.cache.Set(cacheKey, auth.ID)
+	boundAuthID := s.cache.GetOrSet(cacheKey, auth.ID)
+	if boundAuthID != auth.ID {
+		for _, availableAuth := range available {
+			if availableAuth.ID == boundAuthID {
+				entry.Infof("session-affinity: concurrent binding reused | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), availableAuth.ID, provider, model)
+				return availableAuth, nil
+			}
+		}
+		s.cache.Set(cacheKey, auth.ID)
+	}
 	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 	return auth, nil
+}
+
+func scopeSessionAffinityID(ctx context.Context, sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || ctx == nil {
+		return sessionID
+	}
+	values, ok := ctx.Value("gin").(interface{ Get(string) (any, bool) })
+	if !ok || values == nil {
+		return sessionID
+	}
+	rawCaller, ok := values.Get("userApiKey")
+	if !ok {
+		return sessionID
+	}
+	caller := ""
+	switch value := rawCaller.(type) {
+	case string:
+		caller = strings.TrimSpace(value)
+	case fmt.Stringer:
+		caller = strings.TrimSpace(value.String())
+	}
+	if caller == "" {
+		return sessionID
+	}
+	sum := sha256.Sum256([]byte("cli-proxy-api:session-affinity:v1\x00" + caller + "\x00" + sessionID))
+	return fmt.Sprintf("caller:%x", sum[:])
 }
 
 func selectorLogEntry(ctx context.Context) *log.Entry {
@@ -483,12 +516,13 @@ func selectorLogEntry(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-// truncateSessionID shortens session ID for logging (first 8 chars + "...")
+// truncateSessionID returns a short irreversible session tag for logs.
 func truncateSessionID(id string) string {
-	if len(id) <= 20 {
-		return id
+	if id == "" {
+		return ""
 	}
-	return id[:8] + "..."
+	sum := sha256.Sum256([]byte(id))
+	return fmt.Sprintf("%x", sum[:8])
 }
 
 // Stop releases resources held by the selector.
@@ -507,14 +541,7 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 }
 
 // ExtractSessionID extracts session identifier from multiple sources.
-// Priority order:
-//  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority for Claude Code clients
-//  2. X-Session-ID header
-//  3. Session_id header (Codex)
-//  4. X-Client-Request-Id header (PI)
-//  5. metadata.user_id (non-Claude Code format)
-//  6. conversation_id field in request body
-//  7. Stable hash from first few messages content (fallback)
+// Explicit session signals take priority over user-level and message-derived fallbacks.
 func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
 	primary, _ := extractSessionIDs(headers, payload, metadata)
 	return primary
@@ -524,7 +551,13 @@ func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]a
 // primaryID: full hash including assistant response (stable after first turn)
 // fallbackID: short hash without assistant (used to inherit binding from first turn)
 func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
-	// 1. metadata.user_id with Claude Code session format (highest priority)
+	if headers != nil {
+		if sid := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); sid != "" {
+			return "claude:" + sid, ""
+		}
+	}
+
+	// Claude Code metadata session format.
 	if len(payload) > 0 {
 		userID := gjson.GetBytes(payload, "metadata.user_id").String()
 		if userID != "" {
@@ -543,46 +576,70 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 		}
 	}
 
-	// 2. X-Session-ID header
+	// Codex session header.
 	if headers != nil {
-		if sid := headers.Get("X-Session-ID"); sid != "" {
+		if sid := strings.TrimSpace(headers.Get("Session-Id")); sid != "" {
+			return "codex:" + sid, ""
+		}
+		if sid := strings.TrimSpace(headers.Get("Session_id")); sid != "" {
+			return "codex:" + sid, ""
+		}
+	}
+
+	// Generic and OpenCode session affinity headers.
+	if headers != nil {
+		if sid := strings.TrimSpace(headers.Get("X-Session-ID")); sid != "" {
 			return "header:" + sid, ""
 		}
-	}
-
-	// 3. Session_id header (Codex)
-	if headers != nil {
-		if sid := headers.Get("Session-Id"); sid != "" {
-			return "codex:" + sid, ""
-		}
-		if sid := headers.Get("Session_id"); sid != "" {
-			return "codex:" + sid, ""
+		if sid := strings.TrimSpace(headers.Get("X-Session-Affinity")); sid != "" {
+			return "affinity:" + sid, ""
 		}
 	}
 
-	// 4. X-Client-Request-Id header (PI)
+	// PI request identifier, retained as an affinity fallback only.
 	if headers != nil {
-		if rid := headers.Get("X-Client-Request-Id"); rid != "" {
+		if rid := strings.TrimSpace(headers.Get("X-Client-Request-Id")); rid != "" {
 			return "clientreq:" + rid, ""
 		}
 	}
 
 	if len(payload) == 0 {
+		if executionID, ok := metadata[cliproxyexecutor.ExecutionSessionMetadataKey].(string); ok && strings.TrimSpace(executionID) != "" {
+			return "execution:" + strings.TrimSpace(executionID), ""
+		}
 		return "", ""
 	}
 
-	// 6. metadata.user_id (non-Claude Code format)
+	// Explicit request-body session signals must outrank content-derived hashes.
+	for _, path := range []string{"session_id", "sessionId", "request.session_id", "request.sessionId"} {
+		if sid := strings.TrimSpace(gjson.GetBytes(payload, path).String()); sid != "" {
+			return "session:" + sid, ""
+		}
+	}
+	conversation := gjson.GetBytes(payload, "conversation")
+	if sid := strings.TrimSpace(conversation.Get("id").String()); sid != "" {
+		return "conversation:" + sid, ""
+	}
+	if conversation.Type == gjson.String {
+		if sid := strings.TrimSpace(conversation.String()); sid != "" {
+			return "conversation:" + sid, ""
+		}
+	}
+	if convID := strings.TrimSpace(gjson.GetBytes(payload, "conversation_id").String()); convID != "" {
+		return "conv:" + convID, ""
+	}
+
+	// User-level fallback retained for compatibility with existing affinity behavior.
 	userID := gjson.GetBytes(payload, "metadata.user_id").String()
 	if userID != "" {
 		return "user:" + userID, ""
 	}
 
-	// 7. conversation_id field
-	if convID := gjson.GetBytes(payload, "conversation_id").String(); convID != "" {
-		return "conv:" + convID, ""
+	if executionID, ok := metadata[cliproxyexecutor.ExecutionSessionMetadataKey].(string); ok && strings.TrimSpace(executionID) != "" {
+		return "execution:" + strings.TrimSpace(executionID), ""
 	}
 
-	// 8. Hash-based fallback from message content
+	// Hash-based fallback from message content.
 	return extractMessageHashIDs(payload)
 }
 

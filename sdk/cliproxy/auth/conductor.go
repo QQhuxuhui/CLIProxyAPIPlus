@@ -5501,6 +5501,7 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 
 	requestedModel := requestedModelFromMetadata(opts.Metadata, model)
 	sessionID := ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	sessionID = scopeSessionAffinityID(ctx, sessionID)
 	dispatchHeaders := homeDispatchHeaders(ctx, opts.Headers)
 
 	raw, err := client.RPopAuth(ctx, requestedModel, sessionID, dispatchHeaders, count)
