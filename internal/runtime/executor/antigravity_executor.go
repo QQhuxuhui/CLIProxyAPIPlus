@@ -882,6 +882,15 @@ attemptLoop:
 			if useCredits {
 				clearAntigravityCreditsFailureState(auth)
 			}
+			// 风控拦截也以 2xx 到达：candidates 为空 / finishReason=SAFETY 等且没有任何 parts。
+			// 原样翻译下去会变成一个 0 token 的「成功」，下游无从分辨；改成明确的 400。
+			// 不进 cooldown、不换号：拦截由内容决定，换号只会白烧配额。
+			if reason, blocked := antigravityNonStreamBlockedReason(bodyBytes); blocked {
+				log.Warnf("antigravity executor: auth %s model %s returned 2xx without generated content (%s); returning 400 content_filter downstream. body=%s", auth.ID, baseModel, reason, antigravityBodyPreview(bodyBytes))
+				err = newAntigravityBlockedStatusErr(reason)
+				reporter.PublishFailure(ctx, err)
+				return resp, err
+			}
 			cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 			bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
 			reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
@@ -1114,6 +1123,7 @@ attemptLoop:
 				}()
 				scanner := bufio.NewScanner(resp.Body)
 				scanner.Buffer(nil, streamScannerBuffer)
+				streamEmittedContent := false
 				for scanner.Scan() {
 					line := scanner.Bytes()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -1125,6 +1135,20 @@ attemptLoop:
 					payload := helps.JSONPayload(line)
 					if payload == nil {
 						continue
+					}
+
+					// 同 ExecuteStream：内容流出前遇到拦截，整笔转成明确的 400。
+					if !streamEmittedContent {
+						if reason, blocked := antigravityBlockedReason(payload); blocked {
+							log.Warnf("antigravity executor: auth %s model %s (claude non-stream) blocked before any content (%s); returning 400 content_filter. chunk=%s", auth.ID, baseModel, reason, antigravityBodyPreview(payload))
+							blockedErr := newAntigravityBlockedStatusErr(reason)
+							reporter.PublishFailure(ctx, blockedErr)
+							out <- cliproxyexecutor.StreamChunk{Err: blockedErr}
+							return
+						}
+						if antigravityPayloadHasContent(payload) {
+							streamEmittedContent = true
+						}
 					}
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
@@ -1623,6 +1647,9 @@ attemptLoop:
 				scanner := bufio.NewScanner(resp.Body)
 				scanner.Buffer(nil, streamScannerBuffer)
 				var param any
+				// 只在还没向下游放出任何生成内容之前把拦截转成错误；内容已经流出去后
+				// 再报错只会截断，交给终结块的 finishReason 表达。
+				streamEmittedContent := false
 				for scanner.Scan() {
 					line := scanner.Bytes()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -1655,6 +1682,22 @@ attemptLoop:
 						case <-ctx.Done():
 						}
 						return
+					}
+
+					if !streamEmittedContent {
+						if reason, blocked := antigravityBlockedReason(payload); blocked {
+							log.Warnf("antigravity executor: auth %s model %s stream blocked before any content (%s); ending stream with 400 content_filter. chunk=%s", auth.ID, baseModel, reason, antigravityBodyPreview(payload))
+							blockedErr := newAntigravityBlockedStatusErr(reason)
+							reporter.PublishFailure(ctx, blockedErr)
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Err: blockedErr}:
+							case <-ctx.Done():
+							}
+							return
+						}
+						if antigravityPayloadHasContent(payload) {
+							streamEmittedContent = true
+						}
 					}
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {

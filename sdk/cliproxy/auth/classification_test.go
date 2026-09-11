@@ -123,3 +123,17 @@ func TestAccountInfoUsesAuthKind(t *testing.T) {
 		t.Fatalf("oauth without email AccountInfo() = %q, %q", kind, value)
 	}
 }
+
+// 风控拦截错误契约：executor 把 2xx 空拒答转成 400 + INVALID_ARGUMENT 的 Google 风格错误体，
+// 这里锁定 conductor 把它判成「请求级错误」——不换号重试（拦截由内容决定，换号只会白烧配额）。
+type contentFilterStatusErr struct{ body string }
+
+func (e contentFilterStatusErr) Error() string   { return e.body }
+func (e contentFilterStatusErr) StatusCode() int { return 400 }
+
+func TestIsRequestInvalidError_ContentFilterBodyIsRequestScoped(t *testing.T) {
+	err := contentFilterStatusErr{body: `{"error":{"code":400,"message":"Your request was rejected by the upstream safety system (finishReason=PROHIBITED_CONTENT)","status":"INVALID_ARGUMENT","type":"content_filter","reason":"finishReason=PROHIBITED_CONTENT"}}`}
+	if !isRequestInvalidError(err) {
+		t.Fatal("content_filter 400 with INVALID_ARGUMENT must be request-scoped (no auth rotation)")
+	}
+}
