@@ -223,6 +223,11 @@ func forceMappingStreamUpstreamChunks(provider, upstreamModel string) [][]byte {
 
 func setupForceMappingManager(t *testing.T, provider, upstreamModel, aliasModel string) (*Manager, *forceMappingExecutor) {
 	t.Helper()
+	return setupForceMappingManagerWithFlag(t, provider, upstreamModel, aliasModel, true)
+}
+
+func setupForceMappingManagerWithFlag(t *testing.T, provider, upstreamModel, aliasModel string, forceMapping bool) (*Manager, *forceMappingExecutor) {
+	t.Helper()
 	manager := NewManager(nil, nil, nil)
 	executor := &forceMappingExecutor{id: provider}
 	manager.RegisterExecutor(executor)
@@ -231,7 +236,7 @@ func setupForceMappingManager(t *testing.T, provider, upstreamModel, aliasModel 
 			Name:         upstreamModel,
 			Alias:        aliasModel,
 			Fork:         true,
-			ForceMapping: true,
+			ForceMapping: forceMapping,
 		}},
 	})
 
@@ -692,5 +697,63 @@ func TestManagerExecuteStream_APIKeyAliasForceMappingRewritesResponse(t *testing
 				t.Fatalf("stream payload = %s, want alias %q without upstream %q", got, tt.aliasModel, tt.upstreamModel)
 			}
 		})
+	}
+}
+
+// Codex aliases rewrite response model fields even without force-mapping: true.
+func TestManagerExecute_CodexAliasDefaultsToForceMapping(t *testing.T) {
+	const (
+		provider      = "codex"
+		upstreamModel = "gpt-5.4"
+		aliasModel    = "gpt-5.4-fast"
+	)
+
+	manager, executor := setupForceMappingManagerWithFlag(t, provider, upstreamModel, aliasModel, false)
+
+	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("execute error = %v, want success", errExecute)
+	}
+	if got := executor.ExecuteModels(); len(got) != 1 || got[0] != upstreamModel {
+		t.Fatalf("executor models = %v, want [%q]", got, upstreamModel)
+	}
+	got := string(resp.Payload)
+	if !strings.Contains(got, aliasModel) || forceMappingPayloadLeaksUpstream(got, upstreamModel) {
+		t.Fatalf("payload = %s, want alias %q without upstream %q", got, aliasModel, upstreamModel)
+	}
+
+	streamResult, errStream := manager.ExecuteStream(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
+	if errStream != nil {
+		t.Fatalf("execute stream error = %v, want success", errStream)
+	}
+	var payload []byte
+	for chunk := range streamResult.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	got = string(payload)
+	if !strings.Contains(got, aliasModel) || forceMappingPayloadLeaksUpstream(got, upstreamModel) {
+		t.Fatalf("stream payload = %s, want alias %q without upstream %q", got, aliasModel, upstreamModel)
+	}
+}
+
+// Non-codex channels keep the opt-in behavior: without force-mapping the upstream model leaks through.
+func TestManagerExecute_NonCodexAliasWithoutForceMappingKeepsUpstreamModel(t *testing.T) {
+	const (
+		provider      = "antigravity"
+		upstreamModel = "gemini-2.5-pro-exp"
+		aliasModel    = "gemini-2.5-pro"
+	)
+
+	manager, _ := setupForceMappingManagerWithFlag(t, provider, upstreamModel, aliasModel, false)
+
+	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("execute error = %v, want success", errExecute)
+	}
+	if got := string(resp.Payload); !strings.Contains(got, upstreamModel) {
+		t.Fatalf("payload = %s, want upstream %q preserved when force-mapping is off", got, upstreamModel)
 	}
 }

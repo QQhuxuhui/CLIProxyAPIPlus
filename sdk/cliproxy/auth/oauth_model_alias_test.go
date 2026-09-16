@@ -354,18 +354,92 @@ func TestApplyOAuthModelAliasWithResult_ForceMappingUsesConfigAliasNotRequestSuf
 }
 func TestApplyOAuthModelAliasWithResult_NoForceMappingPreservesRequestedModelInOriginalAlias(t *testing.T) {
 	t.Parallel()
+	// Uses the claude channel: codex aliases always force-map (see channelForcesModelMapping).
 	mgr := NewManager(nil, nil, nil)
 	mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"codex": {{
+		"claude": {{
 			Name: "gpt-5.4", Alias: "gpt-5.4-fast", Fork: true, ForceMapping: false,
 		}},
 	})
-	auth := &Auth{ID: "t", Provider: "codex"}
+	auth := &Auth{ID: "t", Provider: "claude"}
 	res := mgr.applyOAuthModelAliasWithResult(auth, "gpt-5.4-fast(high)")
 	if res.ForceMapping {
 		t.Fatal("expected ForceMapping false")
 	}
 	if res.OriginalAlias != "gpt-5.4-fast(high)" {
 		t.Fatalf("OriginalAlias = %q want requested model when force-mapping off", res.OriginalAlias)
+	}
+}
+
+func TestResolveOAuthModelAliasWithResult_CodexDefaultsToForceMapping(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex":       {{Name: "gpt-5.4", Alias: "gpt-5.4-fast"}},
+		"antigravity": {{Name: "gemini-2.5-pro-exp", Alias: "gemini-2.5-pro"}},
+	})
+
+	codexResult := manager.resolveOAuthModelAliasWithResult(createAuthForChannel("codex"), "gpt-5.4-fast(high)")
+	if codexResult.UpstreamModel != "gpt-5.4(high)" {
+		t.Fatalf("codex UpstreamModel = %q, want %q", codexResult.UpstreamModel, "gpt-5.4(high)")
+	}
+	if !codexResult.ForceMapping || codexResult.OriginalAlias != "gpt-5.4-fast" {
+		t.Fatalf("codex result = %+v, want ForceMapping=true OriginalAlias=%q", codexResult, "gpt-5.4-fast")
+	}
+
+	otherResult := manager.resolveOAuthModelAliasWithResult(createAuthForChannel("antigravity"), "gemini-2.5-pro")
+	if otherResult.UpstreamModel != "gemini-2.5-pro-exp" || otherResult.ForceMapping {
+		t.Fatalf("antigravity result = %+v, want upstream resolved without ForceMapping", otherResult)
+	}
+}
+
+func TestResolveOAuthModelAliasWithResult_CodexPerAuthAliasDefaultsToForceMapping(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "codex-auth-id",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind":     "oauth",
+			"model_aliases": `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"}]`,
+		},
+	}
+
+	result := manager.resolveOAuthModelAliasWithResult(auth, "gpt-5.5")
+	if result.UpstreamModel != "gpt-5.3-codex-spark" {
+		t.Fatalf("UpstreamModel = %q, want %q", result.UpstreamModel, "gpt-5.3-codex-spark")
+	}
+	if !result.ForceMapping || result.OriginalAlias != "gpt-5.5" {
+		t.Fatalf("result = %+v, want ForceMapping=true OriginalAlias=%q", result, "gpt-5.5")
+	}
+}
+
+func TestResolveAPIKeyModelAliasWithResult_CodexDefaultsToForceMapping(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		CodexKey: []internalconfig.CodexKey{{
+			APIKey: "codex-key",
+			Models: []internalconfig.CodexModel{{Name: "gpt-5-codex", Alias: "codex-latest"}},
+		}},
+	})
+	auth := &Auth{
+		ID:       "codex-api-key-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "api_key",
+			"api_key":   "codex-key",
+		},
+	}
+
+	result := manager.resolveAPIKeyModelAliasWithResult(auth, "codex-latest")
+	if result.UpstreamModel != "gpt-5-codex" {
+		t.Fatalf("UpstreamModel = %q, want %q", result.UpstreamModel, "gpt-5-codex")
+	}
+	if !result.ForceMapping || result.OriginalAlias != "codex-latest" {
+		t.Fatalf("result = %+v, want ForceMapping=true OriginalAlias=%q", result, "codex-latest")
 	}
 }

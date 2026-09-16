@@ -23,6 +23,52 @@ type oauthModelAliasEntry struct {
 	forceMapping  bool
 }
 
+// channelForcesModelMapping reports whether aliases on the given channel always rewrite
+// the model field in upstream responses back to the client-visible alias, even when the
+// alias entry does not set force-mapping explicitly.
+//
+// Codex upstream echoes the real upstream model name (e.g. "gpt-5.4") in every response,
+// so an alias without response rewriting would leak the mapped upstream name to clients.
+func channelForcesModelMapping(channel string) bool {
+	return strings.EqualFold(strings.TrimSpace(channel), "codex")
+}
+
+// forceMappedModelAliasEntry wraps a model alias entry and reports force-mapping as enabled.
+type forceMappedModelAliasEntry struct {
+	modelAliasEntry
+}
+
+func (e forceMappedModelAliasEntry) GetForceMapping() bool { return true }
+
+// forceModelAliasEntries returns entries that always rewrite response model fields.
+func forceModelAliasEntries(models []modelAliasEntry) []modelAliasEntry {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]modelAliasEntry, 0, len(models))
+	for i := range models {
+		if models[i] == nil || models[i].GetForceMapping() {
+			out = append(out, models[i])
+			continue
+		}
+		out = append(out, forceMappedModelAliasEntry{modelAliasEntry: models[i]})
+	}
+	return out
+}
+
+// forceOAuthModelAliases returns a copy of aliases with force-mapping enabled on every entry.
+func forceOAuthModelAliases(aliases []internalconfig.OAuthModelAlias) []internalconfig.OAuthModelAlias {
+	if len(aliases) == 0 {
+		return nil
+	}
+	out := make([]internalconfig.OAuthModelAlias, len(aliases))
+	copy(out, aliases)
+	for i := range out {
+		out[i].ForceMapping = true
+	}
+	return out
+}
+
 type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> entry with upstream model and flags.
 	reverse map[string]map[string]oauthModelAliasEntry
@@ -64,7 +110,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			rev[aliasKey] = oauthModelAliasEntry{
 				upstreamModel: name,
 				configAlias:   alias,
-				forceMapping:  entry.ForceMapping,
+				forceMapping:  entry.ForceMapping || channelForcesModelMapping(channel),
 			}
 		}
 		if len(rev) > 0 {
@@ -266,7 +312,11 @@ func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel st
 	if channel == "" {
 		return OAuthModelAliasResult{}
 	}
-	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), requestedModel); result.UpstreamModel != "" {
+	perAuthAliases := OAuthModelAliasesFromAttributes(authAttributes(auth))
+	if channelForcesModelMapping(channel) {
+		perAuthAliases = forceOAuthModelAliases(perAuthAliases)
+	}
+	if result := resolveUpstreamModelFromAliases(perAuthAliases, requestedModel); result.UpstreamModel != "" {
 		return result
 	}
 	return resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel)
