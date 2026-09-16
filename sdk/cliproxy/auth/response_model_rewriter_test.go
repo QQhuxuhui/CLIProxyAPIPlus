@@ -43,6 +43,22 @@ func TestStreamRewriter_RewriteChunk_AnthropicMessagesDataPrefixWithSpace(t *tes
 	}
 }
 
+func TestStreamRewriter_RewriteChunk_InteractionsModel(t *testing.T) {
+	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "codex-latest"})
+	chunk := []byte("event: interaction.created\n" +
+		`data: {"interaction":{"id":"interaction_1","model":"gpt-5.4"},"event_type":"interaction.created"}` + "\n\n" +
+		"event: interaction.completed\n" +
+		`data: {"interaction":{"id":"interaction_1","model":"gpt-5.4"},"event_type":"interaction.completed"}` + "\n\n")
+
+	got := string(rewriter.RewriteChunk(chunk))
+	if count := strings.Count(got, `"model":"codex-latest"`); count != 2 {
+		t.Fatalf("rewritten interaction model count = %d, want 2; output=%q", count, got)
+	}
+	if strings.Contains(got, `"model":"gpt-5.4"`) {
+		t.Fatalf("rewritten chunk still contains upstream interaction model: %q", got)
+	}
+}
+
 func TestStreamRewriter_Finish_FlushesCodexResponsesEventChunk(t *testing.T) {
 	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "gpt-5.4-fast"})
 	part1 := []byte("event: response.created\n")

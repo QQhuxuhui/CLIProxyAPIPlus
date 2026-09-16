@@ -8,7 +8,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var modelFieldPaths = []string{"model", "modelVersion", "response.model", "response.modelVersion", "message.model"}
+var modelFieldPaths = []string{"model", "modelVersion", "response.model", "response.modelVersion", "message.model", "interaction.model"}
 
 const maxPendingBufSize = 1 << 20 // 1MB limit for pending buffer
 
