@@ -59,7 +59,7 @@ func (h *Handler) RefreshAntigravityCredits(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth)
+	token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth, "")
 	if errToken != nil || strings.TrimSpace(token) == "" {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to acquire access token: %v", errToken)})
 		return
@@ -160,7 +160,7 @@ func parseAntigravityCredits(bodyBytes []byte) (coreauth.AntigravityCreditsHint,
 }
 
 func (h *Handler) antigravityCreditsHTTPClient(auth *coreauth.Auth) *http.Client {
-	return &http.Client{Transport: h.apiCallTransport(auth)}
+	return &http.Client{Transport: h.apiCallTransport(auth, "")}
 }
 
 // antigravityConfiguredUserAgent extracts a caller-configured UA from the auth,

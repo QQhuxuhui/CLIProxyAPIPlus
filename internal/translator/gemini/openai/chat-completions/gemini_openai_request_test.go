@@ -140,6 +140,274 @@ func TestConvertOpenAIRequestToGeminiSkipsEmptyTextPartsWithoutNulls(t *testing.
 	}
 }
 
+func TestConvertOpenAIRequestToGeminiPreservesReasoningContent(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "content": "", "reasoning_content": "thinking only"},
+			{"role": "user", "content": "say ok"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), true)
+	contents := gjson.GetBytes(result, "contents").Array()
+	if len(contents) != 3 {
+		t.Fatalf("contents length = %d, want 3. Output: %s", len(contents), result)
+	}
+	part := contents[1].Get("parts.0")
+	if got := contents[1].Get("role").String(); got != "model" {
+		t.Fatalf("contents.1.role = %q, want model. Output: %s", got, result)
+	}
+	if got := part.Get("text").String(); got != "thinking only" {
+		t.Fatalf("reasoning text = %q, want thinking only. Output: %s", got, result)
+	}
+	if !part.Get("thought").Bool() {
+		t.Fatalf("reasoning part should be marked as thought. Output: %s", result)
+	}
+	if got := part.Get("thoughtSignature").String(); got != geminiFunctionThoughtSignature {
+		t.Fatalf("thoughtSignature = %q, want bypass sentinel. Output: %s", got, result)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiPreservesReasoningBeforeVisibleContentAndToolCall(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "content": "visible answer", "reasoning_content": "thinking only", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "{\"output\":\"ok\"}"},
+			{"role": "user", "content": "say ok"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), true)
+	contents := gjson.GetBytes(result, "contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("contents length = %d, want 4. Output: %s", len(contents), result)
+	}
+	parts := contents[1].Get("parts").Array()
+	if len(parts) != 3 {
+		t.Fatalf("model parts length = %d, want 3. Output: %s", len(parts), result)
+	}
+	if got := parts[0].Get("text").String(); got != "thinking only" || !parts[0].Get("thought").Bool() {
+		t.Fatalf("first part should be the reasoning thought. Output: %s", result)
+	}
+	if got := parts[1].Get("text").String(); got != "visible answer" || parts[1].Get("thought").Bool() {
+		t.Fatalf("second part should be visible assistant content. Output: %s", result)
+	}
+	if got := parts[2].Get("functionCall.name").String(); got != "read_file" {
+		t.Fatalf("functionCall.name = %q, want read_file. Output: %s", got, result)
+	}
+	if got := parts[2].Get("thoughtSignature").String(); got != geminiFunctionThoughtSignature {
+		t.Fatalf("functionCall thoughtSignature = %q, want bypass sentinel. Output: %s", got, result)
+	}
+	if got := contents[2].Get("parts.0.functionResponse.name").String(); got != "read_file" {
+		t.Fatalf("functionResponse.name = %q, want read_file. Output: %s", got, result)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiSkipsEmptyAssistantMessages(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "content": "", "tool_calls": [{"type": "function", "function": {"name": "", "arguments": "{}"}}, {"type": "custom"}]},
+			{"role": "user", "content": "say ok"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), true)
+	contents := gjson.GetBytes(result, "contents").Array()
+	if len(contents) != 2 {
+		t.Fatalf("contents length = %d, want 2. Output: %s", len(contents), result)
+	}
+}
+
+func TestConvertOpenAIRequestToGemini_MidSessionDeveloperMessageDoesNotMutateSystemInstruction(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant"},
+			{"role": "user", "content": "Turn 1 user"},
+			{"role": "assistant", "content": "Turn 1 assistant"},
+			{"role": "developer", "content": "<image_resize_notice>Image 1 was resized to 800x600</image_resize_notice>"},
+			{"role": "user", "content": "Turn 2 user"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), false)
+	output := gjson.ParseBytes(result)
+
+	// systemInstruction must contain only original system prompt
+	sysParts := output.Get("systemInstruction.parts").Array()
+	if len(sysParts) != 1 {
+		t.Fatalf("systemInstruction parts = %d, want 1. Output: %s", len(sysParts), result)
+	}
+	if got := sysParts[0].Get("text").String(); got != "You are a helpful assistant" {
+		t.Fatalf("systemInstruction text = %q, want %q", got, "You are a helpful assistant")
+	}
+
+	// contents must contain user, model, user (demoted dev message), user
+	contents := output.Get("contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("contents length = %d, want 4. Output: %s", len(contents), result)
+	}
+	if contents[0].Get("role").String() != "user" || contents[0].Get("parts.0.text").String() != "Turn 1 user" {
+		t.Fatalf("turn 0 mismatch: %s", contents[0].Raw)
+	}
+	if contents[1].Get("role").String() != "model" || contents[1].Get("parts.0.text").String() != "Turn 1 assistant" {
+		t.Fatalf("turn 1 mismatch: %s", contents[1].Raw)
+	}
+	expectedDevText := "<system-reminder>\n<image_resize_notice>Image 1 was resized to 800x600</image_resize_notice>\n</system-reminder>"
+	if contents[2].Get("role").String() != "user" || contents[2].Get("parts.0.text").String() != expectedDevText {
+		t.Fatalf("turn 2 mismatch: %s", contents[2].Raw)
+	}
+	if contents[3].Get("role").String() != "user" || contents[3].Get("parts.0.text").String() != "Turn 2 user" {
+		t.Fatalf("turn 3 mismatch: %s", contents[3].Raw)
+	}
+}
+
+func TestConvertOpenAIRequestToGemini_MidSessionSystemReminderEnvelope(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant"},
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": "Hi there"},
+			{"role": "system", "content": "Please decide which tool to call next."},
+			{"role": "user", "content": "Search for news"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), false)
+	output := gjson.ParseBytes(result)
+
+	contents := output.Get("contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("contents length = %d, want 4. Output: %s", len(contents), result)
+	}
+	expectedReminder := "<system-reminder>\nPlease decide which tool to call next.\n</system-reminder>"
+	if got := contents[2].Get("parts.0.text").String(); got != expectedReminder {
+		t.Fatalf("mid-session system reminder mismatch:\ngot:  %q\nwant: %q", got, expectedReminder)
+	}
+}
+
+func TestConvertOpenAIRequestToGemini_MidSessionTransientSystemInstructionPreservesTurnBoundaries(t *testing.T) {
+	turnWithTransient := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "system", "content": "System prompt"},
+			{"role": "user", "content": "Turn 1 user"},
+			{"role": "assistant", "content": "Turn 1 assistant"},
+			{"role": "system", "content": "Call tool now"},
+			{"role": "user", "content": "Turn 2 user"}
+		]
+	}`
+
+	turnWithoutTransient := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "system", "content": "System prompt"},
+			{"role": "user", "content": "Turn 1 user"},
+			{"role": "assistant", "content": "Turn 1 assistant"},
+			{"role": "user", "content": "Turn 2 user"},
+			{"role": "assistant", "content": "Turn 2 assistant"}
+		]
+	}`
+
+	outWith := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(turnWithTransient), false)
+	outWithout := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(turnWithoutTransient), false)
+
+	contentsWith := gjson.GetBytes(outWith, "contents").Array()
+	contentsWithout := gjson.GetBytes(outWithout, "contents").Array()
+
+	// Ensure demoted system instruction is standalone and not merged into adjacent user turn
+	if len(contentsWith) != 4 {
+		t.Fatalf("expected 4 standalone content items in request with transient instruction, got %d", len(contentsWith))
+	}
+	expectedReminder := "<system-reminder>\nCall tool now\n</system-reminder>"
+	if contentsWith[2].Get("role").String() != "user" || contentsWith[2].Get("parts.0.text").String() != expectedReminder {
+		t.Fatalf("turn 2 mismatch: %s", contentsWith[2].Raw)
+	}
+	if contentsWith[3].Get("role").String() != "user" || contentsWith[3].Get("parts.0.text").String() != "Turn 2 user" {
+		t.Fatalf("turn 3 mismatch: %s", contentsWith[3].Raw)
+	}
+
+	// Prior turn history entries (Turn 1 user, Turn 1 assistant) are byte-identical
+	if contentsWith[0].Raw != contentsWithout[0].Raw {
+		t.Fatalf("turn 0 diverged: %s vs %s", contentsWith[0].Raw, contentsWithout[0].Raw)
+	}
+	if contentsWith[1].Raw != contentsWithout[1].Raw {
+		t.Fatalf("turn 1 diverged: %s vs %s", contentsWith[1].Raw, contentsWithout[1].Raw)
+	}
+	// Turn 2 user text is also identical between turns because it was not merged
+	if contentsWith[3].Get("parts.0.text").String() != contentsWithout[2].Get("parts.0.text").String() {
+		t.Fatalf("turn 2 user text diverged due to merging: %s vs %s", contentsWith[3].Raw, contentsWithout[2].Raw)
+	}
+}
+
+func TestConvertOpenAIRequestToGemini_MidSessionSystemReminderObjectAndArrayContent(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": "Hi"},
+			{"role": "system", "content": {"type": "text", "text": "Object instruction"}},
+			{"role": "developer", "content": [{"type": "text", "text": "Array instruction"}]}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), false)
+	output := gjson.ParseBytes(result)
+
+	contents := output.Get("contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("contents length = %d, want 4. Output: %s", len(contents), result)
+	}
+	expectedObject := "<system-reminder>\nObject instruction\n</system-reminder>"
+	if got := contents[2].Get("parts.0.text").String(); got != expectedObject {
+		t.Fatalf("object instruction mismatch:\ngot:  %q\nwant: %q", got, expectedObject)
+	}
+	expectedArray := "<system-reminder>\nArray instruction\n</system-reminder>"
+	if got := contents[3].Get("parts.0.text").String(); got != expectedArray {
+		t.Fatalf("array instruction mismatch:\ngot:  %q\nwant: %q", got, expectedArray)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiMapsMaxTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int64
+	}{
+		{
+			name: "max_tokens",
+			body: `{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":30}`,
+			want: 30,
+		},
+		{
+			name: "max_completion_tokens",
+			body: `{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":40}`,
+			want: 40,
+		},
+		{
+			name: "max_tokens preferred over max_completion_tokens",
+			body: `{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":30,"max_completion_tokens":40}`,
+			want: 30,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ConvertOpenAIRequestToGemini("gemini-2.0-flash", []byte(tt.body), false)
+			if got := gjson.GetBytes(out, "generationConfig.maxOutputTokens").Int(); got != tt.want {
+				t.Fatalf("generationConfig.maxOutputTokens = %d, want %d. Output: %s", got, tt.want, out)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIRequestToGeminiCleansToolSchemaRequiredFields(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-2.0-flash",
@@ -180,5 +448,121 @@ func TestConvertOpenAIRequestToGeminiCleansToolSchemaRequiredFields(t *testing.T
 	}
 	if got := required[1].String(); got != "industry" {
 		t.Fatalf("required[1] = %q, want industry. Schema: %s", got, schema.Raw)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatJSONSchema(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.1-flash-lite",
+		"generationConfig": {
+			"temperature": 0.2,
+			"responseSchema": {"type": "string"}
+		},
+		"messages": [{"role": "user", "content": "Return structured JSON."}],
+		"response_format": {
+			"type": "json_schema",
+			"json_schema": {
+				"name": "response",
+				"strict": true,
+				"schema": {
+					"type": "object",
+					"properties": {"cleanedContent": {"type": "string"}},
+					"required": ["cleanedContent"],
+					"additionalProperties": false
+				}
+			}
+		}
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
+	generationConfig := gjson.GetBytes(output, "generationConfig")
+
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, output)
+	}
+	schema := generationConfig.Get("responseJsonSchema")
+	if !schema.Exists() {
+		t.Fatalf("responseJsonSchema missing. Output: %s", output)
+	}
+	if generationConfig.Get("responseSchema").Exists() {
+		t.Fatalf("responseSchema should be removed. Output: %s", output)
+	}
+	if additionalProperties := schema.Get("additionalProperties"); !additionalProperties.Exists() || additionalProperties.Bool() {
+		t.Fatalf("additionalProperties = %s, want false. Output: %s", additionalProperties.Raw, output)
+	}
+	if got := generationConfig.Get("temperature").Float(); got != 0.2 {
+		t.Fatalf("temperature = %v, want 0.2. Output: %s", got, output)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatJSONObject(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.1-flash-lite",
+		"generationConfig": {"temperature": 0.6},
+		"messages": [{"role": "user", "content": "Return a JSON object."}],
+		"response_format": {"type": "json_object"}
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
+	generationConfig := gjson.GetBytes(output, "generationConfig")
+
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, output)
+	}
+	if generationConfig.Get("responseJsonSchema").Exists() {
+		t.Fatalf("responseJsonSchema should not be set for json_object. Output: %s", output)
+	}
+	if got := generationConfig.Get("temperature").Float(); got != 0.6 {
+		t.Fatalf("temperature = %v, want 0.6. Output: %s", got, output)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatJSONSchemaWithoutSchema(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.1-flash-lite",
+		"messages": [{"role": "user", "content": "Return structured JSON."}],
+		"response_format": {"type": "json_schema", "json_schema": {"name": "response"}}
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
+	generationConfig := gjson.GetBytes(output, "generationConfig")
+
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, output)
+	}
+	if generationConfig.Get("responseJsonSchema").Exists() {
+		t.Fatalf("responseJsonSchema should not be set without a schema. Output: %s", output)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatNoOp(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "absent",
+			body: `{"model":"gemini-3.1-flash-lite","messages":[{"role":"user","content":"plain text"}],"temperature":0.5}`,
+		},
+		{
+			name: "unknown type",
+			body: `{"model":"gemini-3.1-flash-lite","messages":[{"role":"user","content":"plain text"}],"temperature":0.5,"response_format":{"type":"text"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(tt.body), false)
+			generationConfig := gjson.GetBytes(output, "generationConfig")
+			if generationConfig.Get("responseMimeType").Exists() {
+				t.Fatalf("responseMimeType should not be set. Output: %s", output)
+			}
+			if generationConfig.Get("responseJsonSchema").Exists() {
+				t.Fatalf("responseJsonSchema should not be set. Output: %s", output)
+			}
+			if got := generationConfig.Get("temperature").Float(); got != 0.5 {
+				t.Fatalf("temperature = %v, want 0.5. Output: %s", got, output)
+			}
+		})
 	}
 }

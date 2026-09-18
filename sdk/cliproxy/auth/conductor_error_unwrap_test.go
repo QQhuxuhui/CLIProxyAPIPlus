@@ -64,3 +64,14 @@ func TestQuotaDetailFromError_UnwrapsWrappedError(t *testing.T) {
 		t.Fatalf("quotaDetailFromError(wrapped): want %+v, got %+v", want, qd)
 	}
 }
+
+// streamQuotaErr simulates an error that arrives mid-stream carrying structured quota info.
+type streamQuotaErr struct {
+	reset time.Time
+}
+
+func (e streamQuotaErr) Error() string   { return "mid-stream quota exhausted" }
+func (e streamQuotaErr) StatusCode() int { return 429 }
+func (e streamQuotaErr) QuotaDetail() (cliproxyexecutor.QuotaDetail, bool) {
+	return cliproxyexecutor.QuotaDetail{Model: "gemini-pro-agent", ResetAt: e.reset, ReasonCode: "QUOTA_EXHAUSTED"}, true
+}

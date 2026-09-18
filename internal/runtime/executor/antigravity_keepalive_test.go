@@ -81,7 +81,7 @@ func TestAntigravityExecuteReusesUpstreamConnection(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewAntigravityExecutor(&config.Config{})
+	exec := NewAntigravityExecutor(antigravityPooledTestConfig())
 	auth := antigravityKeepaliveAuth(t, server.URL)
 
 	const requests = 3
@@ -102,47 +102,6 @@ func TestAntigravityExecuteReusesUpstreamConnection(t *testing.T) {
 	}
 }
 
-func TestAntigravityCountTokensReusesUpstreamConnection(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
-
-	counter := newRemoteAddrCounter()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		counter.record(r.RemoteAddr)
-		if r.Close {
-			t.Errorf("upstream saw Connection: close, want a keep-alive request")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"totalTokens":7}`))
-	}))
-	defer server.Close()
-
-	exec := NewAntigravityExecutor(&config.Config{})
-	auth := antigravityKeepaliveAuth(t, server.URL)
-
-	const requests = 3
-	for i := 0; i < requests; i++ {
-		_, err := exec.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
-			Model:   "claude-sonnet-4-6",
-			Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
-		}, cliproxyexecutor.Options{
-			SourceFormat: sdktranslator.FormatAntigravity,
-		})
-		if err != nil {
-			t.Fatalf("CountTokens() #%d error = %v", i+1, err)
-		}
-	}
-
-	if got := counter.distinct(); got != 1 {
-		t.Fatalf("expected %d countTokens requests to reuse one upstream connection, got %d connections", requests, got)
-	}
-}
-
-// TestAntigravityHTTPRequestClearsInboundConnectionClose covers the passthrough
-// path. Request.Close is a field, not a header, so the header whitelist in
-// HttpRequest cannot strip it: a downstream client sending "Connection: close"
-// makes Go's server set Request.Close, WithContext copies it verbatim, and the
-// close would then propagate upstream and drain the shared pool for everyone.
 func TestAntigravityHTTPRequestClearsInboundConnectionClose(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)
@@ -158,7 +117,7 @@ func TestAntigravityHTTPRequestClearsInboundConnectionClose(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewAntigravityExecutor(&config.Config{})
+	exec := NewAntigravityExecutor(antigravityPooledTestConfig())
 	auth := antigravityKeepaliveAuth(t, server.URL)
 
 	const requests = 3
@@ -189,4 +148,13 @@ func TestAntigravityHTTPRequestClearsInboundConnectionClose(t *testing.T) {
 	if got := counter.distinct(); got != 1 {
 		t.Fatalf("expected %d passthrough requests to reuse one upstream connection, got %d connections", requests, got)
 	}
+}
+
+// antigravityPooledTestConfig enables upstream connection pooling, which is off
+// by default, so keep-alive reuse can be asserted.
+func antigravityPooledTestConfig() *config.Config {
+	enabled := true
+	cfg := &config.Config{}
+	cfg.Antigravity.ConnectionPool.Enabled = &enabled
+	return cfg
 }

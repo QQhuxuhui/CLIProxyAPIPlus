@@ -26,14 +26,16 @@ func TestServiceShutdown_FlushesUsageStats(t *testing.T) {
 	const model = "shutdown-flush-test-model"
 	now := time.Now()
 
-	usage.PublishRecord(context.Background(), usage.Record{
+	// Feed the aggregator directly: the shared usage bus is stopped for good by
+	// any earlier Service.Shutdown in this package, so publishing through it is
+	// order dependent.
+	usagestats.Observe(context.Background(), usage.Record{
 		AuthIndex:   account,
 		Model:       model,
 		RequestedAt: now,
 	})
 
-	// usage.PublishRecord enqueues on an async background worker; poll until
-	// the record has actually reached the aggregator before asserting state.
+	// Poll until the record is visible before asserting state.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		stats, err := usagestats.Query(now, now, account)

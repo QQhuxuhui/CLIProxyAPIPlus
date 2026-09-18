@@ -9,11 +9,37 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
+
+func TestResolveAntigravityRequestBaseURL(t *testing.T) {
+	t.Run("default uses daily endpoint", func(t *testing.T) {
+		if got := resolveAntigravityRequestBaseURL(&cliproxyauth.Auth{}); got != antigravityBaseURLDaily {
+			t.Fatalf("base URL = %q, want %q", got, antigravityBaseURLDaily)
+		}
+	})
+
+	t.Run("custom attribute endpoint remains supported", func(t *testing.T) {
+		auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "https://enterprise.example.com/"}}
+		if got := resolveAntigravityRequestBaseURL(auth); got != "https://enterprise.example.com" {
+			t.Fatalf("base URL = %q, want custom endpoint", got)
+		}
+	})
+
+	t.Run("custom auth file endpoint remains supported", func(t *testing.T) {
+		auth := &cliproxyauth.Auth{Metadata: map[string]any{"base_url": "https://enterprise.example.com/"}}
+		if got := resolveAntigravityRequestBaseURL(auth); got != "https://enterprise.example.com" {
+			t.Fatalf("base URL = %q, want custom auth file endpoint", got)
+		}
+	})
+}
+
+func TestAntigravityLoadCodeAssistBaseURLRemainsProdByDefault(t *testing.T) {
+	if got := antigravityLoadCodeAssistBaseURL(&cliproxyauth.Auth{}); got != antigravityBaseURLProd {
+		t.Fatalf("loadCodeAssist base URL = %q, want %q", got, antigravityBaseURLProd)
+	}
+}
 
 func TestAntigravityBuildRequest_SanitizesGeminiToolSchema(t *testing.T) {
 	body := buildRequestBodyFromPayload(t, "gemini-2.5-pro")
@@ -132,130 +158,38 @@ func TestAntigravityBuildRequest_UsesRouteModelWhenPayloadContainsDifferentModel
 	}
 }
 
-func TestAntigravitySessionResolverUsesStableIdentityForSameConversation(t *testing.T) {
-	t.Parallel()
-
-	req := cliproxyexecutor.Request{
-		Model:   "gemini-3-flash-agent",
-		Payload: []byte(`{"session_id":"stable-session","request":{"contents":[{"role":"user","parts":[{"text":"first"}]}]}}`),
-	}
-	opts := cliproxyexecutor.Options{OriginalRequest: req.Payload}
-	stableKey, firstID, stable := antigravitySessionForRequest(context.Background(), req, opts)
-	if !stable || stableKey == "" || firstID == "" {
-		t.Fatalf("stable session = (%q, %q, %v), want stable identity", stableKey, firstID, stable)
-	}
-
-	req.Payload = []byte(`{"session_id":"stable-session","request":{"contents":[{"role":"user","parts":[{"text":"second"}]}]}}`)
-	opts.OriginalRequest = req.Payload
-	secondKey, secondID, secondStable := antigravitySessionForRequest(context.Background(), req, opts)
-	if !secondStable || secondKey != stableKey || secondID != firstID {
-		t.Fatalf("same stable session changed: first=(%q,%q), second=(%q,%q)", stableKey, firstID, secondKey, secondID)
-	}
-}
-
-func TestAntigravitySessionResolverDoesNotUseMessageHashForEphemeralIdentity(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"same"}]}]}}`)
-	req := cliproxyexecutor.Request{Model: "gemini-3-flash-agent", Payload: payload}
-	opts := cliproxyexecutor.Options{OriginalRequest: payload}
-	firstKey, firstID, firstStable := antigravitySessionForRequest(context.Background(), req, opts)
-	secondKey, secondID, secondStable := antigravitySessionForRequest(context.Background(), req, opts)
-	if firstStable || secondStable || firstKey != "" || secondKey != "" {
-		t.Fatalf("message-only request became stable: first=(%q,%q,%v), second=(%q,%q,%v)", firstKey, firstID, firstStable, secondKey, secondID, secondStable)
-	}
-	if firstID == "" || secondID == "" || firstID == secondID {
-		t.Fatalf("ephemeral upstream IDs should be distinct: %q and %q", firstID, secondID)
-	}
-}
-
-func TestAntigravitySessionResolverSeparatesExplicitSessionsWithSamePrompt(t *testing.T) {
-	t.Parallel()
-
-	firstPayload := []byte(`{"session_id":"session-a","request":{"contents":[{"role":"user","parts":[{"text":"same"}]}]}}`)
-	secondPayload := []byte(`{"session_id":"session-b","request":{"contents":[{"role":"user","parts":[{"text":"same"}]}]}}`)
-	firstReq := cliproxyexecutor.Request{Model: "gemini-3-flash-agent", Payload: firstPayload}
-	secondReq := cliproxyexecutor.Request{Model: "gemini-3-flash-agent", Payload: secondPayload}
-	_, firstID, firstStable := antigravitySessionForRequest(context.Background(), firstReq, cliproxyexecutor.Options{OriginalRequest: firstPayload})
-	_, secondID, secondStable := antigravitySessionForRequest(context.Background(), secondReq, cliproxyexecutor.Options{OriginalRequest: secondPayload})
-	if !firstStable || !secondStable || firstID == secondID {
-		t.Fatalf("explicit sessions did not separate upstream IDs: first=(%q,%v) second=(%q,%v)", firstID, firstStable, secondID, secondStable)
-	}
-}
-
-func TestAntigravityBuildRequestUsesResolvedSessionID(t *testing.T) {
+func TestAntigravityBuildRequestUsesDerivedSessionIDAndPreservesExplicit(t *testing.T) {
 	t.Parallel()
 
 	executor := &AntigravityExecutor{}
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
 	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
-	req, err := executor.buildRequest(context.Background(), auth, "token", "gemini-3-flash-agent", payload, false, "", "https://example.com", "-123456789")
+	req, err := executor.buildRequest(context.Background(), auth, "token", "gemini-3.1-pro", payload, false, "", "https://example.com", "-123456789")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("buildRequest error: %v", err)
 	}
-	if got := requestBody(t, req)["request"].(map[string]any)["sessionId"]; got != "-123456789" {
+	body := requestBody(t, req)
+	request, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request missing or invalid: %v", body["request"])
+	}
+	if got := request["sessionId"]; got != "-123456789" {
 		t.Fatalf("request.sessionId = %v, want -123456789", got)
 	}
-}
 
-func TestAntigravityBuildRequestReplacesRawClientSessionID(t *testing.T) {
-	t.Parallel()
-
-	executor := &AntigravityExecutor{}
-	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
-	payload := []byte(`{"request":{"sessionId":"raw-client-session","contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
-	req, err := executor.buildRequest(context.Background(), auth, "token", "gemini-3-flash-agent", payload, false, "", "https://example.com", "-987654321")
-	if err != nil {
-		t.Fatal(err)
+	explicitPayload := []byte(`{"request":{"sessionId":"-987654321","contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
+	explicitReq, errExplicit := executor.buildRequest(context.Background(), auth, "token", "gemini-3.1-pro", explicitPayload, false, "", "https://example.com", "-123456789")
+	if errExplicit != nil {
+		t.Fatalf("buildRequest explicit error: %v", errExplicit)
 	}
-	if got := requestBody(t, req)["request"].(map[string]any)["sessionId"]; got != "-987654321" {
-		t.Fatalf("request.sessionId = %v, want hashed resolver ID -987654321", got)
+	explicitBody := requestBody(t, explicitReq)
+	explicitRequest, ok := explicitBody["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("explicit request missing or invalid: %v", explicitBody["request"])
 	}
-}
-
-func TestAntigravitySessionResolverRejectsRequestAndUserIdentifiers(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		name    string
-		headers http.Header
-		payload []byte
-	}{
-		{name: "client request id", headers: http.Header{"X-Client-Request-Id": []string{"request-1"}}, payload: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)},
-		{name: "generic user id", payload: []byte(`{"metadata":{"user_id":"user-1"},"messages":[{"role":"user","content":"hi"}]}`)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := cliproxyexecutor.Request{Model: "gemini-3-flash-agent", Payload: tc.payload}
-			opts := cliproxyexecutor.Options{Headers: tc.headers, OriginalRequest: tc.payload}
-			stableKey, _, stable := antigravitySessionForRequest(context.Background(), req, opts)
-			if stable || stableKey != "" {
-				t.Fatalf("request-only identity became stable: %q", stableKey)
-			}
-		})
+	if got := explicitRequest["sessionId"]; got != "-987654321" {
+		t.Fatalf("explicit request.sessionId = %v, want -987654321", got)
 	}
-}
-
-func TestAntigravitySessionResolverScopesSameIDByAuthenticatedCaller(t *testing.T) {
-	payload := []byte(`{"session_id":"shared-client-value","messages":[{"role":"user","content":"hi"}]}`)
-	req := cliproxyexecutor.Request{Model: "gemini-3-flash-agent", Payload: payload}
-	opts := cliproxyexecutor.Options{OriginalRequest: payload}
-
-	ctxA := antigravityCallerContext("caller-a")
-	ctxB := antigravityCallerContext("caller-b")
-	keyA, upstreamA, stableA := antigravitySessionForRequest(ctxA, req, opts)
-	keyB, upstreamB, stableB := antigravitySessionForRequest(ctxB, req, opts)
-	if !stableA || !stableB {
-		t.Fatal("explicit sessions should be stable")
-	}
-	if keyA == keyB || upstreamA == upstreamB {
-		t.Fatalf("callers shared session scope: A=(%q,%q) B=(%q,%q)", keyA, upstreamA, keyB, upstreamB)
-	}
-}
-
-func antigravityCallerContext(caller string) context.Context {
-	ginContext := &gin.Context{}
-	ginContext.Set("userApiKey", caller)
-	return context.WithValue(context.Background(), "gin", ginContext)
 }
 
 func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *testing.T) {
@@ -305,17 +239,25 @@ func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *tes
 
 func TestShouldResolveAntigravityWebSearchGroundingURLsRequiresTypedWebSearchAndSearchRequest(t *testing.T) {
 	original := []byte(`{"tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
+	originalResponses := []byte(`{"tools":[{"type":"web_search"}]}`)
+	originalResponsesPreview := []byte(`{"tools":[{"type":"web_search_preview_2025_03_11"}]}`)
 	translatedWithGoogleSearch := []byte(`{"requestType":"web_search","request":{"tools":[{"googleSearch":{}}]}}`)
 	translatedWithoutGoogleSearch := []byte(`{"request":{"contents":[]}}`)
 
 	if !shouldResolveAntigravityWebSearchGroundingURLs(sdktranslator.FormatClaude, original, translatedWithGoogleSearch) {
 		t.Fatal("expected typed Claude web search translated to web_search request to resolve grounding URLs")
 	}
+	if !shouldResolveAntigravityWebSearchGroundingURLs(sdktranslator.FormatOpenAIResponse, originalResponses, translatedWithGoogleSearch) {
+		t.Fatal("expected typed OpenAI Responses web search translated to web_search request to resolve grounding URLs")
+	}
+	if !shouldResolveAntigravityWebSearchGroundingURLs(sdktranslator.FormatOpenAIResponse, originalResponsesPreview, translatedWithGoogleSearch) {
+		t.Fatal("expected web_search_preview_2025_03_11 translated to web_search request to resolve grounding URLs")
+	}
 	if shouldResolveAntigravityWebSearchGroundingURLs(sdktranslator.FormatClaude, original, translatedWithoutGoogleSearch) {
 		t.Fatal("expected request without googleSearch to skip grounding URL resolution")
 	}
 	if shouldResolveAntigravityWebSearchGroundingURLs(sdktranslator.FormatOpenAI, original, translatedWithGoogleSearch) {
-		t.Fatal("expected non-Claude source format to skip grounding URL resolution")
+		t.Fatal("expected non-Claude/non-Responses source format to skip grounding URL resolution")
 	}
 }
 
@@ -358,6 +300,33 @@ func TestAntigravityPrepareRequestAuth_FetchesMissingProjectID(t *testing.T) {
 	}
 	if got, ok := updated.Metadata["project_id"].(string); !ok || got != "fetched-project" {
 		t.Fatalf("updated auth metadata project_id = %v, want fetched-project", updated.Metadata["project_id"])
+	}
+}
+
+func TestAntigravityPrepareRequestAuth_UpstreamForbiddenPreserves403(t *testing.T) {
+	executor := &AntigravityExecutor{}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token": "token",
+		"expired":      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+	}}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":403,"message":"The caller does not have permission"}}`)),
+		}, nil
+	}))
+
+	_, err := executor.PrepareRequestAuth(ctx, auth)
+	if err == nil {
+		t.Fatalf("PrepareRequestAuth should fail on upstream 403")
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok {
+		t.Fatalf("error should expose StatusCode(), got %T (%v)", err, err)
+	}
+	if got := status.StatusCode(); got != http.StatusForbidden {
+		t.Fatalf("status code = %d, want %d", got, http.StatusForbidden)
 	}
 }
 

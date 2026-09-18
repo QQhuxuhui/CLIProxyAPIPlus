@@ -61,7 +61,7 @@ func (e *StatusError) StatusCode() int {
 }
 
 // RequestScoped reports whether this failure is unrelated to credential health.
-func (e *StatusError) RequestScoped() bool {
+func (e *StatusError) IsRequestScoped() bool {
 	return e != nil && e.Scoped
 }
 

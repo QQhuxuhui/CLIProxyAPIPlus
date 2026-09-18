@@ -429,7 +429,7 @@ func TestPutInputImageDoesNotClassifySignedUploadStatusAsAccountFailure(t *testi
 			if statusError.StatusCode() != http.StatusBadGateway || statusError.Kind != ErrorKindUpstream {
 				t.Fatalf("status error = %+v", statusError)
 			}
-			if !statusError.RequestScoped() {
+			if !statusError.IsRequestScoped() {
 				t.Fatalf("signed upload error is not request-scoped: %+v", statusError)
 			}
 		})
@@ -1029,7 +1029,7 @@ func TestClassifyHTTPErrorSurfacesAuthStatusAndCode(t *testing.T) {
 	if !errorsAs(classifyHTTPError("bootstrap", response), &statusError) {
 		t.Fatal("expected StatusError")
 	}
-	if statusError.StatusCode() != http.StatusUnauthorized || statusError.Kind != ErrorKindAuth || statusError.RequestScoped() {
+	if statusError.StatusCode() != http.StatusUnauthorized || statusError.Kind != ErrorKindAuth || statusError.IsRequestScoped() {
 		t.Fatalf("unexpected classification: %#v", statusError)
 	}
 	if statusError.Error() != "web image credential was rejected (token_invalidated)" {
@@ -1112,7 +1112,7 @@ func TestPollConversationCompletedWithoutAssetIsRequestScoped(t *testing.T) {
 	if !errorsAs(errPoll, &statusError) || statusError.StatusCode() != http.StatusBadRequest || statusError.Kind != ErrorKindModeration {
 		t.Fatalf("pollConversation() error = %#v", errPoll)
 	}
-	if !statusError.RequestScoped() {
+	if !statusError.IsRequestScoped() {
 		t.Fatal("expected completed-without-asset to be request scoped so the conductor does not rotate credentials")
 	}
 }

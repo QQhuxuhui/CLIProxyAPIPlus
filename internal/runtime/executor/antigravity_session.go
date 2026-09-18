@@ -43,3 +43,15 @@ func sessionLockKey(upstreamSessionID string, stable bool) string {
 	}
 	return upstreamSessionID
 }
+
+// antigravitySessionLockKeyFor picks the key that serialises concurrent turns of
+// one upstream session. The derived session ID (from request metadata) wins;
+// requests without one fall back to the stable session extracted from headers
+// and payload, and ephemeral requests are not locked at all.
+func antigravitySessionLockKeyFor(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, derivedSessionID string) string {
+	if key := strings.TrimSpace(derivedSessionID); key != "" {
+		return key
+	}
+	_, upstreamSessionID, stable := antigravitySessionForRequest(ctx, req, opts)
+	return sessionLockKey(upstreamSessionID, stable)
+}

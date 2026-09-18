@@ -254,3 +254,12 @@ func Query(from, to time.Time, account string) ([]AccountStat, error) {
 	}
 	return global.query(from, to, account)
 }
+
+// Observe feeds one usage record straight into the global aggregator. It
+// bypasses the usage bus and exists for callers (and tests) that already hold
+// the record.
+func Observe(ctx context.Context, rec coreusage.Record) {
+	if global != nil {
+		global.HandleUsage(ctx, rec)
+	}
+}
