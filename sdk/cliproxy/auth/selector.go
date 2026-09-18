@@ -1057,6 +1057,14 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			s.cache.Set(cacheKey, authID)
 		}
 	}
+	// bindOrReuse installs the binding unless a concurrent request already bound
+	// this session; it returns the auth ID that is actually bound.
+	bindOrReuse := func(authID string) string {
+		if fallbackKey != "" && !isSubagent && !isFork {
+			return s.cache.GetOrSetAliases(authID, cacheKey, fallbackKey)
+		}
+		return s.cache.GetOrSetAliases(authID, cacheKey)
+	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		for _, auth := range available {
@@ -1104,7 +1112,18 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if auth == nil {
 		return nil, nil
 	}
-	bind(auth.ID)
+	if boundAuthID := bindOrReuse(auth.ID); boundAuthID != auth.ID {
+		// Another request of the same session won the first binding while this
+		// one was selecting. Follow it so both turns land on one account.
+		for _, availableAuth := range available {
+			if availableAuth.ID == boundAuthID {
+				entry.Infof("session-affinity: concurrent binding reused | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), availableAuth.ID, provider, model)
+				return availableAuth, nil
+			}
+		}
+		// The winning auth is not usable for this request; take the binding over.
+		bind(auth.ID)
+	}
 	if isFork && fallbackID != "" {
 		entry.Infof("session-affinity: fork bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 	} else {

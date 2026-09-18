@@ -147,8 +147,30 @@ func (c *SessionCache) SetAliases(authID string, sessionIDs ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureInitializedLocked()
-	now := time.Now()
+	c.setAliasesLocked(authID, time.Now(), sessionIDs...)
+}
 
+// GetOrSetAliases atomically returns the auth already bound to the first
+// identifier when that binding is still live, and otherwise installs authID for
+// every identifier. Two concurrent first turns of one session therefore agree
+// on a single auth instead of the last writer silently overriding the first.
+// The returned value is the auth ID that ends up bound.
+func (c *SessionCache) GetOrSetAliases(authID string, sessionIDs ...string) string {
+	if c == nil || authID == "" || len(sessionIDs) == 0 || strings.TrimSpace(sessionIDs[0]) == "" {
+		return authID
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureInitializedLocked()
+	now := time.Now()
+	if entry, ok := c.entries[sessionIDs[0]]; ok && now.Before(entry.expiresAt) && entry.authID != "" {
+		return entry.authID
+	}
+	c.setAliasesLocked(authID, now, sessionIDs...)
+	return authID
+}
+
+func (c *SessionCache) setAliasesLocked(authID string, now time.Time, sessionIDs ...string) {
 	aliases := mergeSessionAliases(nil, sessionIDs...)
 	previousGroups := make([]sessionEntry, 0, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
