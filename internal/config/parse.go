@@ -31,7 +31,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.UsageStatsRetentionDays = 90
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
-	cfg.SaveCooldownStatus = false
+	cfg.SaveCooldownStatus = true
 	cfg.TransientErrorCooldownSeconds = 0
 	cfg.QuotaCooldownBaseSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff

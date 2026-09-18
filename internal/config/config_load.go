@@ -68,11 +68,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.UsageStatsEnabled = false
+	cfg.UsageStatsRetentionDays = 90
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
-	cfg.SaveCooldownStatus = false
+	cfg.SaveCooldownStatus = true
 	cfg.TransientErrorCooldownSeconds = 0
+	cfg.QuotaCooldownBaseSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
+	cfg.SetWebImageDefaults()
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -150,6 +154,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.MaxRetryCredentials < 0 {
 		cfg.MaxRetryCredentials = 0
 	}
+	if cfg.MaxConcurrentRequests < 0 {
+		cfg.MaxConcurrentRequests = 0
+	}
+	cfg.NormalizeWebImageConfig()
 
 	cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
