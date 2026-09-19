@@ -57,8 +57,13 @@ type pluginLoadResult struct {
 }
 
 type Host struct {
-	applyMu                chan struct{}
-	mu                     sync.Mutex
+	applyMu chan struct{}
+	mu      sync.Mutex
+	// executorCommitMu serializes commitExecutorState so executor registrations reach the
+	// auth manager in commit order. It must never be acquired while holding mu, and mu must
+	// never be held while calling into the auth manager: the manager calls back into the
+	// host (scheduler lookup, identity checks) while holding its own lock.
+	executorCommitMu       sync.Mutex
 	loader                 pluginLoader
 	loaded                 map[string]*loadedPlugin
 	retired                map[string][]*loadedPlugin

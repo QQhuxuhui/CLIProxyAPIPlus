@@ -137,6 +137,9 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		return
 	}
 
+	h.executorCommitMu.Lock()
+	defer h.executorCommitMu.Unlock()
+
 	h.mu.Lock()
 	if h.Snapshot() != snap {
 		h.mu.Unlock()
@@ -165,6 +168,9 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		}
 	}
 	h.executorModelClientIDs = nextModelClients
+	// Release mu before touching the manager: the manager takes its own lock and, on the
+	// request path, calls back into the host under that lock, so holding mu here deadlocks.
+	h.mu.Unlock()
 
 	for _, registration := range registrations {
 		if registration.adapter == nil || registration.provider == "" {
@@ -179,7 +185,6 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		}
 		manager.UnregisterExecutor(provider)
 	}
-	h.mu.Unlock()
 
 	if modelRegistry == nil {
 		return
