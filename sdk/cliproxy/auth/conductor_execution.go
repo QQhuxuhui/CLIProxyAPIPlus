@@ -330,20 +330,25 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 		return req, opts, nil
 	}
 	toFormat := requestToFormat(provider, executor, req, opts)
+	body := req.Payload
+	if !opts.RequestAfterAuthInterceptorReadOnly {
+		body = bytes.Clone(body)
+	}
 	resp := opts.RequestAfterAuthInterceptor(ctx, cliproxyexecutor.RequestAfterAuthInterceptRequest{
+		Provider:       provider,
 		SourceFormat:   opts.SourceFormat,
 		ToFormat:       toFormat,
 		Model:          req.Model,
 		RequestedModel: requestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneRequestHeaders(opts.Headers),
-		Body:           bytes.Clone(req.Payload),
+		Body:           body,
 		Metadata:       opts.Metadata,
 	})
 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
 		req.Payload = bytes.Clone(resp.Body)
-		opts.OriginalRequest = bytes.Clone(resp.Body)
+		opts.OriginalRequest = req.Payload
 	}
 	if resp.Terminate {
 		return req, opts, &cliproxyexecutor.RequestTerminatedError{
@@ -352,7 +357,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 			Body:       bytes.Clone(resp.ResponseBody),
 		}
 	}
-	if len(resp.ClearHeaders) > 0 || len(resp.Body) > 0 {
+	if len(resp.ClearHeaders) > 0 || len(resp.Body) > 0 || len(resp.Headers) > 0 {
 		evalPayload := opts.OriginalRequest
 		if len(evalPayload) == 0 {
 			evalPayload = req.Payload
@@ -368,20 +373,10 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 			} else {
 				delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
 			}
-		} else {
+		} else if len(resp.ClearHeaders) > 0 || len(resp.Body) > 0 {
 			delete(opts.Metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey)
 			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
 			delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
-		}
-	} else if len(resp.Headers) > 0 {
-		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
-			if opts.Metadata == nil {
-				opts.Metadata = make(map[string]any, 2)
-			}
-			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
-			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
-				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
-			}
 		}
 	}
 	return req, opts, nil

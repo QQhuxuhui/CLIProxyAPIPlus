@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -90,6 +91,10 @@ func (h *Host) InterceptRequestBeforeAuth(ctx context.Context, req pluginapi.Req
 	return h.InterceptRequestBeforeAuthExcept(ctx, req, "")
 }
 
+// RequestInterceptorsReadOnly promises not to mutate caller-owned request data.
+// Native Go plugins receive private snapshots; RPC plugins serialize input.
+func (h *Host) RequestInterceptorsReadOnly() bool { return true }
+
 func (h *Host) InterceptRequestBeforeAuthExcept(ctx context.Context, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
 	return h.interceptRequest(ctx, req, "RequestInterceptor.InterceptRequestBeforeAuth", func(interceptor pluginapi.RequestInterceptor, ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 		return interceptor.InterceptRequestBeforeAuth(ctx, req)
@@ -107,26 +112,37 @@ func (h *Host) InterceptRequestAfterAuthExcept(ctx context.Context, req pluginap
 }
 
 func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest, method string, invoke func(pluginapi.RequestInterceptor, context.Context, pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error), skipPluginID string) pluginapi.RequestInterceptResponse {
-	current := pluginapi.RequestInterceptResponse{
-		Headers: cloneHeader(req.Headers),
-		Body:    bytes.Clone(req.Body),
-	}
+	var current pluginapi.RequestInterceptResponse
+	headers, body := req.Headers, req.Body
 	skipPluginID = strings.TrimSpace(skipPluginID)
 	for _, record := range h.activeRecords() {
 		interceptor := record.plugin.Capabilities.RequestInterceptor
-		if h.isPluginFused(record.id) || interceptor == nil || record.id == skipPluginID {
+		if h.isPluginFused(record.id) || interceptor == nil || record.id == skipPluginID || !requestInterceptorMatches(record.requestInterceptors, req) {
 			continue
 		}
 		nextReq := req
-		nextReq.Headers = cloneHeader(current.Headers)
-		nextReq.Body = bytes.Clone(current.Body)
+		nextReq.Providers = append([]string(nil), req.Providers...)
+		nextReq.Headers = cloneHeader(headers)
+		nextReq.Body = body
+		_, rpc := interceptor.(*rpcPluginAdapter)
+		if !rpc {
+			nextReq.Body = bytes.Clone(body)
+		}
 		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
 		if resp, ok := h.callRequestInterceptor(ctx, record, method, func(callCtx context.Context, callReq pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 			return invoke(interceptor, callCtx, callReq)
 		}, nextReq); ok {
-			current.Headers = mergeHeaders(current.Headers, resp.Headers, resp.ClearHeaders)
+			if resp.Headers != nil || len(resp.ClearHeaders) > 0 {
+				headers = mergeHeaders(headers, resp.Headers, resp.ClearHeaders)
+				current.Headers = headers
+				current.ClearHeaders = append(current.ClearHeaders, resp.ClearHeaders...)
+			}
 			if len(resp.Body) > 0 {
-				current.Body = bytes.Clone(resp.Body)
+				body = resp.Body
+				if !rpc {
+					body = bytes.Clone(body)
+				}
+				current.Body = body
 			}
 			if resp.Terminate {
 				current.Terminate = true
@@ -452,15 +468,23 @@ func mergeHeaders(current, updates http.Header, clear []string) http.Header {
 		out = make(http.Header)
 	}
 	for _, key := range clear {
-		out.Del(key)
+		deleteInterceptorHeader(out, key)
 	}
 	for key, values := range updates {
-		out.Del(key)
+		deleteInterceptorHeader(out, key)
 		for _, value := range values {
 			out.Add(key, value)
 		}
 	}
 	return out
+}
+
+func deleteInterceptorHeader(headers http.Header, name string) {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			delete(headers, key)
+		}
+	}
 }
 
 func cloneByteSlices(in [][]byte) [][]byte {
@@ -503,6 +527,9 @@ func cloneInterceptorMetadata(in map[string]any) map[string]any {
 	visited := make(map[metadataCloneVisit]reflect.Value)
 	out := make(map[string]any, len(in))
 	for key, value := range in {
+		if key == coreexecutor.SessionInfoCacheMetadataKey {
+			continue
+		}
 		out[key] = cloneInterceptorMetadataAny(reflect.ValueOf(value), visited)
 	}
 	return out

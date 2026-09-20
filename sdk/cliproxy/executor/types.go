@@ -12,6 +12,9 @@ import (
 // RequestedModelMetadataKey stores the client-requested model name in Options.Metadata.
 const RequestedModelMetadataKey = "requested_model"
 
+// RequestProvidersMetadataKey stores resolved provider candidates for pre-auth filtering.
+const RequestProvidersMetadataKey = "request_providers"
+
 // RequestPathMetadataKey stores the inbound HTTP request path (e.g. "/v1/images/generations") in Options.Metadata.
 // It is optional and may be absent for non-HTTP executions.
 const RequestPathMetadataKey = "request_path"
@@ -38,6 +41,8 @@ const ServiceTierMetadataKey = "service_tier"
 const GenerateMetadataKey = "generate"
 
 const (
+	// SessionInfoCacheMetadataKey holds host-private request-local extraction state.
+	SessionInfoCacheMetadataKey = "_session_info_cache"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
@@ -101,6 +106,8 @@ type RequestAfterAuthInterceptor func(context.Context, RequestAfterAuthIntercept
 
 // RequestAfterAuthInterceptRequest describes a selected-auth request before executor translation.
 type RequestAfterAuthInterceptRequest struct {
+	// Provider is the selected provider for this execution attempt.
+	Provider string
 	// SourceFormat is the original client protocol format.
 	SourceFormat sdktranslator.Format
 	// ToFormat is the selected upstream protocol format.
@@ -212,6 +219,9 @@ type Options struct {
 	Metadata map[string]any
 	// RequestAfterAuthInterceptor runs after credential selection and before executor translation.
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
+	// RequestAfterAuthInterceptorReadOnly allows borrowing the immutable payload.
+	// Leave false for callbacks that may modify input bytes in place.
+	RequestAfterAuthInterceptorReadOnly bool
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
 	WebSocketResponseObserver WebSocketResponseObserver
 	// ExecutionLifecycle owns Home-dispatched execution resources. Executors must not add it to request metadata.

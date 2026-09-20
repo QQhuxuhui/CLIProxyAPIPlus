@@ -19,11 +19,12 @@ type runtimeConfig struct {
 }
 
 type runtimeItemConfig struct {
-	ID         string
-	Enabled    bool
-	Priority   int
-	Version    string
-	ConfigYAML []byte
+	ID                  string
+	Enabled             bool
+	Priority            int
+	Version             string
+	ConfigYAML          []byte
+	RequestInterceptors config.RequestInterceptorFilter
 }
 
 func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
@@ -59,11 +60,12 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 		}
 
 		out.Items[id] = runtimeItemConfig{
-			ID:         id,
-			Enabled:    enabled,
-			Priority:   item.Priority,
-			Version:    pluginConfigDesiredVersion(item),
-			ConfigYAML: runtimeConfigYAML(item, enabled),
+			ID:                  id,
+			Enabled:             enabled,
+			Priority:            item.Priority,
+			Version:             pluginConfigDesiredVersion(item),
+			ConfigYAML:          runtimeConfigYAML(item, enabled),
+			RequestInterceptors: normalizeRequestInterceptorFilter(item.RequestInterceptors),
 		}
 	}
 	return out, nil
@@ -80,6 +82,16 @@ func defaultRuntimeItemConfig(id string) runtimeItemConfig {
 
 func runtimeConfigYAML(item config.PluginInstanceConfig, enabled bool) []byte {
 	rawNode := normalizedConfigNode(item, enabled)
+	// Host routing filters are not plugin configuration. Existing plugins may
+	// use strict YAML decoding, so keep this new field outside their ABI.
+	if rawNode.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(rawNode.Content); i += 2 {
+			if rawNode.Content[i].Value == "request-interceptors" {
+				rawNode.Content = append(rawNode.Content[:i], rawNode.Content[i+2:]...)
+				break
+			}
+		}
+	}
 	rawYAML := bytes.TrimSpace(mustMarshalYAML(rawNode))
 	if len(rawYAML) == 0 {
 		return append([]byte(nil), defaultRuntimeConfigYAML...)

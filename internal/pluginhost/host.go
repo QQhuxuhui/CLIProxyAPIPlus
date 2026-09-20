@@ -383,12 +383,13 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			hotReloadLogs = append(hotReloadLogs, hotReloadFields)
 		}
 		records = append(records, capabilityRecord{
-			id:       file.ID,
-			path:     file.Path,
-			version:  file.Version,
-			priority: item.Priority,
-			meta:     plugin.Metadata,
-			plugin:   plugin,
+			id:                  file.ID,
+			path:                file.Path,
+			version:             file.Version,
+			priority:            item.Priority,
+			requestInterceptors: normalizeRequestInterceptorFilter(item.RequestInterceptors),
+			meta:                plugin.Metadata,
+			plugin:              plugin,
 		})
 		loadedFiles = append(loadedFiles, file)
 	}
@@ -933,17 +934,18 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-		id:       lp.id,
-		path:     lp.path,
-		version:  lp.version,
-		priority: item.Priority,
-		meta:     plugin.Metadata,
-		plugin:   plugin,
-	}, pluginFile{
-		ID:      lp.id,
-		Path:    lp.path,
-		Version: lp.version,
-	}, true
+			id:                  lp.id,
+			path:                lp.path,
+			version:             lp.version,
+			priority:            item.Priority,
+			requestInterceptors: normalizeRequestInterceptorFilter(item.RequestInterceptors),
+			meta:                plugin.Metadata,
+			plugin:              plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

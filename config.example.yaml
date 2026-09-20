@@ -122,6 +122,14 @@ plugins:
     example:
       enabled: true
       priority: 1
+      # Optional host filters for request interception only; empty lists match all.
+      # Before auth, providers matches any resolved provider candidate. Unknown
+      # providers and target formats remain eligible until credential selection.
+      # Different dimensions are ANDed; values within a dimension are ORed.
+      # request-interceptors:
+      #   providers: [codex]
+      #   source-formats: [openai, openai-response]
+      #   target-formats: [codex]
       config1: true
       config2: "string"
       config3: 3

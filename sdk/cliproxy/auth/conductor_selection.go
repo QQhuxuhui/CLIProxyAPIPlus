@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -773,10 +774,35 @@ func latestCandidateErrorForModel(auths []*Auth, selectionModelFunc func(*Auth) 
 	return latestAuthErr
 }
 
+var (
+	schedulerAttributeSensitivity sync.Map
+	schedulerAttributeCacheMu     sync.Mutex
+	schedulerAttributeCacheSize   int
+	schedulerAttributeNormalizer  = strings.NewReplacer("-", "_", ".", "_", " ", "_")
+	schedulerAttributeCompactor   = strings.NewReplacer("_", "", "-", "", ".", "", " ", "")
+)
+
 func schedulerAttributeSensitive(key string) bool {
+	if cached, ok := schedulerAttributeSensitivity.Load(key); ok {
+		return cached.(bool)
+	}
+	sensitive := classifySchedulerAttribute(key)
+	if len(key) <= 256 {
+		schedulerAttributeCacheMu.Lock()
+		if schedulerAttributeCacheSize < 4096 {
+			if _, loaded := schedulerAttributeSensitivity.LoadOrStore(key, sensitive); !loaded {
+				schedulerAttributeCacheSize++
+			}
+		}
+		schedulerAttributeCacheMu.Unlock()
+	}
+	return sensitive
+}
+
+func classifySchedulerAttribute(key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
-	normalized := strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(key)
-	compact := strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(key)
+	normalized := schedulerAttributeNormalizer.Replace(key)
+	compact := schedulerAttributeCompactor.Replace(key)
 	for _, fragment := range []string{
 		"api_key",
 		"apikey",
@@ -820,6 +846,9 @@ func cloneSchedulerAnyMap(src map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(src))
 	for key, value := range src {
+		if key == cliproxyexecutor.SessionInfoCacheMetadataKey {
+			continue
+		}
 		out[key] = value
 	}
 	return out
@@ -944,6 +973,9 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	if scheduler == nil || len(candidates) == 0 {
 		return nil, false, nil
 	}
+	if state, ok := scheduler.(pluginSchedulerState); ok && !state.HasScheduler() {
+		return nil, false, nil
+	}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	requestProvider := providerKey
 	if providerKey == "mixed" {
@@ -955,7 +987,12 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		Model:      model,
 		Stream:     opts.Stream,
 		Options:    schedulerOptions(opts),
-		Candidates: schedulerAuthCandidates(candidates),
+		Candidates: m.cachedSchedulerCandidates(candidates),
+	}
+	if reader, ok := scheduler.(interface{ ReadsSchedulerCandidatesOnly() bool }); !ok || !reader.ReadsSchedulerCandidatesOnly() {
+		for i := range req.Candidates {
+			req.Candidates[i].Attributes = cloneSchedulerAttributes(req.Candidates[i].Attributes)
+		}
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -148,13 +147,20 @@ func ClaudeMetadataIdentities(payload []byte) (sessionID, parentSessionID, agent
 	if len(payload) == 0 {
 		return "", "", ""
 	}
-	root := util.ParseGJSONBytesNoCopy(payload)
+	root := parseSessionObject(payload)
+	req := root.Get("request")
+	hasNestedReq := req.Exists() && !root.Get("contents").Exists()
+	var reqRoot sessionObject
+	if hasNestedReq {
+		reqRoot = indexSessionObject(req)
+	}
+	return claudeMetadataIdentities(root, reqRoot, hasNestedReq)
+}
+
+func claudeMetadataIdentities(root, reqRoot sessionObject, hasNestedReq bool) (sessionID, parentSessionID, agentID string) {
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
-	if userID == "" {
-		req := root.Get("request")
-		if req.Exists() && !root.Get("contents").Exists() {
-			userID = strings.TrimSpace(req.Get("metadata.user_id").String())
-		}
+	if userID == "" && hasNestedReq {
+		userID = strings.TrimSpace(reqRoot.Get("metadata.user_id").String())
 	}
 	if userID == "" {
 		return "", "", ""
@@ -228,6 +234,7 @@ func DerivedID(metadata map[string]any) string {
 
 // Enrich derives a session identity once and places it in both request and option metadata.
 func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+	opts.Metadata = WithInfoCache(opts.Metadata)
 	payload := opts.OriginalRequest
 	if len(payload) == 0 && len(req.Payload) > 0 {
 		opts.OriginalRequest = bytes.Clone(req.Payload)
@@ -385,12 +392,12 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 	}
 	// Parsing without copying matters here: this runs on every request and the
 	// payload can be multiple megabytes.
-	root := util.ParseGJSONBytesNoCopy(payload)
+	root := parseSessionObject(payload)
 	reqRoot := root
 	req := root.Get("request")
 	hasNestedReq := req.Exists() && !root.Get("contents").Exists()
 	if hasNestedReq {
-		reqRoot = req
+		reqRoot = indexSessionObject(req)
 	}
 	for _, path := range []string{
 		"session_id",
@@ -452,7 +459,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 			return true
 		}
 	}
-	if ClaudeMetadataSessionID(payload) != "" {
+	if sid, _, _ := claudeMetadataIdentities(root, reqRoot, hasNestedReq); sid != "" {
 		return true
 	}
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())

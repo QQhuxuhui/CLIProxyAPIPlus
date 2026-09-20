@@ -46,8 +46,18 @@ type PluginInstanceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Priority controls plugin startup and routing order.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// RequestInterceptors limits before/after-auth interception at the host boundary.
+	RequestInterceptors RequestInterceptorFilter `yaml:"request-interceptors,omitempty" json:"request-interceptors,omitempty"`
 	// Raw preserves the full original plugin configuration YAML subtree.
 	Raw yaml.Node `yaml:"-" json:"-"`
+}
+
+// RequestInterceptorFilter uses optional allowlists. Empty lists match all.
+// Unknown providers/target formats before selection are evaluated after auth.
+type RequestInterceptorFilter struct {
+	Providers     []string `yaml:"providers,omitempty" json:"providers,omitempty"`
+	SourceFormats []string `yaml:"source-formats,omitempty" json:"source-formats,omitempty"`
+	TargetFormats []string `yaml:"target-formats,omitempty" json:"target-formats,omitempty"`
 }
 
 // UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
@@ -57,6 +67,7 @@ func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	c.Priority = 0
+	c.RequestInterceptors = RequestInterceptorFilter{}
 	defaultEnabled := false
 	c.Enabled = &defaultEnabled
 
@@ -89,6 +100,10 @@ func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
 				return fmt.Errorf("parse plugin priority: %w", errDecodePriority)
 			}
 			c.Priority = priority
+		case "request-interceptors":
+			if errDecode := node.Decode(&c.RequestInterceptors); errDecode != nil {
+				return fmt.Errorf("parse plugin request-interceptors: %w", errDecode)
+			}
 		}
 	}
 

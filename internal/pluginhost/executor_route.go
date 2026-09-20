@@ -82,6 +82,15 @@ func (h *Host) PluginExecutorRequestToFormat(pluginID string, req coreexecutor.R
 	return adapter.RequestToFormat(req, opts)
 }
 
+// PluginExecutorProvider resolves the registered provider rather than the plugin ID.
+func (h *Host) PluginExecutorProvider(pluginID string) string {
+	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)
+	if errAdapter != nil {
+		return ""
+	}
+	return adapter.Identifier()
+}
+
 // ExecutePluginExecutor executes a request with the named plugin executor without changing the requested model.
 func (h *Host) ExecutePluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
 	adapter, errAdapter := h.executorAdapterForPlugin(pluginID)

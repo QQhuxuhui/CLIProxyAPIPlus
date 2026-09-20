@@ -240,7 +240,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if onlyFreeAuthFromContext(ctx) {
 		meta[coreexecutor.OnlyFreeAuthMetadataKey] = true
 	}
-	return meta
+	return coresession.WithInfoCache(meta)
 }
 
 func requestClientIP(request *http.Request) string {

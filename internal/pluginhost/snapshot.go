@@ -5,16 +5,18 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type capabilityRecord struct {
-	id       string
-	path     string
-	version  string
-	priority int
-	meta     pluginapi.Metadata
-	plugin   pluginapi.Plugin
+	id                  string
+	path                string
+	version             string
+	priority            int
+	meta                pluginapi.Metadata
+	plugin              pluginapi.Plugin
+	requestInterceptors config.RequestInterceptorFilter
 }
 
 type Snapshot struct {

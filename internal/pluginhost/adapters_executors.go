@@ -1084,6 +1084,7 @@ func mergeExecutorMetadata(reqMetadata, optsMetadata map[string]any) map[string]
 	for key, value := range optsMetadata {
 		merged[key] = value
 	}
+	delete(merged, coreexecutor.SessionInfoCacheMetadataKey)
 	return merged
 }
 

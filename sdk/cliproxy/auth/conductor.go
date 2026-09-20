@@ -153,7 +153,9 @@ type Manager struct {
 	authEpochs                map[string]uint64
 	scheduler                 *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
-	pluginScheduler PluginScheduler
+	pluginScheduler      PluginScheduler
+	schedulerCandidateMu sync.Mutex
+	schedulerCandidates  map[string]schedulerCandidateEntry
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
 	homeRuntimeAuths map[string]map[string]*Auth
 	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.

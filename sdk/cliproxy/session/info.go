@@ -8,7 +8,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -46,6 +45,13 @@ type SessionTreeInfo = SessionInfo
 //  11. conversation_id / chat_id
 //  12. execution_session_id metadata
 func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string]any) (SessionInfo, bool) {
+	if cached, ok := metadata[cliproxyexecutor.SessionInfoCacheMetadataKey].(infoCacheFunc); ok {
+		return cached(headers, payload, metadata)
+	}
+	return extractSessionInfo(headers, payload, metadata)
+}
+
+func extractSessionInfo(headers http.Header, payload []byte, metadata map[string]any) (SessionInfo, bool) {
 	var info SessionInfo
 	if metadata != nil {
 		if scope, ok := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string); ok {
@@ -53,18 +59,18 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 		}
 	}
 
-	var root gjson.Result
-	var reqRoot gjson.Result
+	var root sessionObject
+	var reqRoot sessionObject
 	var hasNestedReq bool
 	var parentCandidate string
 
 	if len(payload) > 0 {
-		root = util.ParseGJSONBytesNoCopy(payload)
+		root = parseSessionObject(payload)
 		reqRoot = root
 		req := root.Get("request")
 		hasNestedReq = req.Exists() && !root.Get("contents").Exists()
 		if hasNestedReq {
-			reqRoot = req
+			reqRoot = indexSessionObject(req)
 		}
 		for _, p := range []string{
 			// Standard session / thread parent keys
@@ -118,7 +124,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			}
 		}
 		if parentCandidate == "" {
-			parentCandidate = ClaudeMetadataParentSessionID(payload)
+			_, parentCandidate, _ = claudeMetadataIdentities(root, reqRoot, hasNestedReq)
 		}
 	}
 
@@ -139,7 +145,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			}
 		}
 		if agentID == "" {
-			_, _, agentID = ClaudeMetadataIdentities(payload)
+			_, _, agentID = claudeMetadataIdentities(root, reqRoot, hasNestedReq)
 		}
 		parentAgentID := sessionHeaderValue(headers, "X-Claude-Code-Parent-Agent-Id")
 		if parentAgentID == "" && root.Exists() {
@@ -176,7 +182,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 
 	// 2. Claude Code metadata.user_id in payload (outranks generic headers)
 	if len(payload) > 0 {
-		if sid, parentSID, agentID := ClaudeMetadataIdentities(payload); sid != "" {
+		if sid, parentSID, agentID := claudeMetadataIdentities(root, reqRoot, hasNestedReq); sid != "" {
 			info.ClientType = "claude"
 			if agentID == "" {
 				agentID = sessionHeaderValue(headers, "X-Claude-Code-Agent-Id")
@@ -843,7 +849,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 	return SessionInfo{}, false
 }
 
-func isBodyForkCandidate(root, reqRoot gjson.Result, hasNestedReq bool) bool {
+func isBodyForkCandidate(root, reqRoot sessionObject, hasNestedReq bool) bool {
 	if !root.Exists() {
 		return false
 	}

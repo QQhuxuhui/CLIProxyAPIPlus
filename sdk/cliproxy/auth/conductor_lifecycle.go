@@ -331,6 +331,9 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	provider := strings.TrimSpace(existing.Provider)
 	delete(m.auths, id)
+	m.schedulerCandidateMu.Lock()
+	delete(m.schedulerCandidates, id)
+	m.schedulerCandidateMu.Unlock()
 	if m.modelPoolOffsets != nil {
 		delete(m.modelPoolOffsets, id)
 	}

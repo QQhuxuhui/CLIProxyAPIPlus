@@ -1049,6 +1049,10 @@ type ResponseTransformRequest struct {
 
 // RequestInterceptRequest describes a request about to be executed upstream.
 type RequestInterceptRequest struct {
+	// Provider is the selected upstream provider; empty before selection.
+	Provider string `json:",omitempty"`
+	// Providers lists possible upstream providers before credential selection.
+	Providers []string `json:",omitempty"`
 	// RequestID uniquely identifies one model execution and correlates it with RequestCompletion.
 	RequestID string
 	// TraceID identifies the parent inbound HTTP request when available.

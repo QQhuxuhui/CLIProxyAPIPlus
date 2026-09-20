@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"maps"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -33,6 +34,10 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 func (h *Host) HasScheduler() bool {
 	return h.schedulerRecord() != nil
 }
+
+// ReadsSchedulerCandidatesOnly lets the manager share immutable projections.
+// Direct Go schedulers receive private copies at the invocation boundary.
+func (h *Host) ReadsSchedulerCandidatesOnly() bool { return true }
 
 func (h *Host) SchedulerWantsAcrossPriorities() bool {
 	record := h.schedulerRecord()
@@ -71,6 +76,14 @@ func (h *Host) callScheduler(ctx context.Context, record capabilityRecord, req p
 	}()
 
 	req.Plugin = record.meta
+	if _, rpc := scheduler.(*rpcPluginAdapter); !rpc {
+		candidates := make([]pluginapi.SchedulerAuthCandidate, len(req.Candidates))
+		copy(candidates, req.Candidates)
+		for i := range candidates {
+			candidates[i].Attributes = maps.Clone(candidates[i].Attributes)
+		}
+		req.Candidates = candidates
+	}
 	resp, errPick := scheduler.Pick(ctx, req)
 	if errPick != nil {
 		log.WithField("plugin_id", record.id).WithError(errPick).Warn("pluginhost: scheduler rejected auth pick")

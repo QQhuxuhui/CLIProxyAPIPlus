@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -375,12 +376,12 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 		return
 	}
 	headers := mergeRequestInterceptorHeaders(req.Headers, resp.Headers, resp.ClearHeaders)
-	body := cloneBytes(req.Body)
+	body := req.Body
 	var originalRequest []byte
 	originalRequestReplaced := false
 	if len(resp.Body) > 0 {
 		body = cloneBytes(resp.Body)
-		originalRequest = cloneBytes(resp.Body)
+		originalRequest = body
 		originalRequestReplaced = true
 	}
 
@@ -402,10 +403,10 @@ func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecu
 	if !c.set {
 		return req, opts
 	}
-	req.Payload = cloneBytes(c.body)
+	req.Payload = c.body
 	opts.Headers = cloneHeader(c.headers)
 	if c.originalRequestReplaced {
-		opts.OriginalRequest = cloneBytes(c.originalRequest)
+		opts.OriginalRequest = c.originalRequest
 	}
 	return req, opts
 }
@@ -419,15 +420,23 @@ func mergeRequestInterceptorHeaders(current, updates http.Header, clear []string
 		out = make(http.Header)
 	}
 	for _, key := range clear {
-		out.Del(key)
+		deleteInterceptorHeader(out, key)
 	}
 	for key, values := range updates {
-		out.Del(key)
+		deleteInterceptorHeader(out, key)
 		for _, value := range values {
 			out.Add(key, value)
 		}
 	}
 	return out
+}
+
+func deleteInterceptorHeader(headers http.Header, name string) {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			delete(headers, key)
+		}
+	}
 }
 
 func interceptRequestBeforeAuth(ctx context.Context, host PluginInterceptorHost, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
@@ -471,21 +480,27 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 	if !requestInterceptorsEnabled(host) {
 		return req, opts, nil
 	}
-	resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{
+	providers, _ := opts.Metadata[coreexecutor.RequestProvidersMetadataKey].([]string)
+	interceptReq := pluginapi.RequestInterceptRequest{
+		Providers:      providers,
 		RequestID:      requestID,
 		TraceID:        logging.GetRequestID(ctx),
 		SourceFormat:   handlerType,
 		Model:          req.Model,
 		RequestedModel: requestedModel,
 		Stream:         opts.Stream,
-		Headers:        cloneHeader(opts.Headers),
-		Body:           cloneBytes(req.Payload),
 		Metadata:       opts.Metadata,
-	}, skipPluginID)
+	}
+	if !requestInterceptorsMatch(host, interceptReq, skipPluginID) {
+		return req, opts, nil
+	}
+	interceptReq.Headers = cloneHeader(opts.Headers)
+	interceptReq.Body = requestInterceptorBody(host, req.Payload)
+	resp := interceptRequestBeforeAuth(ctx, host, interceptReq, skipPluginID)
 	opts.Headers = finalInterceptorHeaders(opts.Headers, resp.Headers)
 	if len(resp.Body) > 0 {
 		req.Payload = cloneBytes(resp.Body)
-		opts.OriginalRequest = cloneBytes(resp.Body)
+		opts.OriginalRequest = req.Payload
 	}
 	if resp.Terminate {
 		return req, opts, requestTerminationError(resp)
@@ -552,7 +567,8 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 	if !requestInterceptorsEnabled(host) {
 		return coreexecutor.RequestAfterAuthInterceptResponse{}
 	}
-	resp := interceptRequestAfterAuth(ctx, host, pluginapi.RequestInterceptRequest{
+	interceptReq := pluginapi.RequestInterceptRequest{
+		Provider:       req.Provider,
 		RequestID:      requestID,
 		TraceID:        logging.GetRequestID(ctx),
 		SourceFormat:   req.SourceFormat.String(),
@@ -560,10 +576,14 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		Model:          req.Model,
 		RequestedModel: req.RequestedModel,
 		Stream:         req.Stream,
-		Headers:        cloneHeader(req.Headers),
-		Body:           cloneBytes(req.Body),
 		Metadata:       req.Metadata,
-	}, skipPluginID)
+	}
+	if !requestInterceptorsMatch(host, interceptReq, skipPluginID) {
+		return coreexecutor.RequestAfterAuthInterceptResponse{}
+	}
+	interceptReq.Headers = cloneHeader(req.Headers)
+	interceptReq.Body = requestInterceptorBody(host, req.Body)
+	resp := interceptRequestAfterAuth(ctx, host, interceptReq, skipPluginID)
 	return coreexecutor.RequestAfterAuthInterceptResponse{
 		Headers:         resp.Headers,
 		Body:            resp.Body,
@@ -573,6 +593,22 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		ResponseHeaders: resp.ResponseHeaders,
 		ResponseBody:    resp.ResponseBody,
 	}
+}
+
+func requestInterceptorBody(host PluginInterceptorHost, body []byte) []byte {
+	if reader, ok := host.(interface{ RequestInterceptorsReadOnly() bool }); ok && reader.RequestInterceptorsReadOnly() {
+		return body
+	}
+	return cloneBytes(body)
+}
+
+func requestInterceptorsMatch(host PluginInterceptorHost, req pluginapi.RequestInterceptRequest, skipPluginID string) bool {
+	if detector, ok := host.(interface {
+		HasRequestInterceptorsFor(pluginapi.RequestInterceptRequest, string) bool
+	}); ok {
+		return detector.HasRequestInterceptorsFor(req, skipPluginID)
+	}
+	return true
 }
 
 func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string) ([]byte, http.Header) {
