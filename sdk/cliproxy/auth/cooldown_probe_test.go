@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -138,6 +139,56 @@ func TestPickNextMixedProbedDisabledIsPassThrough(t *testing.T) {
 	}
 	if probe.held != "" {
 		t.Fatal("previous lease must be released even when the gate is off")
+	}
+}
+
+func TestPickNextMixedProbedPrefixedModelCooldown(t *testing.T) {
+	for _, upstream := range []string{"public-model", "shared-upstream"} {
+		t.Run(upstream, func(t *testing.T) {
+			SetCooldownProbeGate(true)
+			t.Cleanup(func() { SetCooldownProbeGate(false) })
+			manager := NewManager(nil, &RoundRobinSelector{}, nil)
+			manager.RegisterExecutor(&customStreamMockExecutor{identifier: "claude"})
+			manager.SetConfig(&internalconfig.Config{ClaudeKey: []internalconfig.ClaudeKey{{
+				APIKey: "probe-prefix-key", Prefix: "tenant",
+				Models: []internalconfig.ClaudeModel{{Name: upstream, Alias: "public-model"}},
+			}}})
+			route := "tenant/public-model"
+			recovering := configuredCapabilityTestAuth("probe-prefix-recovering", "probe-prefix-key")
+			recovering.Attributes["priority"] = "9"
+			candidates, pooled, _, _ := manager.executionModelCandidatesWithAlias(recovering, route)
+			if len(candidates) != 1 || candidates[0] != upstream || pooled {
+				t.Fatalf("unexpected model resolution: %v, pooled=%v", candidates, pooled)
+			}
+			stateModel := manager.stateModelForExecution(recovering, route, candidates[0], pooled)
+			recovering.ModelStates = recoveringAuth(recovering.ID, stateModel, time.Now()).ModelStates
+			healthy := configuredCapabilityTestAuth("probe-prefix-healthy", "probe-prefix-key")
+			healthy.Attributes["priority"] = "1"
+			for _, candidate := range []*Auth{recovering, healthy} {
+				registry.GetGlobalRegistry().RegisterClient(candidate.ID, "claude", []*registry.ModelInfo{{ID: route}})
+				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(candidate.ID) })
+				if _, err := manager.Register(context.Background(), candidate); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pick := func(probe *cooldownProbe) string {
+				t.Helper()
+				selected, _, _, err := manager.pickNextMixedProbed(context.Background(), []string{"claude"}, route, cliproxyexecutor.Options{}, map[string]struct{}{}, probe)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return selected.ID
+			}
+			first, second := &cooldownProbe{}, &cooldownProbe{}
+			t.Cleanup(first.release)
+			t.Cleanup(second.release)
+			if got := pick(first); got != recovering.ID {
+				t.Fatalf("first request selected %s, want %s", got, recovering.ID)
+			}
+			if got := pick(second); got != healthy.ID {
+				t.Fatalf("concurrent request selected %s, want healthy credential %s", got, healthy.ID)
+			}
+		})
 	}
 }
 

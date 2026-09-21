@@ -78,13 +78,14 @@ func (m *Manager) pickNextMixedProbed(ctx context.Context, providers []string, m
 		if probe.open || auth == nil {
 			return auth, executor, provider, nil
 		}
-		// Cooldowns are recorded under the credential's resolved model, which differs
-		// from the route model for prefixed or aliased names.
+		// OAuth aliases and unaliased prefixed models use the selection key.
+		// API-key aliases can retain the full route key in stateModelForExecution.
 		stateModel := m.selectionModelKeyForAuth(auth, model)
-		if stateModel == "" {
-			stateModel = model
+		now := cooldownProbeNow()
+		key, recovering := cooldownProbeKey(auth, stateModel, now)
+		if !recovering && canonicalModelKey(model) != stateModel {
+			key, recovering = cooldownProbeKey(auth, model, now)
 		}
-		key, recovering := cooldownProbeKey(auth, stateModel, cooldownProbeNow())
 		if !recovering || probe.acquire(key) {
 			return auth, executor, provider, nil
 		}
