@@ -91,7 +91,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, ModelInfo: modelInfo}
-	originalTranslated, translated := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
+	originalTranslated, translated := helps.TranslateRequestEnvelopePairForAttempt(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayloadSource, originalPayload, opts.Metadata)
 
 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -190,6 +190,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	// Success
+	helps.ForgetTranslatedRequests(opts.Metadata)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -314,7 +315,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	}
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, Stream: true, ModelInfo: modelInfo}
-	originalTranslated, translated := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
+	originalTranslated, translated := helps.TranslateRequestEnvelopePairForAttempt(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayloadSource, originalPayload, opts.Metadata)
 
 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -419,6 +420,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	}
 
 	// Stream success
+	helps.ForgetTranslatedRequests(opts.Metadata)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}

@@ -527,7 +527,7 @@ func cloneInterceptorMetadata(in map[string]any) map[string]any {
 	visited := make(map[metadataCloneVisit]reflect.Value)
 	out := make(map[string]any, len(in))
 	for key, value := range in {
-		if key == coreexecutor.SessionInfoCacheMetadataKey {
+		if coreexecutor.IsHostPrivateMetadataKey(key) {
 			continue
 		}
 		out[key] = cloneInterceptorMetadataAny(reflect.ValueOf(value), visited)

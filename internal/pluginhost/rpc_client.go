@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -299,6 +300,9 @@ func sanitizePluginMetadata(src map[string]any) map[string]any {
 	}
 	dst := make(map[string]any, len(src))
 	for key, value := range src {
+		if coreexecutor.IsHostPrivateMetadataKey(key) {
+			continue
+		}
 		if sanitized, ok := sanitizePluginMetadataValue(value); ok {
 			dst[key] = sanitized
 		}

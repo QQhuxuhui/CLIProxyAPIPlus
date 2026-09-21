@@ -846,7 +846,7 @@ func cloneSchedulerAnyMap(src map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(src))
 	for key, value := range src {
-		if key == cliproxyexecutor.SessionInfoCacheMetadataKey {
+		if cliproxyexecutor.IsHostPrivateMetadataKey(key) {
 			continue
 		}
 		out[key] = value

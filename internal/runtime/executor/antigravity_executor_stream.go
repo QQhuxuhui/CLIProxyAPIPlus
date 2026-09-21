@@ -95,7 +95,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, Stream: true, ModelInfo: modelInfo}
-	originalTranslated, translated := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
+	originalTranslated, translated := helps.TranslateRequestEnvelopePairForAttempt(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayloadSource, originalPayload, opts.Metadata)
 
 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -200,6 +200,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	}
 
 	// Stream success
+	helps.ForgetTranslatedRequests(opts.Metadata)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
