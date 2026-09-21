@@ -55,6 +55,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaCooldownBaseSeconds != newCfg.QuotaCooldownBaseSeconds {
 		changes = append(changes, fmt.Sprintf("quota-cooldown-base-seconds: %d -> %d", oldCfg.QuotaCooldownBaseSeconds, newCfg.QuotaCooldownBaseSeconds))
 	}
+	if oldCfg.CooldownProbeGate != newCfg.CooldownProbeGate {
+		changes = append(changes, fmt.Sprintf("cooldown-probe-gate: %t -> %t", oldCfg.CooldownProbeGate, newCfg.CooldownProbeGate))
+	}
 	if oldCfg.DisableClaudeCloakMode != newCfg.DisableClaudeCloakMode {
 		changes = append(changes, fmt.Sprintf("disable-claude-cloak-mode: %t -> %t", oldCfg.DisableClaudeCloakMode, newCfg.DisableClaudeCloakMode))
 	}

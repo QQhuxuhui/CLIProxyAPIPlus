@@ -110,6 +110,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if oldCfg == nil || oldCfg.QuotaCooldownBaseSeconds != cfg.QuotaCooldownBaseSeconds {
 		auth.SetQuotaCooldownBaseSeconds(cfg.QuotaCooldownBaseSeconds)
 	}
+	if oldCfg == nil || oldCfg.CooldownProbeGate != cfg.CooldownProbeGate {
+		auth.SetCooldownProbeGate(cfg.CooldownProbeGate)
+	}
 
 	if oldCfg != nil && oldCfg.DisableImageGeneration != cfg.DisableImageGeneration {
 		log.Infof("disable-image-generation updated: %v -> %v", oldCfg.DisableImageGeneration, cfg.DisableImageGeneration)

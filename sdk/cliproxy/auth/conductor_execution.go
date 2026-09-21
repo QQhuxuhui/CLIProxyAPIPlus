@@ -471,6 +471,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 	}
 	attempted := make(map[string]struct{})
+	probe := &cooldownProbe{}
+	defer probe.release()
 	var lastErr error
 	var upstreamErr error
 	var busyErr error
@@ -490,7 +492,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -709,6 +711,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 	}
 	attempted := make(map[string]struct{})
+	probe := &cooldownProbe{}
+	defer probe.release()
 	var lastErr error
 	var upstreamErr error
 	for {
@@ -724,7 +728,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -929,6 +933,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	lastHomeAuthID := ""
 	homeSameAuthRetryPending := false
 	attempted := make(map[string]struct{})
+	probe := &cooldownProbe{}
+	defer probe.release()
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
@@ -964,7 +970,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+			auth, executor, provider, errPick = m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
 		}
 		if errPick != nil {
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)

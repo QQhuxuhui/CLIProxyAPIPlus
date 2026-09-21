@@ -231,6 +231,11 @@ transient-error-cooldown-seconds: 0
 # upstream 429 bodies carry no retry hint (e.g. Antigravity RESOURCE_EXHAUSTED).
 quota-cooldown-base-seconds: 0
 
+# When true, only one request probes a credential whose model cooldown just expired;
+# concurrent requests rotate to other credentials (without penalising it) until the probe
+# settles. Skipped credentials are retried when nothing else is available. Default false.
+cooldown-probe-gate: false
+
 # When true, globally disable Claude request cloaking (the Claude Code CLI disguise and
 # system prompt replacement), so the original system prompt is passed through to Claude as-is.
 # Individual credentials can still override this: a claude-api-key entry via its "cloak.mode",

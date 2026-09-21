@@ -542,6 +542,7 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval, cfg.MaxRetryCredentials)
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	coreauth.SetQuotaCooldownBaseSeconds(cfg.QuotaCooldownBaseSeconds)
+	coreauth.SetCooldownProbeGate(cfg.CooldownProbeGate)
 }
 
 // configureAntigravityPlanStore points the antigravity display-plan store at the

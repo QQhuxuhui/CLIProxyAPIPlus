@@ -111,6 +111,11 @@ type Config struct {
 	// failure up to the 30 minute cap. 0 keeps the legacy 1 second base.
 	QuotaCooldownBaseSeconds int `yaml:"quota-cooldown-base-seconds" json:"quota-cooldown-base-seconds"`
 
+	// CooldownProbeGate lets a single request probe a credential whose model
+	// cooldown just expired while concurrent requests rotate to other credentials,
+	// instead of all of them hitting the recovering credential at once.
+	CooldownProbeGate bool `yaml:"cooldown-probe-gate" json:"cooldown-probe-gate"`
+
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh and manual refresh-all worker pool.
 	// When <= 0, the default worker count is used.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
