@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -398,7 +399,30 @@ func authWeight(auth *Auth) int64 {
 	return credentialweight.Default
 }
 
+// canonicalModelKeys memoises canonicalModelKey. Selection evaluates it for every
+// model state of every candidate on every pick, while the set of model names in
+// a deployment is small and the mapping is a pure function.
+var (
+	canonicalModelKeys     sync.Map
+	canonicalModelKeyCount atomic.Int64
+)
+
+const maxCanonicalModelKeyCacheEntries = 8192
+
 func canonicalModelKey(model string) string {
+	if cached, ok := canonicalModelKeys.Load(model); ok {
+		return cached.(string)
+	}
+	key := computeCanonicalModelKey(model)
+	if len(model) <= 256 && canonicalModelKeyCount.Load() < maxCanonicalModelKeyCacheEntries {
+		if _, loaded := canonicalModelKeys.LoadOrStore(model, key); !loaded {
+			canonicalModelKeyCount.Add(1)
+		}
+	}
+	return key
+}
+
+func computeCanonicalModelKey(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return ""
@@ -1132,6 +1156,35 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	return auth, nil
 }
 
+// lcpPreparedPayloadMetadataKey records which request body the LCP fingerprints
+// in the request metadata were prepared from.
+const lcpPreparedPayloadMetadataKey = "lcp_prepared_payload"
+
+// lcpPayloadIdentity identifies a request body by slice identity. Request bodies
+// are immutable while a request is in flight; a rewrite replaces the slice, which
+// changes the identity and forces a fresh extraction.
+func lcpPayloadIdentity(format string, payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%p:%d", format, &payload[0], len(payload))
+}
+
+func lcpPreparedFromMetadata(metadata map[string]any, payloadID string) ([]string, int, bool) {
+	if metadata == nil || payloadID == "" {
+		return nil, 0, false
+	}
+	if previous, _ := metadata[lcpPreparedPayloadMetadataKey].(string); previous != payloadID {
+		return nil, 0, false
+	}
+	fingerprints, okFingerprints := metadata[cliproxyexecutor.LCPFingerprintMetadataKey].([]string)
+	minPrefixLength, okPrefix := metadata[cliproxyexecutor.LCPMinPrefixLengthMetadataKey].(int)
+	if !okFingerprints || !okPrefix || len(fingerprints) == 0 {
+		return nil, 0, false
+	}
+	return fingerprints, minPrefixLength, true
+}
+
 func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, entry *log.Entry) (*Auth, bool, error) {
 	if s == nil || s.matcher == nil {
 		return nil, false, nil
@@ -1140,17 +1193,25 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if namespace == "" {
 		return nil, false, nil
 	}
-	turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
-	if len(turns) == 0 {
-		return nil, false, nil
+	// Extracting canonical turns parses the whole request body. One request picks
+	// a credential once per retry attempt, so reuse the fingerprints prepared by an
+	// earlier pick of the same request while the body is unchanged.
+	payloadID := lcpPayloadIdentity(opts.SourceFormat.String(), opts.OriginalRequest)
+	fingerprints, minPrefixLength, prepared := lcpPreparedFromMetadata(opts.Metadata, payloadID)
+	if !prepared {
+		turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
+		if len(turns) == 0 {
+			return nil, false, nil
+		}
+		fingerprints, minPrefixLength = s.matcher.Prepare(turns)
 	}
-	fingerprints, minPrefixLength := s.matcher.Prepare(turns)
 	if len(fingerprints) == 0 || minPrefixLength <= 0 || minPrefixLength > len(fingerprints) {
 		return nil, false, nil
 	}
 	if opts.Metadata != nil {
 		opts.Metadata[cliproxyexecutor.LCPFingerprintMetadataKey] = fingerprints
 		opts.Metadata[cliproxyexecutor.LCPMinPrefixLengthMetadataKey] = minPrefixLength
+		opts.Metadata[lcpPreparedPayloadMetadataKey] = payloadID
 	}
 
 	availabilityCandidates := auths
