@@ -156,6 +156,8 @@ type Manager struct {
 	pluginScheduler      PluginScheduler
 	schedulerCandidateMu sync.Mutex
 	schedulerCandidates  map[string]schedulerCandidateEntry
+	// authUnavailableLogLast throttles cooldown summaries: model -> unix nano.
+	authUnavailableLogLast sync.Map
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
 	homeRuntimeAuths map[string]map[string]*Auth
 	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.

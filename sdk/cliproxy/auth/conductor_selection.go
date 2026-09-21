@@ -2220,11 +2220,45 @@ func authCoolingSummary(auth *Auth, model string, next time.Time, now time.Time)
 	return fmt.Sprintf("[%s, reason=%s, remaining=%s]", ident, reason, remaining)
 }
 
+const (
+	// authUnavailableLogInterval throttles the cooldown summary per model. With a
+	// large exhausted pool the summary is emitted for every failed pick, and
+	// building it walks every credential under the manager read lock.
+	authUnavailableLogInterval = 5 * time.Second
+	// authUnavailableLogSummaries caps how many cooling credentials are spelled out.
+	authUnavailableLogSummaries = 5
+)
+
+// authUnavailableLogAllowed reports whether a cooldown summary for model may be
+// logged now, claiming the slot when it may.
+func (m *Manager) authUnavailableLogAllowed(model string, now time.Time) bool {
+	key := canonicalModelKey(model)
+	stamp := now.UnixNano()
+	previous, loaded := m.authUnavailableLogLast.LoadOrStore(key, stamp)
+	if !loaded {
+		return true
+	}
+	last, _ := previous.(int64)
+	if stamp-last < int64(authUnavailableLogInterval) {
+		return false
+	}
+	return m.authUnavailableLogLast.CompareAndSwap(key, previous, stamp)
+}
+
+type authCoolingCandidate struct {
+	auth  *Auth
+	model string
+	next  time.Time
+}
+
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {
 	if m == nil || err == nil || !isAuthUnavailableError(err) {
 		return
 	}
 	now := time.Now()
+	if !m.authUnavailableLogAllowed(model, now) {
+		return
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -2237,7 +2271,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	}
 	registryRef := registry.GetGlobalRegistry()
 
-	coolingSummaries := make([]string, 0)
+	cooling := make([]authCoolingCandidate, 0)
 	totalCandidates := 0
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
@@ -2270,18 +2304,37 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 		checkModel := m.selectionModelForAuth(candidate, model)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
 		if blocked && reason == blockReasonCooldown {
-			coolingSummaries = append(coolingSummaries, authCoolingSummary(candidate, checkModel, next, now))
+			cooling = append(cooling, authCoolingCandidate{auth: candidate, model: checkModel, next: next})
 		}
 	}
 
-	if len(coolingSummaries) > 0 {
-		sort.Strings(coolingSummaries)
+	if len(cooling) > 0 {
+		// Spell out only the credentials that recover soonest; formatting every
+		// cooling credential of a large pool produced ~100KB log lines.
+		sort.Slice(cooling, func(i, j int) bool {
+			if !cooling[i].next.Equal(cooling[j].next) {
+				return cooling[i].next.Before(cooling[j].next)
+			}
+			return cooling[i].auth.ID < cooling[j].auth.ID
+		})
+		shown := cooling
+		if len(shown) > authUnavailableLogSummaries {
+			shown = shown[:authUnavailableLogSummaries]
+		}
+		coolingSummaries := make([]string, 0, len(shown))
+		for _, item := range shown {
+			coolingSummaries = append(coolingSummaries, authCoolingSummary(item.auth, item.model, item.next, now))
+		}
+		detail := strings.Join(coolingSummaries, ", ")
+		if hidden := len(cooling) - len(shown); hidden > 0 {
+			detail = fmt.Sprintf("%s, ... and %d more (soonest first)", detail, hidden)
+		}
 		entry := logEntryWithRequestID(ctx)
 		providerText := strings.Join(providers, ",")
 		if len(providers) == 1 {
-			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) are in cooldown: %s", len(cooling), totalCandidates, model, providerText, detail)
 		} else {
-			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in cooldown: %s", len(cooling), totalCandidates, model, providerText, detail)
 		}
 	}
 }
