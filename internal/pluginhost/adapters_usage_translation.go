@@ -226,6 +226,27 @@ func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, mod
 	return bytes.Clone(resp.Body), nil
 }
 
+// HasRequestHooks reports whether any loaded plugin can normalize or translate
+// requests. Fused plugins still count, so the answer only changes on plugin reload.
+func (h *Host) HasRequestHooks() bool {
+	if h == nil {
+		return false
+	}
+	snap := h.Snapshot()
+	if snap == nil {
+		return false
+	}
+	for _, record := range snap.records {
+		if !h.recordCurrent(record) {
+			continue
+		}
+		if record.plugin.Capabilities.RequestNormalizer != nil || record.plugin.Capabilities.RequestTranslator != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Host) NormalizeRequest(ctx context.Context, from, to sdktranslator.Format, model string, body []byte, stream bool) []byte {
 	current := bytes.Clone(body)
 	for _, record := range h.activeRecords() {

@@ -28,7 +28,7 @@ const translatedRequestScratchPrefix = "translated-request|"
 func TranslateRequestEnvelopePairForAttempt(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, req sdktranslator.RequestEnvelope, source, payload []byte, metadata map[string]any) (original, working []byte) {
 	scratch := cliproxyexecutor.RequestScratchFrom(metadata)
 	if scratch == nil || len(source) == 0 || len(payload) == 0 ||
-		sdktranslator.HasPluginHooks() ||
+		sdktranslator.HasRequestPluginHooks() ||
 		from == sdktranslator.FormatOpenAIResponse || from == sdktranslator.FormatCodex {
 		return TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, headers, cfg, from, to, req, payload, payload)
 	}

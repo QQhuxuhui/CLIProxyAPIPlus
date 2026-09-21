@@ -467,3 +467,31 @@ func TestPluginNormalizersChainAfterNative(t *testing.T) {
 		t.Fatalf("plugin translators should not run when native transformers exist, calls=%v", hooks.calls)
 	}
 }
+
+type reportingPluginHooks struct {
+	fakePluginHooks
+	active bool
+}
+
+func (h *reportingPluginHooks) HasRequestHooks() bool { return h.active }
+
+func TestHasRequestPluginHooks(t *testing.T) {
+	registry := NewRegistry()
+	if registry.HasRequestPluginHooks() {
+		t.Fatal("new registry unexpectedly reports request hooks")
+	}
+	// Hooks that cannot answer for themselves are treated as active.
+	registry.SetPluginHooks(&fakePluginHooks{})
+	if !registry.HasRequestPluginHooks() {
+		t.Fatal("opaque hooks must count as active request hooks")
+	}
+	hooks := &reportingPluginHooks{}
+	registry.SetPluginHooks(hooks)
+	if registry.HasRequestPluginHooks() {
+		t.Fatal("hooks without request plugins reported as active")
+	}
+	hooks.active = true
+	if !registry.HasRequestPluginHooks() {
+		t.Fatal("hooks with request plugins not reported as active")
+	}
+}

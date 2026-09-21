@@ -67,7 +67,7 @@ func TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx context.Context, head
 	originalReq := req
 	originalReq.Body = originalPayload
 	original = TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, headers, cfg, from, to, originalReq).Body
-	if sameByteSlice(originalPayload, requestPayload) && !sdktranslator.HasPluginHooks() {
+	if sameByteSlice(originalPayload, requestPayload) && !sdktranslator.HasRequestPluginHooks() {
 		// The caller mutates the working copy, so it must not share the baseline array.
 		return original, append([]byte(nil), original...)
 	}
