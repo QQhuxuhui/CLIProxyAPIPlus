@@ -57,6 +57,11 @@ func TestCooldownProbeLeaseIsExclusiveAndExpires(t *testing.T) {
 	if !third.acquire(key) {
 		t.Fatal("expired lease must be replaceable")
 	}
+	// The request that outlived its lease must not release its successor's lease.
+	second.release()
+	if (&cooldownProbe{}).acquire(key) {
+		t.Fatal("stale release removed the lease held by a newer request")
+	}
 	third.release()
 	var missing *cooldownProbe
 	missing.release()
@@ -133,5 +138,32 @@ func TestPickNextMixedProbedDisabledIsPassThrough(t *testing.T) {
 	}
 	if probe.held != "" {
 		t.Fatal("previous lease must be released even when the gate is off")
+	}
+}
+
+func TestPickNextMixedProbedGatesPrefixedRouteModel(t *testing.T) {
+	SetCooldownProbeGate(true)
+	t.Cleanup(func() { SetCooldownProbeGate(false) })
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(&customStreamMockExecutor{identifier: "codex"})
+	model, routeModel := "probe-prefix-model", "team/probe-prefix-model"
+	past := time.Now().Add(-time.Minute)
+	candidate := &Auth{ID: "probe-prefix-auth", Provider: "codex", Prefix: "team", Status: StatusActive, ModelStates: map[string]*ModelState{
+		model: {Unavailable: true, NextRetryAfter: past, Quota: QuotaState{Exceeded: true, NextRecoverAt: past}},
+	}}
+	registry.GetGlobalRegistry().RegisterClient(candidate.ID, "codex", []*registry.ModelInfo{{ID: routeModel}, {ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(candidate.ID) })
+	if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+
+	prober := &cooldownProbe{}
+	t.Cleanup(prober.release)
+	if _, _, _, errPick := manager.pickNextMixedProbed(context.Background(), []string{"codex"}, routeModel, cliproxyexecutor.Options{}, map[string]struct{}{}, prober); errPick != nil {
+		t.Fatalf("pickNextMixedProbed() error = %v", errPick)
+	}
+	if prober.held == "" {
+		t.Fatal("prefixed route model bypassed the probe gate")
 	}
 }

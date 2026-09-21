@@ -16,7 +16,7 @@ const cooldownProbeLease = 20 * time.Second
 
 var (
 	cooldownProbeGateEnabled atomic.Bool
-	cooldownProbeLeases      sync.Map // authID|modelKey -> lease expiry (unix nano)
+	cooldownProbeLeases      sync.Map // authID|modelKey -> *cooldownProbeLeaseEntry
 	cooldownProbeNow         = time.Now
 )
 
@@ -29,10 +29,17 @@ func SetCooldownProbeGate(enabled bool) {
 	cooldownProbeGateEnabled.Store(enabled)
 }
 
+// cooldownProbeLeaseEntry is one lease. Its pointer identifies the owner, so a
+// request that outlived its lease cannot release the one that replaced it.
+type cooldownProbeLeaseEntry struct {
+	expiry int64
+}
+
 // cooldownProbe tracks the probe lease held by one request while it walks
 // through credentials.
 type cooldownProbe struct {
 	held    string
+	lease   *cooldownProbeLeaseEntry
 	skipped map[string]struct{}
 	open    bool
 }
@@ -42,8 +49,9 @@ func (p *cooldownProbe) release() {
 	if p == nil || p.held == "" {
 		return
 	}
-	cooldownProbeLeases.Delete(p.held)
+	cooldownProbeLeases.CompareAndDelete(p.held, p.lease)
 	p.held = ""
+	p.lease = nil
 }
 
 // pickNextMixedProbed wraps pickNextMixed with the single-probe gate. A skipped
@@ -70,7 +78,13 @@ func (m *Manager) pickNextMixedProbed(ctx context.Context, providers []string, m
 		if probe.open || auth == nil {
 			return auth, executor, provider, nil
 		}
-		key, recovering := cooldownProbeKey(auth, model, cooldownProbeNow())
+		// Cooldowns are recorded under the credential's resolved model, which differs
+		// from the route model for prefixed or aliased names.
+		stateModel := m.selectionModelKeyForAuth(auth, model)
+		if stateModel == "" {
+			stateModel = model
+		}
+		key, recovering := cooldownProbeKey(auth, stateModel, cooldownProbeNow())
 		if !recovering || probe.acquire(key) {
 			return auth, executor, provider, nil
 		}
@@ -85,18 +99,18 @@ func (m *Manager) pickNextMixedProbed(ctx context.Context, providers []string, m
 // acquire takes the probe lease for key unless another request holds a live one.
 func (p *cooldownProbe) acquire(key string) bool {
 	now := cooldownProbeNow()
-	expiry := now.Add(cooldownProbeLease).UnixNano()
+	lease := &cooldownProbeLeaseEntry{expiry: now.Add(cooldownProbeLease).UnixNano()}
 	for {
-		current, loaded := cooldownProbeLeases.LoadOrStore(key, expiry)
+		current, loaded := cooldownProbeLeases.LoadOrStore(key, lease)
 		if !loaded {
-			p.held = key
+			p.held, p.lease = key, lease
 			return true
 		}
-		if currentExpiry, ok := current.(int64); ok && currentExpiry > now.UnixNano() {
+		if currentLease, ok := current.(*cooldownProbeLeaseEntry); ok && currentLease != nil && currentLease.expiry > now.UnixNano() {
 			return false
 		}
-		if cooldownProbeLeases.CompareAndSwap(key, current, expiry) {
-			p.held = key
+		if cooldownProbeLeases.CompareAndSwap(key, current, lease) {
+			p.held, p.lease = key, lease
 			return true
 		}
 	}
