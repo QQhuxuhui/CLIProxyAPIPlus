@@ -12,6 +12,13 @@ import (
 
 const translatedRequestScratchPrefix = "translated-request|"
 
+// maxMemoisedTranslationSource bounds the bodies whose baseline translation is
+// kept for later credential attempts. The memo pins one extra copy of the body
+// for as long as the upstream call runs, which is what dominates memory for big
+// requests; those re-translate on retry instead. Retries after fast upstream
+// failures are where the memo pays off, and small bodies are the common case.
+const maxMemoisedTranslationSource = 1 << 20
+
 // TranslateRequestEnvelopePairForAttempt behaves like
 // TranslateRequestEnvelopePairWithCodexMultiAgentV2, but reuses the read-only
 // baseline translation across credential attempts of one request.
@@ -24,10 +31,11 @@ const translatedRequestScratchPrefix = "translated-request|"
 //
 // Anything that could make the result attempt-specific falls back to a fresh
 // translation: no scratch, an empty body, translator plugin hooks, or Codex and
-// Responses input whose rewriting depends on request headers.
+// Responses input whose rewriting depends on request headers. Bodies above
+// maxMemoisedTranslationSource are not memoised either.
 func TranslateRequestEnvelopePairForAttempt(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, req sdktranslator.RequestEnvelope, source, payload []byte, metadata map[string]any) (original, working []byte) {
 	scratch := cliproxyexecutor.RequestScratchFrom(metadata)
-	if scratch == nil || len(source) == 0 || len(payload) == 0 ||
+	if scratch == nil || len(source) == 0 || len(source) > maxMemoisedTranslationSource || len(payload) == 0 ||
 		sdktranslator.HasRequestPluginHooks() ||
 		from == sdktranslator.FormatOpenAIResponse || from == sdktranslator.FormatCodex {
 		return TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, headers, cfg, from, to, req, payload, payload)

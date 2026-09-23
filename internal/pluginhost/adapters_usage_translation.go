@@ -248,14 +248,22 @@ func (h *Host) HasRequestHooks() bool {
 }
 
 func (h *Host) NormalizeRequest(ctx context.Context, from, to sdktranslator.Format, model string, body []byte, stream bool) []byte {
-	current := bytes.Clone(body)
+	// Copy lazily: with no normalizer plugin the body is returned untouched, so a
+	// multi-megabyte request is not duplicated for nothing.
+	var current []byte
 	for _, record := range h.activeRecords() {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.RequestNormalizer == nil {
 			continue
 		}
+		if current == nil {
+			current = bytes.Clone(body)
+		}
 		if normalized, ok := h.callRequestNormalizer(ctx, record, from, to, model, current, stream); ok {
 			current = normalized
 		}
+	}
+	if current == nil {
+		return body
 	}
 	return current
 }
@@ -269,19 +277,49 @@ func (h *Host) TranslateRequest(ctx context.Context, from, to sdktranslator.Form
 			return translated, true
 		}
 	}
-	return bytes.Clone(body), false
+	// Not handled: callers ignore the body, so nothing is copied.
+	return body, false
+}
+
+// HasResponseHooks reports whether any loaded plugin can normalize or translate
+// responses. Fused plugins still count, so the answer only changes on plugin reload.
+func (h *Host) HasResponseHooks() bool {
+	if h == nil {
+		return false
+	}
+	snap := h.Snapshot()
+	if snap == nil {
+		return false
+	}
+	for _, record := range snap.records {
+		if !h.recordCurrent(record) {
+			continue
+		}
+		caps := record.plugin.Capabilities
+		if caps.ResponseBeforeTranslator != nil || caps.ResponseTranslator != nil || caps.ResponseAfterTranslator != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) NormalizeResponseBefore(ctx context.Context, from, to sdktranslator.Format, model string, originalRequestRawJSON, requestRawJSON, body []byte, stream bool) []byte {
-	current := bytes.Clone(body)
+	// Copy lazily, as in NormalizeRequest: this runs for every stream chunk.
+	var current []byte
 	for _, record := range h.activeRecords() {
 		normalizer := record.plugin.Capabilities.ResponseBeforeTranslator
 		if h.isPluginFused(record.id) || normalizer == nil {
 			continue
 		}
+		if current == nil {
+			current = bytes.Clone(body)
+		}
 		if normalized, ok := h.callResponseNormalizer(ctx, record, "ResponseBeforeTranslator.NormalizeResponse", normalizer, from, to, model, originalRequestRawJSON, requestRawJSON, current, stream); ok {
 			current = normalized
 		}
+	}
+	if current == nil {
+		return body
 	}
 	return current
 }
@@ -296,19 +334,26 @@ func (h *Host) TranslateResponse(ctx context.Context, from, to sdktranslator.For
 			return translated, true
 		}
 	}
-	return bytes.Clone(body), false
+	// Not handled: callers ignore the body, so nothing is copied.
+	return body, false
 }
 
 func (h *Host) NormalizeResponseAfter(ctx context.Context, from, to sdktranslator.Format, model string, originalRequestRawJSON, requestRawJSON, body []byte, stream bool) []byte {
-	current := bytes.Clone(body)
+	var current []byte
 	for _, record := range h.activeRecords() {
 		normalizer := record.plugin.Capabilities.ResponseAfterTranslator
 		if h.isPluginFused(record.id) || normalizer == nil {
 			continue
 		}
+		if current == nil {
+			current = bytes.Clone(body)
+		}
 		if normalized, ok := h.callResponseNormalizer(ctx, record, "ResponseAfterTranslator.NormalizeResponse", normalizer, from, to, model, originalRequestRawJSON, requestRawJSON, current, stream); ok {
 			current = normalized
 		}
+	}
+	if current == nil {
+		return body
 	}
 	return current
 }

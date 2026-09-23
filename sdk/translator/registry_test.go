@@ -495,3 +495,54 @@ func TestHasRequestPluginHooks(t *testing.T) {
 		t.Fatal("hooks with request plugins not reported as active")
 	}
 }
+
+func TestTranslateRequestSkipsHooksWithoutRequestPlugins(t *testing.T) {
+	registry := NewRegistry()
+	registry.RegisterRequestEnvelope(FormatOpenAI, FormatClaude, func(ctx context.Context, req RequestEnvelope) RequestEnvelope {
+		req.Body = append([]byte(nil), req.Body...)
+		return req
+	})
+	idle := &reportingPluginHooks{}
+	registry.SetPluginHooks(idle)
+	body := []byte(`{"model":"m","messages":[]}`)
+	registry.TranslateRequestEnvelope(context.Background(), FormatOpenAI, FormatClaude, RequestEnvelope{Format: FormatOpenAI, Model: "m", Body: body})
+	if hasCall(idle.calls, "normalize-request") {
+		t.Fatal("hooks without request plugins were still invoked on the native path")
+	}
+	registry.TranslateRequestEnvelope(context.Background(), FormatOpenAI, FormatGemini, RequestEnvelope{Format: FormatOpenAI, Model: "m", Body: body})
+	if hasCall(idle.calls, "normalize-request") || hasCall(idle.calls, "translate-request") {
+		t.Fatal("hooks without request plugins were still invoked on the fallback path")
+	}
+	idle.active = true
+	registry.TranslateRequestEnvelope(context.Background(), FormatOpenAI, FormatClaude, RequestEnvelope{Format: FormatOpenAI, Model: "m", Body: body})
+	if !hasCall(idle.calls, "normalize-request") {
+		t.Fatal("active request hooks were not invoked")
+	}
+}
+
+type responseReportingHooks struct {
+	fakePluginHooks
+	active bool
+}
+
+func (h *responseReportingHooks) HasResponseHooks() bool { return h.active }
+
+func TestTranslateResponseSkipsHooksWithoutResponsePlugins(t *testing.T) {
+	registry := NewRegistry()
+	idle := &responseReportingHooks{}
+	registry.SetPluginHooks(idle)
+	body := []byte(`{"ok":true}`)
+	out := registry.TranslateNonStream(context.Background(), FormatOpenAI, FormatClaude, "m", nil, nil, body, nil)
+	outputs := registry.TranslateStream(context.Background(), FormatOpenAI, FormatClaude, "m", nil, nil, body, nil)
+	if len(idle.calls) != 0 {
+		t.Fatalf("hooks without response plugins were invoked: %v", idle.calls)
+	}
+	if &out[0] != &body[0] || len(outputs) != 1 || &outputs[0][0] != &body[0] {
+		t.Fatal("pass-through response was copied")
+	}
+	idle.active = true
+	registry.TranslateNonStream(context.Background(), FormatOpenAI, FormatClaude, "m", nil, nil, body, nil)
+	if len(idle.calls) == 0 {
+		t.Fatal("active response hooks were not invoked")
+	}
+}

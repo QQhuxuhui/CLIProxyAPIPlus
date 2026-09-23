@@ -84,3 +84,25 @@ func TestTranslateRequestEnvelopePairForAttemptWithoutScratch(t *testing.T) {
 	}
 	ForgetTranslatedRequests(nil)
 }
+
+func TestTranslateRequestEnvelopePairForAttemptSkipsLargeBodies(t *testing.T) {
+	body, from, to, env := translateCacheFixture()
+	padding := make([]byte, maxMemoisedTranslationSource)
+	for i := range padding {
+		padding[i] = 'a'
+	}
+	// Grow the body past the memo threshold while keeping it valid JSON.
+	large := append([]byte(`{"model":"gemini-3-pro","max_tokens":64,"metadata":{"pad":"`), padding...)
+	large = append(large, []byte(`"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)...)
+	meta := cliproxyexecutor.WithRequestScratch(nil)
+	first, _ := TranslateRequestEnvelopePairForAttempt(context.Background(), nil, nil, from, to, env, large, large, meta)
+	second, _ := TranslateRequestEnvelopePairForAttempt(context.Background(), nil, nil, from, to, env, large, large, meta)
+	if len(first) == 0 || &first[0] == &second[0] {
+		t.Fatal("large body baseline was memoised")
+	}
+	small, _ := TranslateRequestEnvelopePairForAttempt(context.Background(), nil, nil, from, to, env, body, body, meta)
+	smallAgain, _ := TranslateRequestEnvelopePairForAttempt(context.Background(), nil, nil, from, to, env, body, body, meta)
+	if &small[0] != &smallAgain[0] {
+		t.Fatal("small body baseline was not memoised")
+	}
+}

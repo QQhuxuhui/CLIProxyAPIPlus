@@ -17,3 +17,10 @@ type PluginHooks interface {
 type RequestHookReporter interface {
 	HasRequestHooks() bool
 }
+
+// ResponseHookReporter is the response-side counterpart of RequestHookReporter.
+// When HasResponseHooks returns false, the response normalizers and translator are
+// known to leave bodies unchanged and the registry skips them.
+type ResponseHookReporter interface {
+	HasResponseHooks() bool
+}

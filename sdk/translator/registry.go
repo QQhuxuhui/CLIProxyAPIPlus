@@ -83,6 +83,24 @@ func (r *Registry) HasRequestPluginHooks() bool {
 	r.mu.RLock()
 	hooks := r.hooks
 	r.mu.RUnlock()
+	return requestHooksActive(hooks)
+}
+
+// responseHooksActive reports whether hooks can change response translation. Hooks
+// that do not implement ResponseHookReporter count as active.
+func responseHooksActive(hooks PluginHooks) bool {
+	if hooks == nil {
+		return false
+	}
+	if reporter, ok := hooks.(ResponseHookReporter); ok {
+		return reporter.HasResponseHooks()
+	}
+	return true
+}
+
+// requestHooksActive reports whether hooks can change request translation. Hooks
+// that do not implement RequestHookReporter count as active.
+func requestHooksActive(hooks PluginHooks) bool {
 	if hooks == nil {
 		return false
 	}
@@ -119,6 +137,11 @@ func (r *Registry) TranslateRequestEnvelope(ctx context.Context, from, to Format
 	}
 	hooks := r.hooks
 	r.mu.RUnlock()
+	if !requestHooksActive(hooks) {
+		// Hooks without request plugins would only copy the body and hand it back.
+		// Skipping them keeps one full body allocation per translation off the heap.
+		hooks = nil
+	}
 
 	if fn != nil {
 		summaryConfig := thinking.ExtractSummaryConfig(req.Body, from.String())
@@ -220,6 +243,9 @@ func (r *Registry) TranslateStream(ctx context.Context, from, to Format, model s
 	}
 	hooks := r.hooks
 	r.mu.RUnlock()
+	if !responseHooksActive(hooks) {
+		hooks = nil
+	}
 
 	body := rawJSON
 	if hooks != nil {
@@ -256,6 +282,9 @@ func (r *Registry) TranslateNonStream(ctx context.Context, from, to Format, mode
 	}
 	hooks := r.hooks
 	r.mu.RUnlock()
+	if !responseHooksActive(hooks) {
+		hooks = nil
+	}
 
 	body := rawJSON
 	if hooks != nil {
