@@ -1,7 +1,7 @@
 // Package middleware provides HTTP middleware components for the CLI Proxy API server.
 // This file contains the concurrency gate middleware that caps the number of
-// in-flight downstream API requests so that a burst of large request bodies cannot
-// exhaust process memory.
+// in-flight downstream API requests, and optionally the bytes of request body they
+// carry, so that a burst of large request bodies cannot exhaust process memory.
 package middleware
 
 import (
@@ -24,6 +24,9 @@ const (
 	// DefaultConcurrentRequestWaitTimeout is used when the configured wait timeout is
 	// empty or invalid.
 	DefaultConcurrentRequestWaitTimeout = 60 * time.Second
+	// concurrencyGateUnknownBodyCost is charged against the body budget for requests
+	// without a Content-Length header. Chunked API bodies are rare and usually small.
+	concurrencyGateUnknownBodyCost int64 = 256 * 1024
 )
 
 // ConcurrencyGateConfig carries the runtime tunables of the concurrency gate.
@@ -34,6 +37,12 @@ type ConcurrencyGateConfig struct {
 	// WaitTimeout bounds how long a request may wait for a free slot.
 	// Values <= 0 fall back to DefaultConcurrentRequestWaitTimeout.
 	WaitTimeout time.Duration
+	// BodyLimit is the maximum total Content-Length, in bytes, of concurrently served
+	// API requests. The proxy holds several copies of a request body while it waits
+	// for upstream, so this bounds memory in a way a request count cannot.
+	// Values <= 0 disable the body budget. A request larger than the whole budget is
+	// still admitted when nothing else is in flight.
+	BodyLimit int64
 }
 
 // ConcurrencyGate limits the number of API requests that are processed at the same
@@ -42,10 +51,12 @@ type ConcurrencyGateConfig struct {
 type ConcurrencyGate struct {
 	mu            sync.Mutex
 	limit         int
+	bodyLimit     int64
 	waitTimeout   time.Duration
 	changed       chan struct{}
 	lastRejectLog atomic.Int64
 	inFlight      atomic.Int64
+	inFlightBytes atomic.Int64
 	waiting       atomic.Int64
 }
 
@@ -71,15 +82,66 @@ func (g *ConcurrencyGate) Update(cfg ConcurrencyGateConfig) {
 	if cfg.Limit <= 0 {
 		cfg.Limit = 0
 	}
+	if cfg.BodyLimit <= 0 {
+		cfg.BodyLimit = 0
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.limit == cfg.Limit && g.waitTimeout == waitTimeout {
+	if g.limit == cfg.Limit && g.bodyLimit == cfg.BodyLimit && g.waitTimeout == waitTimeout {
 		return
 	}
 	g.limit = cfg.Limit
+	g.bodyLimit = cfg.BodyLimit
 	g.waitTimeout = waitTimeout
 	g.signalChangeLocked()
+}
+
+// BodyLimit reports the configured body budget in bytes (0 when disabled).
+func (g *ConcurrencyGate) BodyLimit() int64 {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.bodyLimit
+}
+
+// enabledLocked reports whether any limit is configured. g.mu must be held.
+func (g *ConcurrencyGate) enabledLocked() bool {
+	return g.limit > 0 || g.bodyLimit > 0
+}
+
+// admitLocked reports whether a request costing cost body bytes fits under both
+// limits. A body larger than the whole budget is admitted only when nothing else is
+// in flight, so oversized requests are served one at a time instead of never.
+// g.mu must be held.
+func (g *ConcurrencyGate) admitLocked(cost int64) bool {
+	if g.limit > 0 && g.inFlight.Load() >= int64(g.limit) {
+		return false
+	}
+	if g.bodyLimit > 0 {
+		used := g.inFlightBytes.Load()
+		if used > 0 && used+cost > g.bodyLimit {
+			return false
+		}
+	}
+	return true
+}
+
+// acquireLocked charges an admitted request. g.mu must be held.
+func (g *ConcurrencyGate) acquireLocked(cost int64) {
+	g.inFlight.Add(1)
+	g.inFlightBytes.Add(cost)
+}
+
+// concurrencyGateRequestCost returns the body bytes charged for a request: its
+// Content-Length, or a fixed allowance when the length is unknown.
+func concurrencyGateRequestCost(r *http.Request) int64 {
+	if r == nil || r.ContentLength <= 0 {
+		return concurrencyGateUnknownBodyCost
+	}
+	return r.ContentLength
 }
 
 // Limit reports the currently configured limit (0 when disabled).
@@ -101,6 +163,14 @@ func (g *ConcurrencyGate) Stats() (inFlight int64, waiting int64) {
 	return g.inFlight.Load(), g.waiting.Load()
 }
 
+// InFlightBytes reports the body bytes currently charged to admitted requests.
+func (g *ConcurrencyGate) InFlightBytes() int64 {
+	if g == nil {
+		return 0
+	}
+	return g.inFlightBytes.Load()
+}
+
 // Handler returns the Gin middleware enforcing the gate. When the gate is disabled
 // the handler returns immediately without touching the request.
 func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
@@ -114,17 +184,18 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 			return
 		}
 
+		cost := concurrencyGateRequestCost(c.Request)
 		g.mu.Lock()
-		if g.limit <= 0 {
+		if !g.enabledLocked() {
 			g.mu.Unlock()
 			c.Next()
 			return
 		}
 		waitTimeout := g.waitTimeout
-		if g.inFlight.Load() < int64(g.limit) {
-			g.inFlight.Add(1)
+		if g.admitLocked(cost) {
+			g.acquireLocked(cost)
 			g.mu.Unlock()
-			defer g.release()
+			defer g.release(cost)
 			c.Next()
 			return
 		}
@@ -146,21 +217,21 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 			select {
 			case <-changed:
 				g.mu.Lock()
-				if g.limit <= 0 {
+				if !g.enabledLocked() {
 					g.waiting.Add(-1)
 					g.mu.Unlock()
 					c.Next()
 					return
 				}
-				if g.inFlight.Load() < int64(g.limit) {
+				if g.admitLocked(cost) {
 					limit := g.limit
 					g.waiting.Add(-1)
-					g.inFlight.Add(1)
+					g.acquireLocked(cost)
 					g.mu.Unlock()
 					if waited := time.Since(start); waited > concurrencyGateSlowWaitThreshold {
 						log.Debugf("concurrency gate: request waited %s for a slot (limit %d, path %s)", waited.Round(time.Millisecond), limit, concurrencyGateRequestPath(c))
 					}
-					defer g.release()
+					defer g.release(cost)
 					c.Next()
 					return
 				}
@@ -179,10 +250,11 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 	}
 }
 
-// release returns one unit of shared capacity and wakes queued requests.
-func (g *ConcurrencyGate) release() {
+// release returns the request's slot and body bytes and wakes queued requests.
+func (g *ConcurrencyGate) release(cost int64) {
 	g.mu.Lock()
 	g.inFlight.Add(-1)
+	g.inFlightBytes.Add(-cost)
 	g.signalChangeLocked()
 	g.mu.Unlock()
 }
@@ -221,8 +293,8 @@ func (g *ConcurrencyGate) logReject(limit int, waited time.Duration, reason, pat
 		return
 	}
 	inFlight, waiting := g.Stats()
-	log.Warnf("concurrency gate: rejected request with 503 (%s after %s, limit %d, in-flight %d, waiting %d, path %s)",
-		reason, waited.Round(time.Millisecond), limit, inFlight, waiting, path)
+	log.Warnf("concurrency gate: rejected request with 503 (%s after %s, limit %d, in-flight %d, in-flight body %dMiB/%dMiB, waiting %d, path %s)",
+		reason, waited.Round(time.Millisecond), limit, inFlight, g.InFlightBytes()>>20, g.BodyLimit()>>20, waiting, path)
 }
 
 // concurrencyGateSkip reports whether the request must bypass the gate entirely.

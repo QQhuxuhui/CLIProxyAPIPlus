@@ -213,6 +213,14 @@ max-concurrent-requests: 0
 # Only used when max-concurrent-requests is greater than 0.
 concurrent-request-wait-timeout: 60s
 
+# Total request-body size (MiB, by Content-Length) that may be in flight at once. The proxy holds
+# several copies of each body while waiting for upstream (roughly 6x for Gemini non-stream
+# requests), so a byte budget bounds memory where a request count cannot: many small requests
+# pass freely while a burst of multi-megabyte bodies queues. Requests beyond the budget wait
+# up to concurrent-request-wait-timeout, then get 503. A request larger than the whole budget
+# is still served when nothing else is in flight. Set to 0 (default) to disable.
+max-concurrent-request-body-mb: 0
+
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 # A credential/provider disable-cooling value, when present, overrides this global value.
 disable-cooling: false

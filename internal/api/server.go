@@ -149,6 +149,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	concurrencyGate := middleware.NewConcurrencyGate(middleware.ConcurrencyGateConfig{
 		Limit:       cfg.MaxConcurrentRequests,
 		WaitTimeout: cfg.ConcurrentRequestWaitTimeoutDuration(),
+		BodyLimit:   cfg.ConcurrentRequestBodyLimitBytes(),
 	})
 	engine.Use(concurrencyGate.Handler())
 	engine.Use(logging.CPATraceIDMiddleware())

@@ -13,6 +13,15 @@ import (
 // is empty or cannot be parsed.
 const DefaultConcurrentRequestWaitTimeout = 60 * time.Second
 
+// ConcurrentRequestBodyLimitBytes converts max-concurrent-request-body-mb to bytes
+// (0 when disabled).
+func (cfg *Config) ConcurrentRequestBodyLimitBytes() int64 {
+	if cfg == nil || cfg.MaxConcurrentRequestBodyMB <= 0 {
+		return 0
+	}
+	return int64(cfg.MaxConcurrentRequestBodyMB) << 20
+}
+
 // ConcurrentRequestWaitTimeoutDuration resolves concurrent-request-wait-timeout to a
 // duration, falling back to DefaultConcurrentRequestWaitTimeout for empty, invalid or
 // non-positive values.
@@ -142,6 +151,12 @@ type Config struct {
 	// slot. Accepts duration strings like "30s", "1m30s". Empty or invalid values use the
 	// default 60s. Only meaningful when MaxConcurrentRequests > 0.
 	ConcurrentRequestWaitTimeout string `yaml:"concurrent-request-wait-timeout,omitempty" json:"concurrent-request-wait-timeout,omitempty"`
+	// MaxConcurrentRequestBodyMB caps the total Content-Length, in MiB, of downstream
+	// API requests processed at the same time. The proxy keeps several copies of a
+	// body while waiting for upstream, so memory scales with in-flight bytes rather
+	// than request count. Requests beyond the budget queue like they do for
+	// MaxConcurrentRequests. 0 (default) disables the budget.
+	MaxConcurrentRequestBodyMB int `yaml:"max-concurrent-request-body-mb" json:"max-concurrent-request-body-mb"`
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`

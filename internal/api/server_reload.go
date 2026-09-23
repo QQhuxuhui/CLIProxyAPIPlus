@@ -299,11 +299,16 @@ func (s *Server) applyConcurrencyGateConfig(cfg *config.Config) {
 		return
 	}
 	previousLimit := s.concurrencyGate.Limit()
+	previousBodyLimit := s.concurrencyGate.BodyLimit()
 	s.concurrencyGate.Update(middleware.ConcurrencyGateConfig{
 		Limit:       cfg.MaxConcurrentRequests,
 		WaitTimeout: cfg.ConcurrentRequestWaitTimeoutDuration(),
+		BodyLimit:   cfg.ConcurrentRequestBodyLimitBytes(),
 	})
 	if newLimit := s.concurrencyGate.Limit(); newLimit != previousLimit {
 		log.Infof("max-concurrent-requests updated: %d -> %d", previousLimit, newLimit)
+	}
+	if newBodyLimit := s.concurrencyGate.BodyLimit(); newBodyLimit != previousBodyLimit {
+		log.Infof("max-concurrent-request-body-mb updated: %d -> %d", previousBodyLimit>>20, newBodyLimit>>20)
 	}
 }

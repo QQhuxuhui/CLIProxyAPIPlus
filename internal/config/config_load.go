@@ -157,6 +157,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.MaxConcurrentRequests < 0 {
 		cfg.MaxConcurrentRequests = 0
 	}
+	if cfg.MaxConcurrentRequestBodyMB < 0 {
+		cfg.MaxConcurrentRequestBodyMB = 0
+	}
 	cfg.NormalizeWebImageConfig()
 
 	cfg.NormalizePluginsConfig()
