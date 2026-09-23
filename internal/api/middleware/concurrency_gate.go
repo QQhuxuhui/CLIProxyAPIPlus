@@ -24,10 +24,25 @@ const (
 	// DefaultConcurrentRequestWaitTimeout is used when the configured wait timeout is
 	// empty or invalid.
 	DefaultConcurrentRequestWaitTimeout = 60 * time.Second
-	// concurrencyGateUnknownBodyCost is charged against the body budget for requests
-	// without a Content-Length header. Chunked API bodies are rare and usually small.
-	concurrencyGateUnknownBodyCost int64 = 256 * 1024
+	// concurrencyGateUnknownBodyCost is provisionally charged against the body budget
+	// for requests without a Content-Length header. It is sized like a large API
+	// request because the handler reads the whole body regardless; the charge is
+	// corrected to the real size through ReportRequestBodySize once the body is read.
+	concurrencyGateUnknownBodyCost int64 = 8 << 20
+	// concurrencyGateChargeContextKey stores the request's gateCharge in the Gin
+	// context so the body reader can true up a provisional charge.
+	concurrencyGateChargeContextKey = "CONCURRENCY_GATE_CHARGE"
+	// concurrencyGateContextKey stores the admitting gate in the Gin context.
+	concurrencyGateContextKey = "CONCURRENCY_GATE"
 )
+
+// gateCharge is the body budget held by one admitted request. provisional marks a
+// charge based on the unknown-length allowance rather than a Content-Length.
+type gateCharge struct {
+	mu          sync.Mutex
+	bytes       int64
+	provisional bool
+}
 
 // ConcurrencyGateConfig carries the runtime tunables of the concurrency gate.
 type ConcurrencyGateConfig struct {
@@ -112,6 +127,18 @@ func (g *ConcurrencyGate) enabledLocked() bool {
 	return g.limit > 0 || g.bodyLimit > 0
 }
 
+// clampCostLocked bounds a charge to the budget so arithmetic on the in-flight
+// total cannot overflow, whatever Content-Length a client claims. g.mu must be held.
+func (g *ConcurrencyGate) clampCostLocked(cost int64) int64 {
+	if cost < 0 {
+		return 0
+	}
+	if g.bodyLimit > 0 && cost > g.bodyLimit {
+		return g.bodyLimit
+	}
+	return cost
+}
+
 // admitLocked reports whether a request costing cost body bytes fits under both
 // limits. A body larger than the whole budget is admitted only when nothing else is
 // in flight, so oversized requests are served one at a time instead of never.
@@ -122,26 +149,88 @@ func (g *ConcurrencyGate) admitLocked(cost int64) bool {
 	}
 	if g.bodyLimit > 0 {
 		used := g.inFlightBytes.Load()
-		if used > 0 && used+cost > g.bodyLimit {
+		// Written as a subtraction so a huge cost cannot wrap the comparison.
+		if used > 0 && cost > g.bodyLimit-used {
 			return false
 		}
 	}
 	return true
 }
 
-// acquireLocked charges an admitted request. g.mu must be held.
-func (g *ConcurrencyGate) acquireLocked(cost int64) {
+// acquireLocked charges an admitted request and records the charge on the Gin
+// context when it is provisional. g.mu must be held.
+func (g *ConcurrencyGate) acquireLocked(c *gin.Context, cost int64, provisional bool) *gateCharge {
+	cost = g.clampCostLocked(cost)
 	g.inFlight.Add(1)
 	g.inFlightBytes.Add(cost)
+	charge := &gateCharge{bytes: cost, provisional: provisional}
+	if provisional && c != nil {
+		c.Set(concurrencyGateChargeContextKey, charge)
+	}
+	return charge
 }
 
-// concurrencyGateRequestCost returns the body bytes charged for a request: its
-// Content-Length, or a fixed allowance when the length is unknown.
-func concurrencyGateRequestCost(r *http.Request) int64 {
-	if r == nil || r.ContentLength <= 0 {
-		return concurrencyGateUnknownBodyCost
+// concurrencyGateRequestCost returns the body bytes charged for a request and
+// whether the value is provisional: the Content-Length when the client sent one,
+// nothing for an empty body, and the unknown-length allowance otherwise.
+func concurrencyGateRequestCost(r *http.Request) (cost int64, provisional bool) {
+	switch {
+	case r == nil || r.ContentLength < 0:
+		return concurrencyGateUnknownBodyCost, true
+	case r.ContentLength == 0:
+		return 0, false
+	default:
+		return r.ContentLength, false
 	}
-	return r.ContentLength
+}
+
+// ReportRequestBodySize corrects a provisional body charge once the handler has
+// read a request whose length was unknown at admission. Later requests then see
+// the real in-flight total. It is a no-op for requests admitted by Content-Length,
+// requests that bypassed the gate, and repeat calls.
+func (g *ConcurrencyGate) ReportRequestBodySize(c *gin.Context, size int64) {
+	if g == nil || c == nil {
+		return
+	}
+	value, ok := c.Get(concurrencyGateChargeContextKey)
+	if !ok {
+		return
+	}
+	charge, ok := value.(*gateCharge)
+	if !ok {
+		return
+	}
+	charge.mu.Lock()
+	defer charge.mu.Unlock()
+	if !charge.provisional {
+		return
+	}
+	g.mu.Lock()
+	actual := g.clampCostLocked(size)
+	delta := actual - charge.bytes
+	charge.bytes = actual
+	charge.provisional = false
+	g.inFlightBytes.Add(delta)
+	if delta < 0 {
+		g.signalChangeLocked()
+	}
+	g.mu.Unlock()
+}
+
+// ReportRequestBodySize forwards to the gate that admitted the request, if any.
+// Handlers call it right after reading a body so unknown-length requests are
+// charged their real size.
+func ReportRequestBodySize(c *gin.Context, size int64) {
+	if c == nil {
+		return
+	}
+	value, ok := c.Get(concurrencyGateContextKey)
+	if !ok {
+		return
+	}
+	if gate, okGate := value.(*ConcurrencyGate); okGate {
+		gate.ReportRequestBodySize(c, size)
+	}
 }
 
 // Limit reports the currently configured limit (0 when disabled).
@@ -184,7 +273,7 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 			return
 		}
 
-		cost := concurrencyGateRequestCost(c.Request)
+		cost, provisional := concurrencyGateRequestCost(c.Request)
 		g.mu.Lock()
 		if !g.enabledLocked() {
 			g.mu.Unlock()
@@ -192,10 +281,12 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 			return
 		}
 		waitTimeout := g.waitTimeout
+		cost = g.clampCostLocked(cost)
+		c.Set(concurrencyGateContextKey, g)
 		if g.admitLocked(cost) {
-			g.acquireLocked(cost)
+			charge := g.acquireLocked(c, cost, provisional)
 			g.mu.Unlock()
-			defer g.release(cost)
+			defer g.release(charge)
 			c.Next()
 			return
 		}
@@ -223,15 +314,16 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 					c.Next()
 					return
 				}
+				cost = g.clampCostLocked(cost)
 				if g.admitLocked(cost) {
 					limit := g.limit
 					g.waiting.Add(-1)
-					g.acquireLocked(cost)
+					charge := g.acquireLocked(c, cost, provisional)
 					g.mu.Unlock()
 					if waited := time.Since(start); waited > concurrencyGateSlowWaitThreshold {
 						log.Debugf("concurrency gate: request waited %s for a slot (limit %d, path %s)", waited.Round(time.Millisecond), limit, concurrencyGateRequestPath(c))
 					}
-					defer g.release(cost)
+					defer g.release(charge)
 					c.Next()
 					return
 				}
@@ -251,7 +343,12 @@ func (g *ConcurrencyGate) Handler() gin.HandlerFunc {
 }
 
 // release returns the request's slot and body bytes and wakes queued requests.
-func (g *ConcurrencyGate) release(cost int64) {
+func (g *ConcurrencyGate) release(charge *gateCharge) {
+	charge.mu.Lock()
+	charge.provisional = false
+	cost := charge.bytes
+	charge.bytes = 0
+	charge.mu.Unlock()
 	g.mu.Lock()
 	g.inFlight.Add(-1)
 	g.inFlightBytes.Add(-cost)

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 )
 
@@ -22,9 +23,15 @@ import (
 // it in place.
 func RawRequestBody(c *gin.Context) ([]byte, error) {
 	if raw, ok := capturedRequestBody(c); ok {
+		middleware.ReportRequestBodySize(c, int64(len(raw)))
 		return raw, nil
 	}
-	return c.GetRawData()
+	raw, err := c.GetRawData()
+	if err == nil {
+		// Requests without a Content-Length were admitted on a provisional charge.
+		middleware.ReportRequestBodySize(c, int64(len(raw)))
+	}
+	return raw, err
 }
 
 // capturedRequestBody returns the request body bytes stashed by the request logging
