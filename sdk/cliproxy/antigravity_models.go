@@ -105,9 +105,10 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 	}
 
 	proxyURL := s.antigravityModelFetchProxyURL(auth)
-	cacheKey := strings.Join(baseURLs, "|") + "#" + proxyURL
+	userAgent := antigravityModelUserAgent(auth)
+	cacheKey := strings.Join(baseURLs, "|") + "#" + proxyURL + "#" + userAgent
 	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(accessToken)))
-	authFailKey := auth.ID + "#" + tokenHash
+	authFailKey := auth.ID + "#" + tokenHash + "#" + userAgent
 
 	now := antigravityNowFunc()
 	antigravityCapabilityMu.RLock()
@@ -135,7 +136,7 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 		}
 		antigravityCapabilityMu.RUnlock()
 
-		hints, status := s.probeAntigravityModelCapabilityHints(ctx, auth, baseURLs, proxyURL, accessToken)
+		hints, status := s.probeAntigravityModelCapabilityHints(ctx, auth, baseURLs, proxyURL, accessToken, userAgent)
 		if status == antigravityProbeStatusSuccess || status == antigravityProbeStatusTransientError {
 			if status != antigravityProbeStatusTransientError || ctx == nil || ctx.Err() == nil {
 				ttl := antigravityCapabilityCacheTTL
@@ -178,7 +179,7 @@ func (s *Service) fetchAntigravityModelCapabilityHintsForAuth(ctx context.Contex
 	return result.hints.clone()
 }
 
-func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth *coreauth.Auth, baseURLs []string, proxyURL string, accessToken string) (antigravityModelCapabilityHints, antigravityProbeStatus) {
+func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth *coreauth.Auth, baseURLs []string, proxyURL string, accessToken, userAgent string) (antigravityModelCapabilityHints, antigravityProbeStatus) {
 	probeCtx := context.Background()
 	var cancel context.CancelFunc
 	probeCtx, cancel = context.WithTimeout(probeCtx, antigravityCapabilityProbeTimeout)
@@ -192,7 +193,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	}
 
 	if len(baseURLs) == 1 {
-		return s.fetchAntigravityModelHintsFromURL(probeCtx, client, baseURLs[0], accessToken)
+		return s.fetchAntigravityModelHintsFromURL(probeCtx, client, baseURLs[0], accessToken, userAgent)
 	}
 
 	type probeResult struct {
@@ -202,7 +203,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	ch := make(chan probeResult, len(baseURLs))
 	for _, baseURL := range baseURLs {
 		go func(url string) {
-			h, status := s.fetchAntigravityModelHintsFromURL(probeCtx, client, url, accessToken)
+			h, status := s.fetchAntigravityModelHintsFromURL(probeCtx, client, url, accessToken, userAgent)
 			ch <- probeResult{hints: h, status: status}
 		}(baseURL)
 	}
@@ -234,7 +235,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	return antigravityModelCapabilityHints{}, overallStatus
 }
 
-func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client *http.Client, baseURL string, accessToken string) (antigravityModelCapabilityHints, antigravityProbeStatus) {
+func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client *http.Client, baseURL, accessToken, userAgent string) (antigravityModelCapabilityHints, antigravityProbeStatus) {
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+antigravityModelsPath, strings.NewReader(`{}`))
 	if errReq != nil {
 		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
@@ -242,7 +243,7 @@ func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client 
 	req.Close = true
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", misc.AntigravityUserAgent())
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, errDo := client.Do(req)
 	if errDo != nil {
@@ -268,6 +269,20 @@ func (s *Service) fetchAntigravityModelHintsFromURL(ctx context.Context, client 
 		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
 	}
 	return hints, antigravityProbeStatusSuccess
+}
+
+func antigravityModelUserAgent(auth *coreauth.Auth) string {
+	if auth != nil {
+		if ua := strings.TrimSpace(auth.Attributes["user_agent"]); ua != "" {
+			return misc.AntigravityRequestUserAgent(ua)
+		}
+		if ua, ok := auth.Metadata["user_agent"].(string); ok {
+			if ua = strings.TrimSpace(ua); ua != "" {
+				return misc.AntigravityRequestUserAgent(ua)
+			}
+		}
+	}
+	return misc.AntigravityRequestUserAgent("")
 }
 
 func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
