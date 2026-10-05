@@ -23,11 +23,12 @@ func (h *Host) hostConfigSummaryLocked() pluginapi.HostConfigSummary {
 	}
 	cfg := h.runtimeConfig
 	return pluginapi.HostConfigSummary{
-		AuthDir:          strings.TrimSpace(cfg.AuthDir),
-		ProxyURL:         strings.TrimSpace(cfg.ProxyURL),
-		ForceModelPrefix: cfg.ForceModelPrefix,
-		OAuthModelAlias:  pluginOAuthModelAliases(cfg.OAuthModelAlias),
-		ExcludedModels:   cloneStringSliceMap(cfg.OAuthExcludedModels),
+		AuthDir:           strings.TrimSpace(cfg.AuthDir),
+		ProxyURL:          strings.TrimSpace(cfg.ProxyURL),
+		ProviderProxyURLs: cloneStringMap(cfg.ProviderProxyURLs),
+		ForceModelPrefix:  cfg.ForceModelPrefix,
+		OAuthModelAlias:   pluginOAuthModelAliases(cfg.OAuthModelAlias),
+		ExcludedModels:    cloneStringSliceMap(cfg.OAuthExcludedModels),
 	}
 }
 
@@ -284,7 +285,7 @@ func (h *Host) callStartLogin(ctx context.Context, record capabilityRecord, prov
 		Provider:   normalizeProviderID(provider),
 		BaseURL:    strings.TrimSpace(baseURL),
 		Host:       h.hostConfigSummary(),
-		HTTPClient: h.newHTTPClient(nil),
+		HTTPClient: h.newHTTPClient(nil, normalizeProviderID(provider)),
 		Metadata:   cloneAnyMap(metadata),
 	}
 	resp, errStart := authProvider.StartLogin(ctx, req)
@@ -323,7 +324,7 @@ func (h *Host) callPollLogin(ctx context.Context, record capabilityRecord, provi
 		Provider:   normalizeProviderID(provider),
 		State:      strings.TrimSpace(state),
 		Host:       h.hostConfigSummary(),
-		HTTPClient: h.newHTTPClient(nil),
+		HTTPClient: h.newHTTPClient(nil, normalizeProviderID(provider)),
 		Metadata:   cloneAnyMap(metadata),
 	}
 	resp, errPoll := authProvider.PollLogin(ctx, req)

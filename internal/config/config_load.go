@@ -161,6 +161,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.MaxConcurrentRequestBodyMB = 0
 	}
 	cfg.NormalizeWebImageConfig()
+	cfg.NormalizeProviderProxyURLs()
 
 	cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {

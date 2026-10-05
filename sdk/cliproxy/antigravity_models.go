@@ -295,7 +295,11 @@ func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
 		s.cfgMu.RLock()
 		defer s.cfgMu.RUnlock()
 		if s.cfg != nil {
-			return strings.TrimSpace(s.cfg.ProxyURL)
+			provider := ""
+			if auth != nil {
+				provider = auth.Provider
+			}
+			return s.cfg.ResolveProxyURL("", provider)
 		}
 	}
 	return ""

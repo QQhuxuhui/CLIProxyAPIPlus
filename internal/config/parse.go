@@ -110,6 +110,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	cfg.NormalizePluginsConfig()
 	cfg.NormalizeWebImageConfig()
+	cfg.NormalizeProviderProxyURLs()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
 		return nil, errResolvePluginsDir
 	}

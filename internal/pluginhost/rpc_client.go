@@ -473,6 +473,7 @@ func (a *rpcPluginAdapter) ParseAuth(ctx context.Context, req pluginapi.AuthPars
 }
 
 func (a *rpcPluginAdapter) StartLogin(ctx context.Context, req pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
+	ctx = withHostCallbackHTTPClient(ctx, req.HTTPClient)
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
 	return callPlugin[pluginapi.AuthLoginStartResponse](ctx, a.client, pluginabi.MethodAuthLoginStart, rpcAuthLoginStartRequest{
@@ -482,6 +483,7 @@ func (a *rpcPluginAdapter) StartLogin(ctx context.Context, req pluginapi.AuthLog
 }
 
 func (a *rpcPluginAdapter) PollLogin(ctx context.Context, req pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
+	ctx = withHostCallbackHTTPClient(ctx, req.HTTPClient)
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
 	return callPlugin[pluginapi.AuthLoginPollResponse](ctx, a.client, pluginabi.MethodAuthLoginPoll, rpcAuthLoginPollRequest{

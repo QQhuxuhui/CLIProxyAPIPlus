@@ -519,15 +519,7 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 }
 
 func antigravityProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
-	if auth != nil {
-		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
-			return proxyURL
-		}
-	}
-	if cfg != nil {
-		return strings.TrimSpace(cfg.ProxyURL)
-	}
-	return ""
+	return helps.ResolveProxyURL(cfg, auth)
 }
 
 func sanitizeAntigravityGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {

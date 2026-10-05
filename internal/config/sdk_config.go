@@ -30,6 +30,12 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// ProviderProxyURLs maps a provider (account type) name such as "codex",
+	// "antigravity" or "claude" to a proxy URL. It overrides the global ProxyURL
+	// for credentials of that provider only, and is itself overridden by a
+	// per-credential proxy_url. Keys are matched case-insensitively.
+	ProviderProxyURLs map[string]string `yaml:"provider-proxy-url,omitempty" json:"provider-proxy-url,omitempty"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:
@@ -202,4 +208,66 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+}
+
+// NormalizeProviderProxyURLs trims and lowercases provider keys and drops empty entries.
+func (c *SDKConfig) NormalizeProviderProxyURLs() {
+	if c == nil {
+		return
+	}
+	if len(c.ProviderProxyURLs) == 0 {
+		c.ProviderProxyURLs = nil
+		return
+	}
+	out := make(map[string]string, len(c.ProviderProxyURLs))
+	for k, v := range c.ProviderProxyURLs {
+		key := strings.ToLower(strings.TrimSpace(k))
+		value := strings.TrimSpace(v)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		c.ProviderProxyURLs = nil
+		return
+	}
+	c.ProviderProxyURLs = out
+}
+
+// ProviderProxyURL returns the proxy configured for the given provider, or "" when none is set.
+func (c *SDKConfig) ProviderProxyURL(provider string) string {
+	if c == nil || len(c.ProviderProxyURLs) == 0 {
+		return ""
+	}
+	key := strings.ToLower(strings.TrimSpace(provider))
+	if key == "" {
+		return ""
+	}
+	if v, ok := c.ProviderProxyURLs[key]; ok {
+		return strings.TrimSpace(v)
+	}
+	// Tolerate maps that were not normalized (e.g. set programmatically).
+	for k, v := range c.ProviderProxyURLs {
+		if strings.EqualFold(strings.TrimSpace(k), key) {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// ResolveProxyURL picks the effective proxy for a credential using the priority
+// per-credential proxy_url > provider-proxy-url[provider] > global proxy-url.
+// An empty result means "inherit" (environment proxies or direct connection).
+func (c *SDKConfig) ResolveProxyURL(authProxyURL, provider string) string {
+	if p := strings.TrimSpace(authProxyURL); p != "" {
+		return p
+	}
+	if c == nil {
+		return ""
+	}
+	if p := c.ProviderProxyURL(provider); p != "" {
+		return p
+	}
+	return strings.TrimSpace(c.ProxyURL)
 }

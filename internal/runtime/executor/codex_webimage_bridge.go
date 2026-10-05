@@ -94,7 +94,10 @@ func (e *CodexAutoExecutor) executeWebImage(ctx context.Context, auth *cliproxya
 	credentials := webimage.Credentials{AccessToken: accessToken}
 	if auth != nil {
 		credentials.AuthID = auth.ID
-		credentials.ProxyURL = auth.ProxyURL
+		credentials.ProxyURL = strings.TrimSpace(auth.ProxyURL)
+		if credentials.ProxyURL == "" && e.httpExec != nil && e.httpExec.cfg != nil {
+			credentials.ProxyURL = e.httpExec.cfg.ProviderProxyURL(auth.Provider)
+		}
 		if auth.Metadata != nil {
 			credentials.AccountID, _ = auth.Metadata["account_id"].(string)
 		}

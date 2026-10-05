@@ -343,3 +343,94 @@ func (h *Handler) DeleteProxyURL(c *gin.Context) {
 	h.cfg.ProxyURL = ""
 	h.persist(c)
 }
+
+// Provider proxy URL map (account type -> proxy-url).
+//
+// The config is shared with running executors. Updates must preserve both the
+// map and its containing config snapshot until a replacement is published.
+func normalizedProviderProxyMap(in map[string]string) map[string]string {
+	tmp := config.SDKConfig{ProviderProxyURLs: in}
+	tmp.NormalizeProviderProxyURLs()
+	return tmp.ProviderProxyURLs
+}
+
+// persistProviderProxyURLsLocked edits an independent config snapshot.
+// It expects the caller to hold h.mu.
+func (h *Handler) persistProviderProxyURLsLocked(c *gin.Context, proxies map[string]string) {
+	next := h.cfg.CloneForRuntime()
+	next.ProviderProxyURLs = normalizedProviderProxyMap(proxies)
+	h.persistConfigLocked(c, next)
+}
+
+func (h *Handler) GetProviderProxyURLs(c *gin.Context) {
+	h.mu.Lock()
+	current := h.cfg.ProviderProxyURLs
+	h.mu.Unlock()
+	out := make(map[string]string, len(current))
+	for k, v := range current {
+		out[k] = v
+	}
+	c.JSON(200, gin.H{"provider-proxy-url": out})
+}
+
+// PutProviderProxyURLs replaces the whole map. Body: {"value": {"antigravity": "socks5://..."}}.
+func (h *Handler) PutProviderProxyURLs(c *gin.Context) {
+	var body struct {
+		Value map[string]string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.persistProviderProxyURLsLocked(c, body.Value)
+}
+
+// PatchProviderProxyURLs merges entries into the map; an empty value removes that provider.
+func (h *Handler) PatchProviderProxyURLs(c *gin.Context) {
+	var body struct {
+		Value map[string]string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	merged := make(map[string]string, len(h.cfg.ProviderProxyURLs)+len(body.Value))
+	for k, v := range h.cfg.ProviderProxyURLs {
+		merged[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	for k, v := range body.Value {
+		key := strings.ToLower(strings.TrimSpace(k))
+		if key == "" {
+			continue
+		}
+		if strings.TrimSpace(v) == "" {
+			delete(merged, key)
+			continue
+		}
+		merged[key] = v
+	}
+	h.persistProviderProxyURLsLocked(c, merged)
+}
+
+// DeleteProviderProxyURLs clears the map, or removes one provider when ?provider= is given.
+func (h *Handler) DeleteProviderProxyURLs(c *gin.Context) {
+	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if provider == "" {
+		h.persistProviderProxyURLsLocked(c, nil)
+		return
+	}
+	next := make(map[string]string, len(h.cfg.ProviderProxyURLs))
+	for k, v := range h.cfg.ProviderProxyURLs {
+		if strings.EqualFold(strings.TrimSpace(k), provider) {
+			continue
+		}
+		next[k] = v
+	}
+	h.persistProviderProxyURLsLocked(c, next)
+}

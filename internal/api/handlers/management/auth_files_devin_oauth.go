@@ -27,7 +27,7 @@ type devinOAuthService interface {
 }
 
 var newDevinOAuthService = func(cfg *config.Config) devinOAuthService {
-	client := util.SetProxy(&cfg.SDKConfig, &http.Client{Timeout: 30 * time.Second})
+	client := util.SetProviderProxy(&cfg.SDKConfig, "devin", &http.Client{Timeout: 30 * time.Second})
 	return devin.NewDevinAuthService(client)
 }
 

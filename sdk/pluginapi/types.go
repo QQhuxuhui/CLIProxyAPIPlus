@@ -204,6 +204,9 @@ type HostConfigSummary struct {
 	AuthDir string
 	// ProxyURL is the configured upstream proxy URL.
 	ProxyURL string
+	// ProviderProxyURLs maps a provider name to a proxy URL that overrides ProxyURL
+	// for that provider only. Keys are lowercase.
+	ProviderProxyURLs map[string]string
 	// ForceModelPrefix reports whether model aliases should keep provider prefixes.
 	ForceModelPrefix bool
 	// OAuthModelAlias maps providers to configured model aliases.

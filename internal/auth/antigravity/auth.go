@@ -64,7 +64,7 @@ func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *Antigravit
 		return &AntigravityAuth{httpClient: httpClient}
 	}
 	return &AntigravityAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+		httpClient: util.SetProviderProxy(&cfg.SDKConfig, "antigravity", &http.Client{}),
 	}
 }
 

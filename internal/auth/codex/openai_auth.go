@@ -52,7 +52,7 @@ func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	if cfg != nil {
 		sdkCfg = cfg.SDKConfig
 		if effectiveProxyURL == "" {
-			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+			effectiveProxyURL = cfg.ResolveProxyURL("", "codex")
 		}
 	}
 	sdkCfg.ProxyURL = effectiveProxyURL

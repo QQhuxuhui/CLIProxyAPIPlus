@@ -118,7 +118,7 @@ func NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg *config.Config, deviceID str
 	if cfg != nil {
 		sdkCfg = cfg.SDKConfig
 		if effectiveProxyURL == "" {
-			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+			effectiveProxyURL = cfg.ResolveProxyURL("", "kimi")
 		}
 	}
 	sdkCfg.ProxyURL = effectiveProxyURL

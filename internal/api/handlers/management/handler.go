@@ -407,10 +407,19 @@ func (h *Handler) persist(c *gin.Context) bool {
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
+	return h.persistConfigLocked(c, h.cfg)
+}
+
+// persistConfigLocked publishes a config snapshot only after it has been saved.
+// It expects the caller to hold h.mu.
+func (h *Handler) persistConfigLocked(c *gin.Context, cfg *config.Config) bool {
 	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+	if err := config.SaveConfigPreserveComments(h.configFilePath, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
+	}
+	if h.cfg != cfg {
+		h.cfg = cfg
 	}
 	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

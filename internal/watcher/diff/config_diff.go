@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -130,6 +131,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.ProxyURL != newCfg.ProxyURL {
 		changes = append(changes, fmt.Sprintf("proxy-url: %s -> %s", formatProxyURL(oldCfg.ProxyURL), formatProxyURL(newCfg.ProxyURL)))
 	}
+	changes = append(changes, providerProxyURLChanges(oldCfg.ProviderProxyURLs, newCfg.ProviderProxyURLs)...)
 	if oldCfg.WebsocketAuth != newCfg.WebsocketAuth {
 		changes = append(changes, fmt.Sprintf("ws-auth: %t -> %t", oldCfg.WebsocketAuth, newCfg.WebsocketAuth))
 	}
@@ -704,4 +706,36 @@ func formatURL(raw string) string {
 		return host
 	}
 	return scheme + "://" + host
+}
+
+// providerProxyURLChanges lists redacted per-provider proxy-url changes in a stable order.
+func providerProxyURLChanges(oldMap, newMap map[string]string) []string {
+	keys := make(map[string]struct{}, len(oldMap)+len(newMap))
+	for k := range oldMap {
+		keys[strings.ToLower(strings.TrimSpace(k))] = struct{}{}
+	}
+	for k := range newMap {
+		keys[strings.ToLower(strings.TrimSpace(k))] = struct{}{}
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	lookup := func(m map[string]string, key string) string {
+		for k, v := range m {
+			if strings.EqualFold(strings.TrimSpace(k), key) {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	changes := make([]string, 0)
+	for _, k := range sorted {
+		o, n := lookup(oldMap, k), lookup(newMap, k)
+		if o != n {
+			changes = append(changes, fmt.Sprintf("provider-proxy-url[%s]: %s -> %s", k, formatProxyURL(o), formatProxyURL(n)))
+		}
+	}
+	return changes
 }

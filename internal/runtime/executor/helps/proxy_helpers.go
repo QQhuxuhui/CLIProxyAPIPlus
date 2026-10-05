@@ -15,8 +15,9 @@ import (
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyURL if configured (highest priority)
-// 2. Use cfg.ProxyURL if auth proxy is not configured
-// 3. Use RoundTripper from context if neither are configured
+// 2. Use cfg.ProviderProxyURLs[auth.Provider] if configured
+// 3. Use cfg.ProxyURL if neither of the above is configured
+// 4. Use RoundTripper from context if none are configured
 //
 // Parameters:
 //   - ctx: The context containing optional RoundTripper
@@ -32,16 +33,8 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		httpClient.Timeout = timeout
 	}
 
-	// Priority 1: Use auth.ProxyURL if configured
-	var proxyURL string
-	if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-
-	// Priority 2: Use cfg.ProxyURL if auth proxy is not configured
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
+	// Priority 1-3: auth proxy, then provider proxy, then global proxy
+	proxyURL := ResolveProxyURL(cfg, auth)
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
@@ -54,7 +47,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyutil.Redact(proxyURL))
 	}
 
-	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
+	// Priority 4: Use RoundTripper from context (typically from RoundTripperFor)
 	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 		httpClient.Transport = rt
 	}
@@ -63,6 +56,21 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 }
 
 var devinTransportCache = NewTransportCache[string](DefaultTransportCacheCapacity)
+
+// ResolveProxyURL returns the effective proxy URL for a credential using the
+// priority auth.ProxyURL > cfg.ProviderProxyURLs[auth.Provider] > cfg.ProxyURL.
+// An empty result means no explicit proxy was configured.
+func ResolveProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
+	authProxy, provider := "", ""
+	if auth != nil {
+		authProxy = auth.ProxyURL
+		provider = auth.Provider
+	}
+	if cfg == nil {
+		return strings.TrimSpace(authProxy)
+	}
+	return cfg.ResolveProxyURL(authProxy, provider)
+}
 
 // NewDevinHTTPClient creates an HTTP client customized for Devin Connect-RPC upstream.
 // Suppresses automatic Accept-Encoding: gzip while preserving connection reuse across requests.
@@ -91,12 +99,7 @@ func NewDevinHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxya
 		}
 	}
 
-	proxyURL := ""
-	if auth != nil && strings.TrimSpace(auth.ProxyURL) != "" {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	} else if cfg != nil && strings.TrimSpace(cfg.ProxyURL) != "" {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
+	proxyURL := ResolveProxyURL(cfg, auth)
 
 	tr, err := devinTransportCache.Get(proxyURL, func() (*http.Transport, error) {
 		var base *http.Transport

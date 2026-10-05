@@ -697,13 +697,15 @@ func newProxyAwareSidebandDialer(cfg *config.Config, selected *auth.Auth) *webso
 }
 
 func proxyURLForAuth(cfg *config.Config, selected *auth.Auth) string {
-	if selected != nil && strings.TrimSpace(selected.ProxyURL) != "" {
-		return strings.TrimSpace(selected.ProxyURL)
+	authProxy, provider := "", ""
+	if selected != nil {
+		authProxy = selected.ProxyURL
+		provider = selected.Provider
 	}
-	if cfg != nil {
-		return strings.TrimSpace(cfg.ProxyURL)
+	if cfg == nil {
+		return strings.TrimSpace(authProxy)
 	}
-	return ""
+	return cfg.ResolveProxyURL(authProxy, provider)
 }
 
 func newSidebandDialer(proxyURL string) *websocket.Dialer {

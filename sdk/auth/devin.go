@@ -64,7 +64,7 @@ func (a *DevinAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 
 	authSvc := a.AuthService
 	if authSvc == nil {
-		authSvc = devinauth.NewDevinAuthService(util.SetProxy(&cfg.SDKConfig, &http.Client{Timeout: 30 * time.Second}))
+		authSvc = devinauth.NewDevinAuthService(util.SetProviderProxy(&cfg.SDKConfig, "devin", &http.Client{Timeout: 30 * time.Second}))
 	}
 
 	if opts.NoBrowser {

@@ -405,7 +405,7 @@
 
     <!-- Tab: 代理设置 -->
     <section id="tab-proxy" hidden>
-      <div class="max-w-2xl">
+      <div class="max-w-3xl">
         <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
           <h3 class="text-sm font-semibold text-slate-900">代理设置</h3>
           <p class="mt-1 text-sm text-slate-500">支持 <code class="text-slate-600">http://</code>、<code class="text-slate-600">https://</code>、<code class="text-slate-600">socks5://</code>。留空表示直连。保存后自动热加载生效。</p>
@@ -420,6 +420,29 @@
           </div>
           <div id="proxy-result" class="mt-4 text-sm text-slate-500 min-h-[20px]"></div>
           <p class="mt-2 text-xs text-slate-400">连通性测试会经过所填代理访问 Google 探测端点，返回 HTTP 状态与耗时。</p>
+        </div>
+
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mt-5">
+          <h3 class="text-sm font-semibold text-slate-900">按账号类型设置代理</h3>
+          <p class="mt-1 text-sm text-slate-500">只对该类型的账号生效，其他类型继续走上方的全局代理。优先级：账号文件自身的 <code class="text-slate-600">proxy_url</code> &gt; 账号类型代理 &gt; 全局代理。填 <code class="text-slate-600">direct</code> 表示该类型强制直连；留空表示不单独设置。</p>
+          <div class="mt-4 overflow-x-auto">
+            <table id="provider-proxy-table" class="data-table">
+              <thead><tr><th>账号类型</th><th>账号数</th><th class="w-full">代理地址</th><th></th></tr></thead>
+              <tbody id="provider-proxy-rows"></tbody>
+            </table>
+            <div id="provider-proxy-empty" class="px-4 py-6 text-center text-sm text-slate-400" hidden>尚未加载账号类型</div>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <input id="provider-proxy-new-name" type="text" spellcheck="false" placeholder="其他类型名，如 openrouter"
+                   class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-56">
+            <button id="provider-proxy-add" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">添加类型</button>
+          </div>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <button id="provider-proxy-save" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:translate-y-px transition">保存并生效</button>
+            <button id="provider-proxy-reload" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">重新加载</button>
+          </div>
+          <div id="provider-proxy-result" class="mt-4 text-sm text-slate-500 min-h-[20px]"></div>
+          <p class="mt-2 text-xs text-slate-400">类型名即账号列表里“类型”一列显示的 provider，不区分大小写。每行的“测试”按该行填写的地址探测；该行留空时按全局代理探测。</p>
         </div>
       </div>
     </section>
@@ -1022,6 +1045,7 @@
 
   function render(files) {
     accountsData = files || []; // already sorted by name server-side
+    if (proxyLoaded) renderProviderProxyRows(true); // keep per-type account counts fresh, keep unsaved edits
     renderAccountView({ resetPage: false, rebuildOptions: true });
   }
 
@@ -1407,7 +1431,7 @@
     el.textContent = msg || '';
     el.className = 'mt-4 text-sm min-h-[20px] ' + cls;
   }
-  function loadProxyOnce() { if (proxyLoaded) return; proxyLoaded = true; loadProxy(); }
+  function loadProxyOnce() { if (proxyLoaded) return; proxyLoaded = true; loadProxy(); loadProviderProxy(); }
   function loadProxy() {
     var k = getStoredKey();
     if (!k) return;
@@ -1447,6 +1471,162 @@
       if (d.ok) { setProxyResult('连通正常 · HTTP ' + d.http_status + ' · ' + d.latency_ms + 'ms' + (v ? '（经代理）' : '（直连）'), 'ok'); }
       else { setProxyResult('连通失败：' + (d.error || ('HTTP ' + d.http_status)) + ' · ' + d.latency_ms + 'ms', 'err'); }
     }).catch(function (e) { setProxyResult('测试失败：网络错误 ' + e, 'err'); });
+  }
+
+  // ---- Per-provider proxy settings ----
+  var DEFAULT_PROVIDERS = ['codex', 'antigravity', 'claude', 'gemini-cli'];
+  var providerProxyMap = {};   // last map loaded from the server (normalized keys)
+  var providerProxyExtra = []; // provider names added by hand in this session
+  function setProviderProxyResult(msg, kind) {
+    var el = document.getElementById('provider-proxy-result');
+    if (!el) return;
+    var cls = kind === 'err' ? 'text-red-600' : (kind === 'ok' ? 'text-emerald-600' : 'text-slate-500');
+    el.textContent = msg || '';
+    el.className = 'mt-4 text-sm min-h-[20px] ' + cls;
+  }
+  function providerCounts() {
+    var counts = {};
+    (accountsData || []).forEach(function (a) {
+      var name = String(a && a.provider || '').trim().toLowerCase();
+      if (!name) return;
+      counts[name] = (counts[name] || 0) + 1;
+    });
+    return counts;
+  }
+  function knownProviders() {
+    var counts = providerCounts();
+    var set = {};
+    Object.keys(counts).forEach(function (n) { set[n] = true; });
+    Object.keys(providerProxyMap).forEach(function (n) { set[n] = true; });
+    providerProxyExtra.forEach(function (n) { set[n] = true; });
+    DEFAULT_PROVIDERS.forEach(function (n) { set[n] = true; });
+    return Object.keys(set).sort(function (a, b) {
+      // Providers that have accounts first, then alphabetical.
+      var ca = counts[a] || 0, cb = counts[b] || 0;
+      if ((ca > 0) !== (cb > 0)) return ca > 0 ? -1 : 1;
+      return a < b ? -1 : (a > b ? 1 : 0);
+    });
+  }
+  // includeEmpty=true returns every row (cleared rows as ""), used to preserve unsaved edits;
+  // includeEmpty=false returns only rows with a value, used as the save payload.
+  function collectProviderProxyInputs(includeEmpty) {
+    var out = {};
+    var inputs = document.querySelectorAll('#provider-proxy-rows input[data-provider]');
+    Array.prototype.forEach.call(inputs, function (input) {
+      var name = String(input.getAttribute('data-provider') || '').trim().toLowerCase();
+      var value = String(input.value || '').trim();
+      if (!name) return;
+      if (value || includeEmpty) out[name] = value;
+    });
+    return out;
+  }
+  // preservePending=true keeps unsaved edits (background re-renders); false shows server state as-is.
+  function renderProviderProxyRows(preservePending) {
+    var tbody = document.getElementById('provider-proxy-rows');
+    var empty = document.getElementById('provider-proxy-empty');
+    if (!tbody) return;
+    var pending = preservePending ? collectProviderProxyInputs(true) : {};
+    var counts = providerCounts();
+    var providers = knownProviders();
+    if (!providers.length) { tbody.innerHTML = ''; if (empty) empty.hidden = false; return; }
+    if (empty) empty.hidden = true;
+    tbody.innerHTML = providers.map(function (name) {
+      var value = pending.hasOwnProperty(name) ? pending[name] : (providerProxyMap[name] || '');
+      var count = counts[name] || 0;
+      var badge = count ? '<span class="text-slate-700">' + count + '</span>' : '<span class="text-slate-400">0</span>';
+      var tag = providerProxyMap[name] ? '<span class="inline-block rounded bg-indigo-50 text-indigo-600" style="margin-left:6px;padding:1px 6px;font-size:11px;vertical-align:middle">已设置</span>' : '';
+      return '<tr>' +
+        '<td class="font-medium text-slate-800">' + escapeHtml(name) + tag + '</td>' +
+        '<td>' + badge + '</td>' +
+        '<td style="white-space:normal;min-width:260px">' +
+          '<input type="text" spellcheck="false" data-provider="' + escapeHtml(name) + '" value="' + escapeHtml(value) + '" placeholder="留空 = 跟随全局代理" ' +
+          'class="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">' +
+        '</td>' +
+        '<td class="text-right">' +
+          '<button type="button" data-action="test" data-provider="' + escapeHtml(name) + '" class="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50">测试</button> ' +
+          '<button type="button" data-action="clear" data-provider="' + escapeHtml(name) + '" class="rounded-md px-2.5 py-1 text-xs font-medium text-slate-500 hover:text-red-600 hover:bg-red-50">清除</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  }
+  function loadProviderProxy() {
+    var k = getStoredKey();
+    if (!k) return;
+    setProviderProxyResult('加载中…', '');
+    fetch('/v0/management/provider-proxy-url', { headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function (resp) {
+        if (resp.ok) return resp.json();
+        if (resp.status === 404) { setProviderProxyResult('当前服务端版本不支持按账号类型设置代理，请先升级服务端', 'err'); return null; }
+        return readError(resp).then(function (m) { setProviderProxyResult('加载失败：' + (m || ('HTTP ' + resp.status)), 'err'); return null; });
+      })
+      .then(function (d) {
+        if (!d) return;
+        var raw = d['provider-proxy-url'] || {};
+        providerProxyMap = {};
+        Object.keys(raw).forEach(function (name) {
+          var key = String(name || '').trim().toLowerCase();
+          var value = String(raw[name] || '').trim();
+          if (key && value) providerProxyMap[key] = value;
+        });
+        renderProviderProxyRows(false);
+        var n = Object.keys(providerProxyMap).length;
+        setProviderProxyResult(n ? ('已加载 ' + n + ' 个账号类型的代理设置') : '尚未为任何账号类型单独设置代理', '');
+      })
+      .catch(function (e) { setProviderProxyResult('加载失败：网络错误 ' + e, 'err'); });
+  }
+  function saveProviderProxy() {
+    var k = getStoredKey();
+    if (!k) { setProviderProxyResult('请先登录', 'err'); return; }
+    var value = collectProviderProxyInputs(false);
+    setProviderProxyResult('保存中…', '');
+    fetch('/v0/management/provider-proxy-url', {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: value })
+    }).then(function (resp) {
+      if (resp.ok) {
+        providerProxyMap = value;
+        renderProviderProxyRows(false);
+        var n = Object.keys(value).length;
+        setProviderProxyResult('已保存并热加载生效' + (n ? ('，' + n + ' 个类型使用独立代理') : '，所有类型跟随全局代理'), 'ok');
+        return;
+      }
+      return readError(resp).then(function (m) { setProviderProxyResult('保存失败：' + (m || ('HTTP ' + resp.status)), 'err'); });
+    }).catch(function (e) { setProviderProxyResult('保存失败：网络错误 ' + e, 'err'); });
+  }
+  function testProviderProxy(name) {
+    var k = getStoredKey();
+    if (!k) { setProviderProxyResult('请先登录', 'err'); return; }
+    var input = document.querySelector('#provider-proxy-rows input[data-provider="' + name + '"]');
+    var v = String(input && input.value || '').trim();
+    var globalV = String((document.getElementById('proxy-url') || {}).value || '').trim();
+    var effective = v || globalV;
+    var via = v ? ('该类型代理') : (globalV ? '全局代理' : '直连');
+    setProviderProxyResult('测试 ' + name + '…（经' + via + '访问 Google）', '');
+    fetch('/v0/management/proxy-test', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 'proxy-url': effective })
+    }).then(function (resp) {
+      if (!resp.ok) { return readError(resp).then(function (m) { setProviderProxyResult(name + ' 测试失败：' + (m || ('HTTP ' + resp.status)), 'err'); return null; }); }
+      return resp.json();
+    }).then(function (d) {
+      if (!d) return;
+      if (d.ok) { setProviderProxyResult(name + ' 连通正常 · HTTP ' + d.http_status + ' · ' + d.latency_ms + 'ms（经' + via + '）', 'ok'); }
+      else { setProviderProxyResult(name + ' 连通失败：' + (d.error || ('HTTP ' + d.http_status)) + ' · ' + d.latency_ms + 'ms', 'err'); }
+    }).catch(function (e) { setProviderProxyResult(name + ' 测试失败：网络错误 ' + e, 'err'); });
+  }
+  function addProviderProxyRow() {
+    var input = document.getElementById('provider-proxy-new-name');
+    var name = String(input && input.value || '').trim().toLowerCase();
+    if (!name) { setProviderProxyResult('请输入账号类型名', 'err'); return; }
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) { setProviderProxyResult('类型名只能包含字母、数字、点、下划线和中划线', 'err'); return; }
+    if (providerProxyExtra.indexOf(name) < 0) providerProxyExtra.push(name);
+    if (input) input.value = '';
+    renderProviderProxyRows(true);
+    var row = document.querySelector('#provider-proxy-rows input[data-provider="' + name + '"]');
+    if (row) row.focus();
+    setProviderProxyResult('已添加 ' + name + '，填好代理后点“保存并生效”', '');
   }
 
   // ---- Usage-stats modal ----
@@ -1561,6 +1741,21 @@
   });
   document.getElementById('proxy-save').addEventListener('click', saveProxy);
   document.getElementById('proxy-test').addEventListener('click', testProxy);
+  document.getElementById('provider-proxy-save').addEventListener('click', saveProviderProxy);
+  document.getElementById('provider-proxy-reload').addEventListener('click', function () { providerProxyExtra = []; loadProviderProxy(); });
+  document.getElementById('provider-proxy-add').addEventListener('click', addProviderProxyRow);
+  document.getElementById('provider-proxy-new-name').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addProviderProxyRow(); } });
+  document.getElementById('provider-proxy-rows').addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
+    if (!btn) return;
+    var name = btn.getAttribute('data-provider') || '';
+    if (btn.getAttribute('data-action') === 'test') { testProviderProxy(name); return; }
+    if (btn.getAttribute('data-action') === 'clear') {
+      var input = document.querySelector('#provider-proxy-rows input[data-provider="' + name + '"]');
+      if (input) { input.value = ''; input.focus(); }
+      setProviderProxyResult('已清空 ' + name + ' 的代理，点“保存并生效”后该类型跟随全局代理', '');
+    }
+  });
   // Row checkboxes: 'change' bubbles, so one listener survives the row rebuild.
   els.rows.addEventListener('change', function (e) {
     var box = e.target && e.target.closest ? e.target.closest('.row-select') : null;

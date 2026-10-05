@@ -28,3 +28,15 @@ func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	}
 	return httpClient
 }
+
+// SetProviderProxy is like SetProxy but resolves the proxy for a specific provider
+// (account type) first, falling back to the global proxy-url. It is intended for
+// login/bootstrap flows that run before a credential object exists.
+func SetProviderProxy(cfg *config.SDKConfig, provider string, httpClient *http.Client) *http.Client {
+	if cfg == nil || httpClient == nil {
+		return httpClient
+	}
+	scoped := *cfg
+	scoped.ProxyURL = cfg.ResolveProxyURL("", provider)
+	return SetProxy(&scoped, httpClient)
+}

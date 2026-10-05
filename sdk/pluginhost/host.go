@@ -30,6 +30,7 @@ type RuntimeConfig struct {
 	Dir                 string
 	AuthDir             string
 	ProxyURL            string
+	ProviderProxyURLs   map[string]string
 	ForceModelPrefix    bool
 	OAuthModelAlias     map[string][]OAuthModelAlias
 	OAuthExcludedModels map[string][]string
@@ -214,8 +215,9 @@ func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 func runtimeConfigToInternalConfig(cfg RuntimeConfig) *internalconfig.Config {
 	out := &internalconfig.Config{
 		SDKConfig: internalconfig.SDKConfig{
-			ProxyURL:         cfg.ProxyURL,
-			ForceModelPrefix: cfg.ForceModelPrefix,
+			ProxyURL:          cfg.ProxyURL,
+			ProviderProxyURLs: cloneStringMap(cfg.ProviderProxyURLs),
+			ForceModelPrefix:  cfg.ForceModelPrefix,
 		},
 		AuthDir:             cfg.AuthDir,
 		OAuthExcludedModels: cloneStringSliceMap(cfg.OAuthExcludedModels),
@@ -355,4 +357,15 @@ func deepCopyYAMLNode(node *yaml.Node) *yaml.Node {
 		}
 	}
 	return &copyNode
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

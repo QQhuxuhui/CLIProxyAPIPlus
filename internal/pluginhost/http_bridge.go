@@ -198,23 +198,33 @@ func (h *Host) currentRuntimeConfig() *config.Config {
 }
 
 func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *config.Config, req pluginapi.HTTPRequest, httpReq *http.Request) (*http.Client, func(), error) {
+	proxyAuth := c.auth
+	if provider := strings.TrimSpace(c.provider); provider != "" && (proxyAuth == nil || strings.TrimSpace(proxyAuth.Provider) == "") {
+		if proxyAuth == nil {
+			proxyAuth = &coreauth.Auth{Provider: provider}
+		} else {
+			proxyAuth = proxyAuth.Clone()
+			proxyAuth.Provider = provider
+		}
+	}
 	profile := req.WireProfile
 	if profile == nil || (!profile.HTTP1Only && !profile.DisableAutoCompression && len(profile.HeaderProfile) == 0) {
-		client := helps.NewProxyAwareHTTPClient(ctx, cfg, c.auth, 0)
+		client := helps.NewProxyAwareHTTPClient(ctx, cfg, proxyAuth, 0)
 		if client == nil {
 			client = &http.Client{}
 		}
 		return client, nil, nil
 	}
 
-	// Priority 1: Auth proxy
-	var proxyStr string
-	if c.auth != nil {
-		proxyStr = strings.TrimSpace(c.auth.ProxyURL)
+	// Priority: auth proxy > provider proxy > global config proxy
+	authProxy, provider := "", ""
+	if proxyAuth != nil {
+		authProxy = proxyAuth.ProxyURL
+		provider = proxyAuth.Provider
 	}
-	// Priority 2: Config proxy
-	if proxyStr == "" && cfg != nil {
-		proxyStr = strings.TrimSpace(cfg.ProxyURL)
+	proxyStr := strings.TrimSpace(authProxy)
+	if cfg != nil {
+		proxyStr = cfg.ResolveProxyURL(authProxy, provider)
 	}
 
 	var baseTransport *http.Transport
@@ -388,7 +398,7 @@ func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *confi
 
 		baseTransport.DialTLSContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			currentReq := reqHolder.get()
-			targetProxy, errProxy := resolveProxyForRequest(currentReq, c.auth, cfg, origProxyFunc)
+			targetProxy, errProxy := resolveProxyForRequest(currentReq, proxyAuth, cfg, origProxyFunc)
 			if errProxy != nil {
 				return nil, errProxy
 			}
@@ -544,8 +554,16 @@ func resolveProxyForRequest(r *http.Request, auth *coreauth.Auth, cfg *config.Co
 			return setting.URL, nil
 		}
 	}
-	if cfg != nil && strings.TrimSpace(cfg.ProxyURL) != "" {
-		setting, errParse := proxyutil.Parse(strings.TrimSpace(cfg.ProxyURL))
+	cfgProxy := ""
+	if cfg != nil {
+		provider := ""
+		if auth != nil {
+			provider = auth.Provider
+		}
+		cfgProxy = cfg.ResolveProxyURL("", provider)
+	}
+	if cfgProxy != "" {
+		setting, errParse := proxyutil.Parse(cfgProxy)
 		if errParse != nil {
 			return nil, fmt.Errorf("pluginhost: parse config proxy: %w", errParse)
 		}

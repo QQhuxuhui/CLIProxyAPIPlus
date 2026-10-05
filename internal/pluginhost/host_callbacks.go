@@ -75,6 +75,28 @@ type dynamicHostCallbackEntry struct {
 
 type hostCallbackPluginIDKey struct{}
 
+type hostCallbackHTTPClientKey struct{}
+
+// withHostCallbackHTTPClient preserves the bound client across RPC serialization.
+func withHostCallbackHTTPClient(ctx context.Context, client pluginapi.HostHTTPClient) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if client == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, hostCallbackHTTPClientKey{}, client)
+}
+
+func (h *Host) callbackHTTPClient(ctx context.Context) pluginapi.HostHTTPClient {
+	if ctx != nil {
+		if client, ok := ctx.Value(hostCallbackHTTPClientKey{}).(pluginapi.HostHTTPClient); ok && client != nil {
+			return client
+		}
+	}
+	return h.newHTTPClient(nil)
+}
+
 func withHostCallbackPluginID(ctx context.Context, pluginID string) context.Context {
 	pluginID = strings.TrimSpace(pluginID)
 	if pluginID == "" {
@@ -149,7 +171,7 @@ func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, erro
 		return nil, errDecode
 	}
 	ctx = h.resolveCallbackContext(callbackID, ctx)
-	resp, errDo := h.newHTTPClient(nil).Do(ctx, httpReq)
+	resp, errDo := h.callbackHTTPClient(ctx).Do(ctx, httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -170,7 +192,7 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 		ctx = context.Background()
 	}
 	streamCtx, cancel := newStreamContext(ctx)
-	resp, errDo := h.newHTTPClient(nil).DoStream(streamCtx, httpReq)
+	resp, errDo := h.callbackHTTPClient(ctx).DoStream(streamCtx, httpReq)
 	if errDo != nil {
 		cancel()
 		return nil, errDo

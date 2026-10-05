@@ -192,7 +192,7 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 	if cfg != nil {
 		sdkCfgCopy := cfg.SDKConfig
 		if effectiveProxyURL == "" {
-			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+			effectiveProxyURL = cfg.ResolveProxyURL("", "claude")
 		}
 		sdkCfgCopy.ProxyURL = effectiveProxyURL
 		sdkCfg = &sdkCfgCopy

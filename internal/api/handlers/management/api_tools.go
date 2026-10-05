@@ -853,6 +853,11 @@ func (h *Handler) apiCallTransport(auth *coreauth.Auth, requestProxyURL string) 
 		}
 	}
 	if h != nil && h.cfg != nil {
+		if auth != nil {
+			if proxyStr := h.cfg.ProviderProxyURL(auth.Provider); proxyStr != "" {
+				proxyCandidates = append(proxyCandidates, proxyStr)
+			}
+		}
 		if proxyStr := strings.TrimSpace(h.cfg.ProxyURL); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
