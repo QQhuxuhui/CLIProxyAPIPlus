@@ -61,15 +61,16 @@ var devinTransportCache = NewTransportCache[string](DefaultTransportCacheCapacit
 // priority auth.ProxyURL > cfg.ProviderProxyURLs[auth.Provider] > cfg.ProxyURL.
 // An empty result means no explicit proxy was configured.
 func ResolveProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
-	authProxy, provider := "", ""
+	authProxy, provider, stickyKey := "", "", ""
 	if auth != nil {
 		authProxy = auth.ProxyURL
 		provider = auth.Provider
+		stickyKey = auth.ID
 	}
 	if cfg == nil {
 		return strings.TrimSpace(authProxy)
 	}
-	return cfg.ResolveProxyURL(authProxy, provider)
+	return cfg.ResolveProxyURLFor(authProxy, provider, stickyKey)
 }
 
 // NewDevinHTTPClient creates an HTTP client customized for Devin Connect-RPC upstream.

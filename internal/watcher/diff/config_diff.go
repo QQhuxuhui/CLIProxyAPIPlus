@@ -677,7 +677,18 @@ func displayOptionalValue(raw string) string {
 }
 
 func formatProxyURL(raw string) string {
-	return formatURL(raw)
+	// provider-proxy-url entries may list several comma-separated proxies.
+	if !strings.Contains(raw, ",") {
+		return formatURL(raw)
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			out = append(out, formatURL(part))
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func formatURL(raw string) string {

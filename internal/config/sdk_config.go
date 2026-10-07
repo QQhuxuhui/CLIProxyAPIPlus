@@ -5,6 +5,7 @@
 package config
 
 import (
+	"hash/fnv"
 	"strings"
 	"time"
 )
@@ -235,38 +236,79 @@ func (c *SDKConfig) NormalizeProviderProxyURLs() {
 	c.ProviderProxyURLs = out
 }
 
-// ProviderProxyURL returns the proxy configured for the given provider, or "" when none is set.
-func (c *SDKConfig) ProviderProxyURL(provider string) string {
+// providerProxyURLList returns every proxy configured for the given provider.
+// A provider entry may hold several comma-separated proxy URLs.
+func (c *SDKConfig) providerProxyURLList(provider string) []string {
 	if c == nil || len(c.ProviderProxyURLs) == 0 {
-		return ""
+		return nil
 	}
 	key := strings.ToLower(strings.TrimSpace(provider))
 	if key == "" {
-		return ""
+		return nil
 	}
-	if v, ok := c.ProviderProxyURLs[key]; ok {
-		return strings.TrimSpace(v)
-	}
-	// Tolerate maps that were not normalized (e.g. set programmatically).
-	for k, v := range c.ProviderProxyURLs {
-		if strings.EqualFold(strings.TrimSpace(k), key) {
-			return strings.TrimSpace(v)
+	raw, ok := c.ProviderProxyURLs[key]
+	if !ok {
+		// Tolerate maps that were not normalized (e.g. set programmatically).
+		for k, v := range c.ProviderProxyURLs {
+			if strings.EqualFold(strings.TrimSpace(k), key) {
+				raw, ok = v, true
+				break
+			}
 		}
 	}
-	return ""
+	if !ok {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := parts[:0]
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// ProviderProxyURL returns the proxy configured for the given provider, or "" when none is set.
+// When the provider lists several proxies, the first one is returned.
+func (c *SDKConfig) ProviderProxyURL(provider string) string {
+	return c.ProviderProxyURLFor(provider, "")
+}
+
+// ProviderProxyURLFor returns the proxy a credential of the given provider should use.
+// When the provider lists several proxies, stickyKey (normally the credential ID) is
+// hashed to pick one, so a credential always leaves through the same proxy while the
+// provider's credentials spread evenly across the list. An empty stickyKey picks the first.
+func (c *SDKConfig) ProviderProxyURLFor(provider, stickyKey string) string {
+	list := c.providerProxyURLList(provider)
+	if len(list) == 0 {
+		return ""
+	}
+	if len(list) == 1 || stickyKey == "" {
+		return list[0]
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(stickyKey))
+	return list[int(h.Sum32()%uint32(len(list)))]
 }
 
 // ResolveProxyURL picks the effective proxy for a credential using the priority
 // per-credential proxy_url > provider-proxy-url[provider] > global proxy-url.
 // An empty result means "inherit" (environment proxies or direct connection).
 func (c *SDKConfig) ResolveProxyURL(authProxyURL, provider string) string {
+	return c.ResolveProxyURLFor(authProxyURL, provider, "")
+}
+
+// ResolveProxyURLFor is ResolveProxyURL with a sticky key that selects among several
+// provider proxies; see ProviderProxyURLFor.
+func (c *SDKConfig) ResolveProxyURLFor(authProxyURL, provider, stickyKey string) string {
 	if p := strings.TrimSpace(authProxyURL); p != "" {
 		return p
 	}
 	if c == nil {
 		return ""
 	}
-	if p := c.ProviderProxyURL(provider); p != "" {
+	if p := c.ProviderProxyURLFor(provider, stickyKey); p != "" {
 		return p
 	}
 	return strings.TrimSpace(c.ProxyURL)
