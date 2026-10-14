@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -188,5 +189,88 @@ func openAICompatKimiAuth() *coreauth.Auth {
 			"compat_name":  "kimi",
 			"provider_key": "kimi",
 		},
+	}
+}
+
+func TestExecutorRegistrationKey_DedupesSameProvider(t *testing.T) {
+	keyA, okA := executorRegistrationKey(&coreauth.Auth{ID: "a", Provider: "antigravity"})
+	keyB, okB := executorRegistrationKey(&coreauth.Auth{ID: "b", Provider: "Antigravity"})
+	if !okA || !okB || keyA != keyB {
+		t.Fatalf("same-provider auths should share a key: %+v/%v %+v/%v", keyA, okA, keyB, okB)
+	}
+	if _, ok := executorRegistrationKey(&coreauth.Auth{ID: "d", Provider: "antigravity", Disabled: true}); ok {
+		t.Fatal("disabled auth should not be deduplicated")
+	}
+	studioA, _ := executorRegistrationKey(&coreauth.Auth{ID: "s1", Provider: "aistudio"})
+	studioB, _ := executorRegistrationKey(&coreauth.Auth{ID: "s2", Provider: "aistudio"})
+	if studioA == studioB {
+		t.Fatal("aistudio auths bind per ID and must not share a key")
+	}
+	bare, _ := executorRegistrationKey(&coreauth.Auth{ID: "x1", Provider: "custom", Attributes: map[string]string{}})
+	withURL, _ := executorRegistrationKey(&coreauth.Auth{ID: "x2", Provider: "custom", Attributes: map[string]string{"base_url": "https://example.com"}})
+	if bare == withURL {
+		t.Fatal("base_url presence changes the binding decision and must be part of the key")
+	}
+}
+
+func TestRegisterExecutorsForAuths_ManyAuthsBindEachProvider(t *testing.T) {
+	auths := make([]*coreauth.Auth, 0, 2001)
+	for i := 0; i < 1000; i++ {
+		auths = append(auths, &coreauth.Auth{ID: "ag-" + strconv.Itoa(i), Provider: "antigravity"})
+		auths = append(auths, &coreauth.Auth{ID: "cx-" + strconv.Itoa(i), Provider: "codex"})
+	}
+	auths = append(auths, &coreauth.Auth{ID: "native-kimi", Provider: "kimi"})
+	service := &Service{cfg: &config.Config{}, coreManager: coreauth.NewManager(nil, nil, nil)}
+
+	service.registerExecutorsForAuths(auths, true)
+
+	for _, provider := range []string{"antigravity", "codex", "kimi"} {
+		if _, ok := service.coreManager.Executor(provider); !ok {
+			t.Fatalf("expected %s executor to be registered", provider)
+		}
+	}
+}
+
+func TestRegisterExecutorsForAuths_CompatLabels(t *testing.T) {
+	for _, forceReplace := range []bool{false, true} {
+		t.Run(strconv.FormatBool(forceReplace), func(t *testing.T) {
+			service := &Service{cfg: &config.Config{}, coreManager: coreauth.NewManager(nil, nil, nil)}
+			service.registerExecutorsForAuths([]*coreauth.Auth{
+				{ID: "a", Provider: "openai-compatibility", Label: "foo"},
+				{ID: "b", Provider: "openai-compatibility", Label: "bar"},
+			}, forceReplace)
+			for _, provider := range []string{"openai-compatible-foo", "openai-compatible-bar"} {
+				if _, ok := service.coreManager.Executor(provider); !ok {
+					t.Errorf("missing executor %s", provider)
+				}
+			}
+		})
+	}
+}
+
+func TestRegisterExecutorsForAuths_InterleavedBindings(t *testing.T) {
+	oldHasAuthProvider := pluginHostHasAuthProvider
+	pluginHostHasAuthProvider = func(host *pluginhost.Host, provider string) bool {
+		return host != nil && provider == "plugin-provider"
+	}
+	t.Cleanup(func() { pluginHostHasAuthProvider = oldHasAuthProvider })
+
+	for _, forceReplace := range []bool{false, true} {
+		t.Run(strconv.FormatBool(forceReplace), func(t *testing.T) {
+			service := &Service{
+				cfg:         &config.Config{},
+				coreManager: coreauth.NewManager(nil, nil, nil),
+				pluginHost:  pluginhost.New(),
+			}
+			service.registerExecutorsForAuths([]*coreauth.Auth{
+				{ID: "a", Provider: "plugin-provider", Attributes: map[string]string{"compat_name": "shared"}},
+				{ID: "b", Provider: "other-provider", Attributes: map[string]string{"compat_name": "shared"}},
+				{ID: "c", Provider: "plugin-provider", Attributes: map[string]string{"compat_name": "shared"}},
+			}, forceReplace)
+			got, ok := service.coreManager.Executor("openai-compatible-shared")
+			if !ok || !pluginhost.IsPluginRefreshCompatExecutor(got) {
+				t.Fatalf("last auth should restore plugin refresh wrapper; got %T", got)
+			}
+		})
 	}
 }

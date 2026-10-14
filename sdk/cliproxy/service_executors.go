@@ -228,16 +228,64 @@ func baselineExecutorAuths() []*coreauth.Auth {
 }
 
 func (s *Service) registerExecutorsForAuths(auths []*coreauth.Auth, forceReplace bool) {
-	reboundCodex := false
+	// Skip unchanged bindings per target provider: each RegisterExecutor call
+	// takes the manager write lock and scans every auth. A different binding for
+	// the same target must invalidate the previous key to preserve registration order.
+	lastBindings := make(map[string]executorBindingKey)
 	for _, auth := range auths {
-		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
-			if reboundCodex && forceReplace {
+		if key, ok := executorRegistrationKey(auth); ok {
+			if previous, exists := lastBindings[key.targetProvider]; exists && previous == key {
 				continue
 			}
-			reboundCodex = true
+			lastBindings[key.targetProvider] = key
 		}
 		s.registerExecutorForAuth(auth, forceReplace)
 	}
+}
+
+type executorBindingKey struct {
+	targetProvider string
+	authProvider   string
+	providerKey    string
+	compatName     string
+	authID         string
+	hasBaseURL     bool
+}
+
+// executorRegistrationKey captures the target and inputs to the binding decision.
+// Nil and disabled non-Codex auths do not change a binding.
+func executorRegistrationKey(a *coreauth.Auth) (executorBindingKey, bool) {
+	if a == nil {
+		return executorBindingKey{}, false
+	}
+	provider := strings.ToLower(strings.TrimSpace(a.Provider))
+	if provider == "codex" {
+		return executorBindingKey{targetProvider: provider}, true
+	}
+	if a.Disabled {
+		return executorBindingKey{}, false
+	}
+	key := executorBindingKey{
+		targetProvider: provider,
+		// Preserve whitespace because the native provider switch does not trim it.
+		authProvider: strings.ToLower(a.Provider),
+	}
+	if compatProvider, _, isCompat := openAICompatInfoFromAuth(a); isCompat {
+		// The compatibility fallback derives its target from Label.
+		key.targetProvider = compatProvider
+	} else if provider == "aistudio" {
+		key.authID = a.ID
+	}
+	if key.targetProvider == "" {
+		key.targetProvider = "openai-compatibility"
+	}
+	// Include every auth field the compat/plugin binding decision reads.
+	if a.Attributes != nil {
+		key.providerKey = strings.ToLower(strings.TrimSpace(a.Attributes["provider_key"]))
+		key.compatName = strings.ToLower(strings.TrimSpace(a.Attributes["compat_name"]))
+		key.hasBaseURL = strings.TrimSpace(a.Attributes["base_url"]) != ""
+	}
+	return key, true
 }
 
 func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
