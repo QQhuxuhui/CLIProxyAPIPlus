@@ -1794,7 +1794,7 @@
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   els['account-page-prev'].addEventListener('click', function () { accountPage--; renderAccountView({ resetPage: false, rebuildOptions: false }); });
   els['account-page-next'].addEventListener('click', function () { accountPage++; renderAccountView({ resetPage: false, rebuildOptions: false }); });
-  ['accounts', 'stats', 'health', 'proxy'].forEach(function (n) {
+  ['accounts', 'stats', 'health', 'proxy', 'latency'].forEach(function (n) {
     var b = document.getElementById('tabbtn-' + n);
     if (b) b.addEventListener('click', function () { switchTab(n); });
   });
