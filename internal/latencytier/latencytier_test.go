@@ -77,6 +77,12 @@ func (f *fakeAuths) InvalidateSessionAffinity(id string) {
 	f.invalidated = append(f.invalidated, id)
 }
 
+func overloadRecord(id string) usage.Record {
+	rec := record(id, 0, true)
+	rec.Fail = usage.Failure{StatusCode: 502, Body: `{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"service_unavailable_error","code":"server_is_overloaded"}}`}
+	return rec
+}
+
 func record(id string, ttftMs int, failed bool) usage.Record {
 	rec := usage.Record{Provider: "codex", AuthType: "oauth", AuthID: id, Model: "gpt-6-luna", Alias: "gpt-6.1-sol", Stream: true, TTFT: time.Duration(ttftMs) * time.Millisecond, Latency: time.Duration(ttftMs+500) * time.Millisecond, Failed: failed}
 	if !failed {
@@ -297,6 +303,70 @@ func TestProbationPrefersLeastRecentlySampledAndRotates(t *testing.T) {
 		if p, _ := f.AuthPriorityInMemory(id); p != 1 {
 			t.Fatalf("rotated-out probation account %s should return to normal priority, got %d", id, p)
 		}
+	}
+}
+
+func TestOverloadCountsAsSmallPenaltyNotFullFailure(t *testing.T) {
+	f := newFakeAuths(2)
+	tr, _ := newTestTracker(f, false)
+	tr.HandleUsage(context.Background(), overloadRecord("acct-00"))
+	tr.HandleUsage(context.Background(), record("acct-01", 0, true))
+	if tr.stats["acct-00"].EWMA != 3000 || tr.stats["acct-00"].Failures != 1 {
+		t.Fatalf("overload should record overload_penalty_ms and count as failure: ewma=%v failures=%d", tr.stats["acct-00"].EWMA, tr.stats["acct-00"].Failures)
+	}
+	if tr.stats["acct-01"].EWMA != 30000 {
+		t.Fatalf("other failures keep the full penalty, got %v", tr.stats["acct-01"].EWMA)
+	}
+	// A fast account that eats a few pool-wide overloads must stay ahead of a genuinely slow one.
+	feed(tr, "acct-00", 4, 2000)
+	tr.HandleUsage(context.Background(), overloadRecord("acct-00"))
+	feed(tr, "acct-01", 5, 12000)
+	if tr.stats["acct-00"].EWMA >= tr.stats["acct-01"].EWMA {
+		t.Fatalf("overloaded-but-fast account ranks behind slow one: %v vs %v", tr.stats["acct-00"].EWMA, tr.stats["acct-01"].EWMA)
+	}
+}
+
+func TestPlusAccountsAreTrustedUntilMeasuredAndProbedFirst(t *testing.T) {
+	f := newFakeAuths(30)
+	for i := 25; i < 30; i++ {
+		f.auths[i].Attributes["plan_type"] = "plus"
+	}
+	f.auths[29].Disabled = true
+	tr, now := newTestTracker(f, true)
+	for i := 0; i < 20; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*500)
+	}
+	// acct-25 is a plus account that measured slow: trust must not override data.
+	feed(tr, "acct-25", 5, 40000)
+	*now = now.Add(time.Minute)
+	tr.Recompute()
+	snap := tr.Snapshot()
+	trusted := map[string]bool{}
+	for _, v := range snap.Accounts {
+		if v.Trusted {
+			trusted[v.AuthID] = true
+			if v.Tier != TierFast {
+				t.Fatalf("trusted %s should be fast, got %s", v.AuthID, v.Tier)
+			}
+		}
+	}
+	if !trusted["acct-26"] || !trusted["acct-27"] || !trusted["acct-28"] || trusted["acct-29"] || trusted["acct-25"] {
+		t.Fatalf("trusted set = %v", trusted)
+	}
+	if tr.tiers["acct-25"] != TierSlow {
+		t.Fatalf("measured slow plus account should be slow, got %s", tr.tiers["acct-25"])
+	}
+	for _, id := range []string{"acct-26", "acct-27", "acct-28"} {
+		if p, _ := f.AuthPriorityInMemory(id); p != 2 {
+			t.Fatalf("trusted plus %s should get fast priority, got %d", id, p)
+		}
+	}
+	if p, _ := f.AuthPriorityInMemory("acct-29"); p != 1 {
+		t.Fatalf("disabled plus account must not be promoted, got %d", p)
+	}
+	// Probation prefers plus accounts over never-sampled free ones (acct-20..24).
+	if !tr.probation["acct-25"] {
+		t.Fatalf("slow plus account should be first in line for probation, picks=%v", probationPicks(tr))
 	}
 }
 

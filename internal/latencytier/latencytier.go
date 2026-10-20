@@ -67,6 +67,11 @@ type Config struct {
 	MinEligiblePercent float64 `json:"min_eligible_percent"`
 	// PenaltyMs is the sample recorded for a failed request.
 	PenaltyMs int `json:"penalty_ms"`
+	// OverloadPenaltyMs is the sample recorded for an upstream "server overloaded" rejection.
+	// Overload hits every credential alike, so it only costs the retry it causes, not a full penalty.
+	OverloadPenaltyMs int `json:"overload_penalty_ms"`
+	// TrustPlus treats never-measured plus-plan credentials as fast until they are ranked.
+	TrustPlus bool `json:"trust_plus"`
 	// RecomputeSeconds is the tier recomputation cadence.
 	RecomputeSeconds int `json:"recompute_seconds"`
 	FastPriority     int `json:"fast_priority"`
@@ -82,13 +87,15 @@ func DefaultConfig() Config {
 		FastExitPercent:    0.30,
 		SlowEnterPercent:   0.40,
 		SlowExitPercent:    0.50,
-		HalfLifeSeconds:    600,
+		HalfLifeSeconds:    180,
 		MinSamples:         5,
 		InactiveMinutes:    30,
 		ProbationPercent:   0.20,
 		ProbationMin:       3,
 		MinEligiblePercent: 0.10,
 		PenaltyMs:          30000,
+		OverloadPenaltyMs:  3000,
+		TrustPlus:          true,
 		RecomputeSeconds:   60,
 		FastPriority:       2,
 		NormalPriority:     1,
@@ -131,8 +138,8 @@ func (c Config) Validate() error {
 	if c.MinEligiblePercent < 0 || c.MinEligiblePercent >= 1 {
 		return errors.New("min_eligible_percent must be between 0 and 1")
 	}
-	if c.HalfLifeSeconds <= 0 || c.MinSamples <= 0 || c.InactiveMinutes <= 0 || c.PenaltyMs <= 0 || c.RecomputeSeconds <= 0 || c.ProbationMin < 0 {
-		return errors.New("half_life_seconds, min_samples, inactive_minutes, penalty_ms, recompute_seconds must be positive and probation_min non-negative")
+	if c.HalfLifeSeconds <= 0 || c.MinSamples <= 0 || c.InactiveMinutes <= 0 || c.PenaltyMs <= 0 || c.RecomputeSeconds <= 0 || c.ProbationMin < 0 || c.OverloadPenaltyMs < 0 {
+		return errors.New("half_life_seconds, min_samples, inactive_minutes, penalty_ms, recompute_seconds must be positive and probation_min/overload_penalty_ms non-negative")
 	}
 	if !(c.FastPriority > c.NormalPriority && c.NormalPriority > c.SlowPriority) {
 		return errors.New("priorities must satisfy fast > normal > slow")
@@ -245,6 +252,8 @@ type AccountView struct {
 	Active bool `json:"active"`
 	// InFlight is the number of requests the credential is serving right now.
 	InFlight int `json:"in_flight"`
+	// Trusted marks a plus credential promoted on trust before it has enough samples.
+	Trusted bool `json:"trusted"`
 }
 
 // Snapshot is the management API payload.
@@ -292,6 +301,7 @@ type Tracker struct {
 	computedAt time.Time
 	path       string
 	persistErr string
+	trusted    map[string]bool
 	// gateOpen is the last recompute's verdict on whether priorities may be rewritten.
 	gateOpen    bool
 	gateReason  string
@@ -310,6 +320,7 @@ func New(auths AuthAccess, cfg Config, path string) *Tracker {
 		stats:     make(map[string]*accountStat),
 		tiers:     make(map[string]Tier),
 		probation: make(map[string]bool),
+		trusted:   make(map[string]bool),
 		ranks:     make(map[string]int),
 		eligible:  make(map[string]bool),
 		baseline:  make(map[string]int),
@@ -355,7 +366,7 @@ func (t *Tracker) HandleUsage(_ context.Context, rec usage.Record) {
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ms, failed, ok := sampleFromRecord(rec, t.cfg.PenaltyMs)
+	ms, failed, ok := sampleFromRecord(rec, t.cfg.PenaltyMs, t.cfg.OverloadPenaltyMs)
 	if !ok {
 		return
 	}
@@ -382,8 +393,11 @@ func isTrackedModel(model, alias string) bool {
 }
 
 // sampleFromRecord converts a usage record into (milliseconds, failed, usable).
-func sampleFromRecord(rec usage.Record, penaltyMs int) (float64, bool, bool) {
+func sampleFromRecord(rec usage.Record, penaltyMs, overloadPenaltyMs int) (float64, bool, bool) {
 	if rec.Failed {
+		if isOverloadFailure(rec.Fail) {
+			return float64(overloadPenaltyMs), true, true
+		}
 		return float64(penaltyMs), true, true
 	}
 	if rec.Stream && rec.Detail.OutputTokens == 0 && rec.Detail.ReasoningTokens == 0 && rec.Detail.TotalTokens == 0 {
@@ -397,6 +411,16 @@ func sampleFromRecord(rec usage.Record, penaltyMs int) (float64, bool, bool) {
 		return float64(rec.Latency.Milliseconds()), false, true
 	}
 	return 0, false, false
+}
+
+// isOverloadFailure recognises OpenAI's pool-wide "servers are currently overloaded" rejection,
+// which says nothing about the individual credential.
+func isOverloadFailure(f usage.Failure) bool {
+	if f.StatusCode != 502 && f.StatusCode != 503 && f.StatusCode != 529 {
+		return false
+	}
+	body := strings.ToLower(f.Body)
+	return strings.Contains(body, "server_is_overloaded") || strings.Contains(body, "currently overloaded")
 }
 
 type ranked struct {
@@ -481,9 +505,16 @@ func (t *Tracker) Recompute() {
 		}
 		newTiers[r.id] = tier
 	}
+	t.trusted = make(map[string]bool)
 	for id := range t.stats {
-		if _, ok := newTiers[id]; !ok {
-			newTiers[id] = TierNormal
+		if _, ok := newTiers[id]; ok {
+			continue
+		}
+		newTiers[id] = TierNormal
+		if t.cfg.TrustPlus && t.auths != nil && isPlusPlan(known[id]) && selectable(known[id], now) {
+			// Plus credentials are consistently fast: trust them until measured.
+			newTiers[id] = TierFast
+			t.trusted[id] = true
 		}
 	}
 
@@ -525,6 +556,11 @@ func (t *Tracker) Recompute() {
 		candidates = append(candidates, id)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		// Plus credentials first: they are the likeliest to turn out fast.
+		pi, pj := isPlusPlan(known[candidates[i]]), isPlusPlan(known[candidates[j]])
+		if pi != pj {
+			return pi
+		}
 		a, b := t.stats[candidates[i]].lastTouch(), t.stats[candidates[j]].lastTouch()
 		if a.Equal(b) {
 			return candidates[i] < candidates[j]
@@ -565,6 +601,14 @@ func (t *Tracker) Recompute() {
 	}
 	t.mu.Unlock()
 	t.persist()
+}
+
+func isPlusPlan(a *coreauth.Auth) bool {
+	if a == nil {
+		return false
+	}
+	plan := strings.ToLower(strings.TrimSpace(a.Attributes["plan_type"]))
+	return plan == "plus" || plan == "pro" || plan == "team"
 }
 
 // lastTouch is the later of the last sample and the last probation, used for rotation.
@@ -687,6 +731,7 @@ func (t *Tracker) Snapshot() Snapshot {
 			AuthID:         id,
 			Tier:           t.tiers[id],
 			Probation:      t.probation[id],
+			Trusted:        t.trusted[id],
 			Eligible:       t.eligible[id],
 			Rank:           t.ranks[id],
 			EWMAMs:         math.Round(st.EWMA),
