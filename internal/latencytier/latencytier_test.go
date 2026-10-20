@@ -340,6 +340,24 @@ func TestOverloadCountsAsSmallPenaltyNotFullFailure(t *testing.T) {
 	}
 }
 
+func TestHitsAreAttributedToTheTierHeldAtRecordTime(t *testing.T) {
+	f := newFakeAuths(20)
+	tr, now := newTestTracker(f, true)
+	for i := 0; i < 20; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*500)
+	}
+	tr.Recompute()
+	*now = now.Add(time.Minute)
+	feed(tr, "acct-00", 3, 1000) // fast
+	feed(tr, "acct-19", 2, 9000) // slow
+	*now = now.Add(time.Minute)
+	tr.Recompute()
+	snap := tr.Snapshot()
+	if snap.Hits10m["fast"] != 3 || snap.Hits10m["slow"] != 2 {
+		t.Fatalf("hits_10m = %v, want fast=3 slow=2", snap.Hits10m)
+	}
+}
+
 func TestPriorityIsReappliedWhenRuntimeValueDrifts(t *testing.T) {
 	f := newFakeAuths(20)
 	tr, _ := newTestTracker(f, true)

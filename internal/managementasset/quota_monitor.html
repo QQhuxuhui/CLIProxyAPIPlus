@@ -2051,7 +2051,9 @@
       } else if (!snap.gate_open) {
         text = '已开启，等待数据：已测出 ' + (snap.eligible_percent || 0) + '% 的号的快慢，达到 ' + Math.round((cfg.min_eligible_percent || 0) * 100) + '% 后自动开始调度。'; cls = 'bg-amber-50 text-amber-800';
       } else {
-        text = '运行中：' + snap.fast + ' 个快号优先承接流量，' + snap.slow + ' 个慢号已让位，' + snap.probation + ' 个号在试用。'; cls = 'bg-emerald-50 text-emerald-800';
+        var h = snap.hits_10m || {}; var hTot = 0; Object.keys(h).forEach(function (k) { hTot += h[k]; });
+        var onFast = hTot ? Math.round(100 * ((h.fast || 0) + (h.trusted || 0)) / hTot) : 0;
+        text = '运行中：' + snap.fast + ' 个快号优先承接流量，' + snap.slow + ' 个慢号已让位，' + snap.probation + ' 个号在试用。近 10 分钟 ' + hTot + ' 个请求中 ' + onFast + '% 落在快号、' + (hTot ? Math.round(100 * (h.probation || 0) / hTot) : 0) + '% 在试用号。'; cls = 'bg-emerald-50 text-emerald-800';
       }
       if (snap.persistence) { text += ' 快照写入失败：' + snap.persistence; cls = 'bg-red-50 text-red-700'; }
       status.textContent = text + '（' + ltFmtAgo(snap.computed_at) + '更新）';

@@ -298,6 +298,9 @@ type Snapshot struct {
 	EligiblePercent float64 `json:"eligible_percent"`
 	MinEligible     int     `json:"min_eligible"`
 	InFlightTotal   int     `json:"in_flight_total"`
+	// Hits10m counts usage records in the last 10 minutes by the tier the credential held at that
+	// moment (fast, trusted, probation, normal, slow): the ground truth for where traffic lands.
+	Hits10m map[string]int `json:"hits_10m"`
 }
 
 type persisted struct {
@@ -325,6 +328,8 @@ type Tracker struct {
 	path       string
 	persistErr string
 	trusted    map[string]bool
+	// hits records, per minute, how many usage records landed on each tier.
+	hits map[int64]map[string]int
 	// gateOpen is the last recompute's verdict on whether priorities may be rewritten.
 	gateOpen    bool
 	gateReason  string
@@ -344,6 +349,7 @@ func New(auths AuthAccess, cfg Config, path string) *Tracker {
 		tiers:     make(map[string]Tier),
 		probation: make(map[string]bool),
 		trusted:   make(map[string]bool),
+		hits:      make(map[int64]map[string]int),
 		ranks:     make(map[string]int),
 		eligible:  make(map[string]bool),
 		baseline:  make(map[string]int),
@@ -399,6 +405,7 @@ func (t *Tracker) HandleUsage(_ context.Context, rec usage.Record) {
 		t.stats[rec.AuthID] = st
 	}
 	st.observeWith(now, ms, failed, hasLatency, time.Duration(t.cfg.HalfLifeSeconds)*time.Second)
+	t.countHitLocked(now, rec.AuthID)
 }
 
 func isCodexOAuth(provider, authType string) bool {
@@ -612,6 +619,16 @@ func (t *Tracker) Recompute() {
 	t.tiers = newTiers
 	t.probation = newProbation
 	t.computedAt = now
+	t.pruneHitsLocked(now)
+	lastMin := t.hitsWindowLocked(now, 1)
+	p10, p50 := 0.0, 0.0
+	if len(eligible) > 0 {
+		p10 = eligible[int(float64(len(eligible))*0.1)].ewma / 1000
+		p50 = eligible[len(eligible)/2].ewma / 1000
+	}
+	log.Infof("latency-tier: recompute tracked=%d eligible=%d gate=%v fast=%d trusted=%d probation=%d slow=%d ewma_p10=%.1fs p50=%.1fs hits_last_min fast=%d trusted=%d probation=%d normal=%d slow=%d",
+		len(t.stats), len(eligible), t.gateOpen, fastCount-len(t.trusted), len(t.trusted), len(newProbation), countTier(newTiers, TierSlow), p10, p50,
+		lastMin["fast"], lastMin["trusted"], lastMin["probation"], lastMin["normal"], lastMin["slow"])
 
 	if t.cfg.Enabled && t.auths != nil {
 		if t.gateOpen {
@@ -629,6 +646,65 @@ func (t *Tracker) Recompute() {
 	}
 	t.mu.Unlock()
 	t.persist()
+}
+
+func countTier(tiers map[string]Tier, want Tier) int {
+	n := 0
+	for _, tier := range tiers {
+		if tier == want {
+			n++
+		}
+	}
+	return n
+}
+
+// tierLabelLocked names the bucket a credential currently belongs to for hit accounting.
+func (t *Tracker) tierLabelLocked(id string) string {
+	switch {
+	case t.probation[id]:
+		return "probation"
+	case t.trusted[id]:
+		return "trusted"
+	case t.tiers[id] == TierFast:
+		return "fast"
+	case t.tiers[id] == TierSlow:
+		return "slow"
+	default:
+		return "normal"
+	}
+}
+
+func (t *Tracker) countHitLocked(now time.Time, id string) {
+	minute := now.Unix() / 60
+	bucket := t.hits[minute]
+	if bucket == nil {
+		bucket = make(map[string]int)
+		t.hits[minute] = bucket
+	}
+	bucket[t.tierLabelLocked(id)]++
+}
+
+func (t *Tracker) pruneHitsLocked(now time.Time) {
+	cut := now.Unix()/60 - recentMinutesWindow - 1
+	for minute := range t.hits {
+		if minute < cut {
+			delete(t.hits, minute)
+		}
+	}
+}
+
+// hitsWindowLocked sums the per-tier hits over the last n whole minutes (excluding the current one).
+func (t *Tracker) hitsWindowLocked(now time.Time, n int64) map[string]int {
+	out := make(map[string]int)
+	current := now.Unix() / 60
+	for minute, bucket := range t.hits {
+		if minute < current && minute >= current-n {
+			for label, c := range bucket {
+				out[label] += c
+			}
+		}
+	}
+	return out
 }
 
 func isPlusPlan(a *coreauth.Auth) bool {
@@ -754,7 +830,7 @@ func (t *Tracker) Snapshot() Snapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	snap := Snapshot{Config: t.cfg, ComputedAt: t.computedAt, Tracked: len(t.stats), Applied: len(t.applied), Persistence: t.persistErr,
-		GateOpen: t.gateOpen, GateReason: t.gateReason, MinEligible: t.minEligible}
+		GateOpen: t.gateOpen, GateReason: t.gateReason, MinEligible: t.minEligible, Hits10m: t.hitsWindowLocked(now, recentMinutesWindow)}
 	inactive := time.Duration(t.cfg.InactiveMinutes) * time.Minute
 	snap.Accounts = make([]AccountView, 0, len(t.stats))
 	for id, st := range t.stats {
