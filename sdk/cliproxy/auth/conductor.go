@@ -145,7 +145,8 @@ type Manager struct {
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
 	hook                      Hook
-	// inFlight counts executions in progress per credential (observability only).
+	// inFlight counts executions in progress per credential; it feeds the management page and
+	// the optional per-provider in-flight cap (SetProviderInFlightLimit).
 	inFlight         inFlightCounter
 	resultPolicy     atomic.Pointer[resultPolicyHolder]
 	mu               sync.RWMutex
@@ -235,6 +236,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
 	}
 	manager.scheduler = newAuthScheduler(selector)
+	manager.scheduler.inFlight = &manager.inFlight
 	return manager
 }
 

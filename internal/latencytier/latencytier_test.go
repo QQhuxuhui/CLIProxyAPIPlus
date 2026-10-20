@@ -71,6 +71,8 @@ func (f *fakeAuths) AuthPriorityInMemory(id string) (int, bool) {
 
 func (f *fakeAuths) InFlight(string) int { return 0 }
 
+func (f *fakeAuths) InFlightLimit(string) int { return 0 }
+
 func (f *fakeAuths) InvalidateSessionAffinity(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

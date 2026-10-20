@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -48,6 +49,80 @@ func (c *inFlightCounter) snapshot() map[string]int {
 	return out
 }
 
+var (
+	providerInFlightLimitMu sync.RWMutex
+	providerInFlightLimits  map[string]int
+)
+
+// SetProviderInFlightLimit configures how many requests one credential of a provider may serve
+// at the same time (keyed by lower-cased provider name). 0 or a missing provider means unlimited.
+func SetProviderInFlightLimit(limits map[string]int) {
+	normalized := make(map[string]int, len(limits))
+	for provider, limit := range limits {
+		key := strings.ToLower(strings.TrimSpace(provider))
+		if key == "" || limit <= 0 {
+			continue
+		}
+		normalized[key] = limit
+	}
+	providerInFlightLimitMu.Lock()
+	providerInFlightLimits = normalized
+	providerInFlightLimitMu.Unlock()
+}
+
+// inFlightLimitsConfigured reports whether any provider has an in-flight cap.
+func inFlightLimitsConfigured() bool {
+	providerInFlightLimitMu.RLock()
+	defer providerInFlightLimitMu.RUnlock()
+	return len(providerInFlightLimits) > 0
+}
+
+// providerInFlightLimitFor returns the in-flight cap for the provider, 0 when unlimited.
+func providerInFlightLimitFor(provider string) int {
+	providerInFlightLimitMu.RLock()
+	defer providerInFlightLimitMu.RUnlock()
+	if len(providerInFlightLimits) == 0 {
+		return 0
+	}
+	return providerInFlightLimits[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+// saturated reports whether the credential has reached the in-flight cap of its provider.
+func (c *inFlightCounter) saturated(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	limit := providerInFlightLimitFor(auth.Provider)
+	if limit <= 0 {
+		return false
+	}
+	return c.get(auth.ID) >= limit
+}
+
+// dropSaturatedAuths removes credentials at their in-flight cap from the priority buckets and
+// reports how many were dropped. The input map is left untouched.
+func (c *inFlightCounter) dropSaturatedAuths(buckets map[int][]*Auth) (map[int][]*Auth, int) {
+	if !inFlightLimitsConfigured() {
+		return buckets, 0
+	}
+	dropped := 0
+	out := make(map[int][]*Auth, len(buckets))
+	for priority, bucket := range buckets {
+		kept := make([]*Auth, 0, len(bucket))
+		for _, auth := range bucket {
+			if c.saturated(auth) {
+				dropped++
+				continue
+			}
+			kept = append(kept, auth)
+		}
+		if len(kept) > 0 {
+			out[priority] = kept
+		}
+	}
+	return out, dropped
+}
+
 // beginInFlight marks one execution in progress for the credential and returns a release
 // function that is safe to call more than once.
 func (m *Manager) beginInFlight(id string) func() {
@@ -65,6 +140,20 @@ func (m *Manager) InFlight(id string) int {
 		return 0
 	}
 	return m.inFlight.get(id)
+}
+
+// InFlightLimit returns the in-flight cap that applies to the credential, 0 when unlimited.
+func (m *Manager) InFlightLimit(id string) int {
+	if m == nil || id == "" {
+		return 0
+	}
+	m.mu.RLock()
+	auth := m.auths[id]
+	m.mu.RUnlock()
+	if auth == nil {
+		return 0
+	}
+	return providerInFlightLimitFor(auth.Provider)
 }
 
 // InFlightSnapshot returns a copy of the per-credential in-flight counts.

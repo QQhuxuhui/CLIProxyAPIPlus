@@ -156,6 +156,7 @@ type AuthAccess interface {
 	AuthPriorityInMemory(id string) (int, bool)
 	InvalidateSessionAffinity(authID string)
 	InFlight(id string) int
+	InFlightLimit(id string) int
 }
 
 type accountStat struct {
@@ -275,6 +276,8 @@ type AccountView struct {
 	Active bool `json:"active"`
 	// InFlight is the number of requests the credential is serving right now.
 	InFlight int `json:"in_flight"`
+	// InFlightLimit is the per-credential in-flight cap of the provider, 0 when unlimited.
+	InFlightLimit int `json:"in_flight_limit"`
 	// Trusted marks a plus credential promoted on trust before it has enough samples.
 	Trusted bool `json:"trusted"`
 }
@@ -298,6 +301,10 @@ type Snapshot struct {
 	EligiblePercent float64 `json:"eligible_percent"`
 	MinEligible     int     `json:"min_eligible"`
 	InFlightTotal   int     `json:"in_flight_total"`
+	// InFlightLimit is the cap applied to tracked credentials (0 when none is configured);
+	// Saturated counts credentials currently at that cap, i.e. stepping aside from selection.
+	InFlightLimit int `json:"in_flight_limit"`
+	Saturated     int `json:"saturated"`
 	// Hits10m counts usage records in the last 10 minutes by the tier the credential held at that
 	// moment (fast, trusted, probation, normal, slow): the ground truth for where traffic lands.
 	Hits10m map[string]int `json:"hits_10m"`
@@ -643,9 +650,10 @@ func (t *Tracker) Recompute() {
 		p10 = eligible[int(float64(len(eligible))*0.1)].ewma / 1000
 		p50 = eligible[len(eligible)/2].ewma / 1000
 	}
-	log.Infof("latency-tier: recompute tracked=%d eligible=%d gate=%v fast=%d trusted=%d probation=%d slow=%d ewma_p10=%.1fs p50=%.1fs hits_last_min fast=%d trusted=%d probation=%d normal=%d slow=%d",
+	inflightTotal, inflightMax, saturated, saturatedFast := t.inFlightSummaryLocked(known, newTiers)
+	log.Infof("latency-tier: recompute tracked=%d eligible=%d gate=%v fast=%d trusted=%d probation=%d slow=%d ewma_p10=%.1fs p50=%.1fs hits_last_min fast=%d trusted=%d probation=%d normal=%d slow=%d inflight total=%d max=%d saturated=%d saturated_fast=%d",
 		len(t.stats), len(eligible), t.gateOpen, fastCount-len(t.trusted), len(t.trusted), len(newProbation), countTier(newTiers, TierSlow), p10, p50,
-		lastMin["fast"], lastMin["trusted"], lastMin["probation"], lastMin["normal"], lastMin["slow"])
+		lastMin["fast"], lastMin["trusted"], lastMin["probation"], lastMin["normal"], lastMin["slow"], inflightTotal, inflightMax, saturated, saturatedFast)
 
 	if t.cfg.Enabled && t.auths != nil {
 		if t.gateOpen {
@@ -878,7 +886,14 @@ func (t *Tracker) Snapshot() Snapshot {
 				view.Priority = p
 			}
 			view.InFlight = t.auths.InFlight(id)
+			view.InFlightLimit = t.auths.InFlightLimit(id)
 			snap.InFlightTotal += view.InFlight
+			if view.InFlightLimit > 0 {
+				snap.InFlightLimit = view.InFlightLimit
+				if view.InFlight >= view.InFlightLimit {
+					snap.Saturated++
+				}
+			}
 		}
 		switch view.Tier {
 		case TierFast:
@@ -1043,4 +1058,26 @@ func Install(ctx context.Context, auths AuthAccess, enabledDefault bool, path st
 	go tracker.Run(ctx)
 	log.Infof("latency-tier: installed (enabled=%v, snapshot=%s)", tracker.Config().Enabled, path)
 	return tracker
+}
+
+// inFlightSummaryLocked reports total and max in-flight requests across the known credentials,
+// plus how many credentials (overall and in the fast tier) sit at their in-flight cap.
+func (t *Tracker) inFlightSummaryLocked(known map[string]*coreauth.Auth, tiers map[string]Tier) (total, maxInFlight, saturated, saturatedFast int) {
+	if t.auths == nil {
+		return 0, 0, 0, 0
+	}
+	for id := range known {
+		n := t.auths.InFlight(id)
+		total += n
+		if n > maxInFlight {
+			maxInFlight = n
+		}
+		if limit := t.auths.InFlightLimit(id); limit > 0 && n >= limit {
+			saturated++
+			if tiers[id] == TierFast {
+				saturatedFast++
+			}
+		}
+	}
+	return total, maxInFlight, saturated, saturatedFast
 }

@@ -126,6 +126,13 @@ type Config struct {
 	// mostly overloaded can keep its fastest credentials selectable instead of benching them for a minute.
 	ProviderTransientErrorCooldownSeconds map[string]int `yaml:"provider-transient-error-cooldown-seconds" json:"provider-transient-error-cooldown-seconds"`
 
+	// ProviderInFlightLimit caps how many requests one credential of the provider may serve at
+	// once (keyed by provider name, e.g. "codex"). A credential at its cap is skipped during
+	// selection, so when the whole top priority tier is busy, traffic spills to the next tier
+	// instead of queueing on a busy credential. 0 or missing means unlimited. When every
+	// candidate is at its cap the cap is ignored for that pick rather than failing the request.
+	ProviderInFlightLimit map[string]int `yaml:"provider-in-flight-limit" json:"provider-in-flight-limit"`
+
 	// QuotaCooldownBaseSeconds controls the starting cooldown for quota (429)
 	// errors that carry no upstream retry hint. The cooldown doubles per repeated
 	// failure up to the 30 minute cap. 0 keeps the legacy 1 second base.
