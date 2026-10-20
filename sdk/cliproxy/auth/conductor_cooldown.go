@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -39,6 +40,63 @@ func SetTransientErrorCooldownSeconds(seconds int) {
 }
 
 var quotaCooldownBaseSeconds atomic.Int64
+
+var (
+	providerTransientCooldownMu      sync.RWMutex
+	providerTransientCooldownSeconds map[string]int
+)
+
+// SetProviderTransientErrorCooldownSeconds configures per-provider transient error cooldowns
+// that take precedence over the global setting. Negative values disable the cooldown for the
+// provider; a missing provider falls back to the global setting.
+func SetProviderTransientErrorCooldownSeconds(overrides map[string]int) {
+	normalized := make(map[string]int, len(overrides))
+	for provider, seconds := range overrides {
+		key := strings.ToLower(strings.TrimSpace(provider))
+		if key == "" {
+			continue
+		}
+		normalized[key] = seconds
+	}
+	providerTransientCooldownMu.Lock()
+	providerTransientCooldownSeconds = normalized
+	providerTransientCooldownMu.Unlock()
+}
+
+func providerTransientCooldownFor(auth *Auth) (int, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	providerTransientCooldownMu.RLock()
+	defer providerTransientCooldownMu.RUnlock()
+	if len(providerTransientCooldownSeconds) == 0 {
+		return 0, false
+	}
+	seconds, ok := providerTransientCooldownSeconds[strings.ToLower(strings.TrimSpace(auth.Provider))]
+	return seconds, ok
+}
+
+// transientRetryAfterForAuth is recoverableFailureRetryAfterWithHint with the per-provider override
+// applied. An upstream retry hint still wins when present.
+func transientRetryAfterForAuth(auth *Auth, now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
+	if disableCooling {
+		return time.Time{}
+	}
+	seconds, ok := providerTransientCooldownFor(auth)
+	if !ok {
+		return recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+	}
+	if seconds < 0 {
+		return time.Time{}
+	}
+	if retryAfter != nil && *retryAfter > 0 {
+		return now.Add(*retryAfter)
+	}
+	if seconds == 0 {
+		return recoverableFailureRetryAfterWithHint(now, nil, disableCooling)
+	}
+	return now.Add(time.Duration(seconds) * time.Second)
+}
 
 // SetQuotaCooldownBaseSeconds configures the starting cooldown for quota (429)
 // errors that carry no upstream retry hint. The cooldown doubles per repeated
@@ -1019,7 +1077,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								auth.NextRetryAfter = authNext
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
-							state.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, result.RetryAfter, disableCooling)
+							state.NextRetryAfter = transientRetryAfterForAuth(auth, now, result.RetryAfter, disableCooling)
 							state.Unavailable = !state.NextRetryAfter.IsZero()
 						case 0:
 							// Status-less transport failures are benched like any other
@@ -2361,7 +2419,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = next
 		case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
 			auth.StatusMessage = "transient upstream error"
-			auth.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+			auth.NextRetryAfter = transientRetryAfterForAuth(auth, now, retryAfter, disableCooling)
 			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		default:
 			if auth.StatusMessage == "" {

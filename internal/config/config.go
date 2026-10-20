@@ -120,6 +120,12 @@ type Config struct {
 	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
 	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
 
+	// ProviderTransientErrorCooldownSeconds overrides TransientErrorCooldownSeconds per provider
+	// (keyed by provider name, e.g. "codex"). Negative values disable the cooldown for that provider.
+	// Pool-wide upstream overload says nothing about an individual credential, so a pool that is
+	// mostly overloaded can keep its fastest credentials selectable instead of benching them for a minute.
+	ProviderTransientErrorCooldownSeconds map[string]int `yaml:"provider-transient-error-cooldown-seconds" json:"provider-transient-error-cooldown-seconds"`
+
 	// QuotaCooldownBaseSeconds controls the starting cooldown for quota (429)
 	// errors that carry no upstream retry hint. The cooldown doubles per repeated
 	// failure up to the 30 minute cap. 0 keeps the legacy 1 second base.
