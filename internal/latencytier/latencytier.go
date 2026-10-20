@@ -93,7 +93,7 @@ func DefaultConfig() Config {
 		MinSamples:         5,
 		InactiveMinutes:    30,
 		ProbationPercent:   0.05,
-		ProbationMin:       3,
+		ProbationMin:       10,
 		MinEligiblePercent: 0.10,
 		PenaltyMs:          30000,
 		OverloadPenaltyMs:  0,
@@ -499,12 +499,14 @@ func (t *Tracker) Recompute() {
 	active := func(st *accountStat) bool {
 		return !st.LastSample.IsZero() && now.Sub(st.LastSample) <= inactive
 	}
-	// Eligibility only needs enough samples. Under strict priority the non-fast tiers get
-	// little traffic, so demanding recent activity would empty the ranking within minutes.
+	// Only recently measured credentials are ranked. A credential measured fast an hour ago
+	// would otherwise hold a top rank forever while being inactive (and therefore not fast),
+	// squeezing the live fast tier down to a handful of accounts. Stale credentials are
+	// re-measured through probation, which prefers the ones that used to be fast.
 	eligible := make([]ranked, 0, len(t.stats))
 	t.eligible = make(map[string]bool, len(t.stats))
 	for id, st := range t.stats {
-		if st.Samples >= int64(t.cfg.MinSamples) {
+		if st.Samples >= int64(t.cfg.MinSamples) && active(st) {
 			eligible = append(eligible, ranked{id: id, ewma: st.EWMA})
 			t.eligible[id] = true
 		}
@@ -533,10 +535,6 @@ func (t *Tracker) Recompute() {
 			tier = TierSlow
 		case frac >= 1-t.cfg.SlowEnterPercent:
 			tier = TierSlow
-		}
-		if tier == TierFast && !active(t.stats[r.id]) {
-			// A credential nobody measured recently has to re-earn the fast tier.
-			tier = TierNormal
 		}
 		newTiers[r.id] = tier
 	}
@@ -590,11 +588,30 @@ func (t *Tracker) Recompute() {
 		}
 		candidates = append(candidates, id)
 	}
+	// Probation order: plus credentials, then stale credentials that measured fast (most likely
+	// to be fast again, fastest first), then everything else by how long ago it was last touched.
+	fastCutoff := math.Inf(1)
+	if len(eligible) > 0 {
+		fastCutoff = eligible[int(math.Ceil(float64(len(eligible))*t.cfg.FastEnterPercent))-1].ewma * 1.5
+	}
+	probeClass := func(id string) int {
+		st := t.stats[id]
+		if st.Samples >= int64(t.cfg.MinSamples) && !active(st) && st.EWMA <= fastCutoff {
+			return 0
+		}
+		return 1
+	}
 	sort.Slice(candidates, func(i, j int) bool {
-		// Plus credentials first: they are the likeliest to turn out fast.
 		pi, pj := isPlusPlan(known[candidates[i]]), isPlusPlan(known[candidates[j]])
 		if pi != pj {
 			return pi
+		}
+		ci, cj := probeClass(candidates[i]), probeClass(candidates[j])
+		if ci != cj {
+			return ci < cj
+		}
+		if ci == 0 && t.stats[candidates[i]].EWMA != t.stats[candidates[j]].EWMA {
+			return t.stats[candidates[i]].EWMA < t.stats[candidates[j]].EWMA
 		}
 		a, b := t.stats[candidates[i]].lastTouch(), t.stats[candidates[j]].lastTouch()
 		if a.Equal(b) {

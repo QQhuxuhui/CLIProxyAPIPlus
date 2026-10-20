@@ -101,6 +101,7 @@ func feed(t *Tracker, id string, n int, ttftMs int) {
 func newTestTracker(f *fakeAuths, enabled bool) (*Tracker, *time.Time) {
 	cfg := DefaultConfig()
 	cfg.Enabled = enabled
+	cfg.ProbationMin = 3
 	tr := New(f, cfg, "")
 	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	tr.now = func() time.Time { return now }
@@ -204,14 +205,18 @@ func TestFailuresCountAsPenaltyAndInactiveDropsToNormal(t *testing.T) {
 		feed(tr, fmt.Sprintf("acct-%02d", i), 1, 2000)
 	}
 	tr.Recompute()
-	if tr.tiers["acct-00"] == TierFast || !tr.eligible["acct-00"] {
-		t.Fatalf("stale account must not hold the fast tier (tier=%s eligible=%v)", tr.tiers["acct-00"], tr.eligible["acct-00"])
+	if tr.tiers["acct-00"] == TierFast || tr.eligible["acct-00"] {
+		t.Fatalf("stale account must leave the ranking (tier=%s eligible=%v)", tr.tiers["acct-00"], tr.eligible["acct-00"])
 	}
 	if tr.tiers["acct-01"] != TierFast {
 		t.Fatalf("recently measured fast account should stay fast, got %s", tr.tiers["acct-01"])
 	}
-	if tr.tiers["acct-05"] != TierSlow || !tr.eligible["acct-05"] {
-		t.Fatalf("stale slow account keeps its rank until re-measured (tier=%s eligible=%v)", tr.tiers["acct-05"], tr.eligible["acct-05"])
+	if tr.tiers["acct-05"] != TierNormal || tr.eligible["acct-05"] {
+		t.Fatalf("stale slow account drops to normal and out of the ranking (tier=%s eligible=%v)", tr.tiers["acct-05"], tr.eligible["acct-05"])
+	}
+	// Probation re-measures the stale fast account before the never-sampled ones.
+	if !tr.probation["acct-00"] {
+		t.Fatalf("stale fast account should be first in line for probation, picks=%v", probationPicks(tr))
 	}
 }
 
