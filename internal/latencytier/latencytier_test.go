@@ -187,10 +187,23 @@ func TestFailuresCountAsPenaltyAndInactiveDropsToNormal(t *testing.T) {
 			t.Fatalf("acct-05 recent_failures=%d ewma=%v", v.RecentFailures, v.EWMAMs)
 		}
 	}
+	if tr.tiers["acct-00"] != TierFast {
+		t.Fatalf("acct-00 should start in the fast tier, got %s", tr.tiers["acct-00"])
+	}
 	*now = now.Add(31 * time.Minute)
+	// Everybody but acct-00 (fast) and acct-05 (slow) is measured again.
+	for i := 1; i < 5; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 1, 2000)
+	}
 	tr.Recompute()
-	if tr.tiers["acct-05"] != TierNormal || tr.eligible["acct-05"] {
-		t.Fatalf("inactive account should fall back to normal and be ineligible")
+	if tr.tiers["acct-00"] == TierFast || !tr.eligible["acct-00"] {
+		t.Fatalf("stale account must not hold the fast tier (tier=%s eligible=%v)", tr.tiers["acct-00"], tr.eligible["acct-00"])
+	}
+	if tr.tiers["acct-01"] != TierFast {
+		t.Fatalf("recently measured fast account should stay fast, got %s", tr.tiers["acct-01"])
+	}
+	if tr.tiers["acct-05"] != TierSlow || !tr.eligible["acct-05"] {
+		t.Fatalf("stale slow account keeps its rank until re-measured (tier=%s eligible=%v)", tr.tiers["acct-05"], tr.eligible["acct-05"])
 	}
 }
 
@@ -225,15 +238,7 @@ func TestDisableRestoresBaselinePriorities(t *testing.T) {
 	}
 }
 
-func TestProbationPrefersLeastRecentlySampled(t *testing.T) {
-	f := newFakeAuths(12)
-	tr, now := newTestTracker(f, true)
-	for i := 0; i < 8; i++ {
-		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*500)
-	}
-	// acct-08..11 never sampled: they must be the probation picks (3 of them).
-	*now = now.Add(time.Minute)
-	tr.Recompute()
+func probationPicks(tr *Tracker) []string {
 	picked := make([]string, 0)
 	for id, ok := range tr.probation {
 		if ok {
@@ -241,16 +246,100 @@ func TestProbationPrefersLeastRecentlySampled(t *testing.T) {
 		}
 	}
 	sort.Strings(picked)
-	if len(picked) != 3 {
-		t.Fatalf("probation picks = %v", picked)
+	return picked
+}
+
+func TestProbationPrefersLeastRecentlySampledAndRotates(t *testing.T) {
+	f := newFakeAuths(13)
+	// acct-11 is disabled and acct-12 carries an expired token: never worth a probation slot.
+	f.auths[11].Disabled = true
+	f.auths[12].Metadata["expired"] = "2026-09-28T05:57:16.000Z"
+	tr, now := newTestTracker(f, true)
+	for i := 0; i < 8; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*500)
 	}
-	for _, id := range picked {
-		if id < "acct-08" {
-			t.Fatalf("probation should prefer never-sampled accounts, picked %v", picked)
-		}
+	// acct-08..10 never sampled and selectable: they must be the first probation picks.
+	*now = now.Add(time.Minute)
+	tr.Recompute()
+	first := probationPicks(tr)
+	if fmt.Sprint(first) != "[acct-08 acct-09 acct-10]" {
+		t.Fatalf("first probation picks = %v", first)
+	}
+	for _, id := range first {
 		if p, _ := f.AuthPriorityInMemory(id); p != 2 {
 			t.Fatalf("probation account %s should get fast priority, got %d", id, p)
 		}
+	}
+	// Next cycle: the probed accounts produced nothing, yet they rotate out and the
+	// least recently sampled non-fast accounts take the slots.
+	*now = now.Add(time.Minute)
+	tr.Recompute()
+	second := probationPicks(tr)
+	if len(second) != 3 {
+		t.Fatalf("second probation picks = %v", second)
+	}
+	for _, id := range second {
+		for _, prev := range first {
+			if id == prev {
+				t.Fatalf("probation did not rotate: %v then %v", first, second)
+			}
+		}
+		if id == "acct-11" || id == "acct-12" {
+			t.Fatalf("unselectable account picked for probation: %v", second)
+		}
+		if tr.tiers[id] == TierFast {
+			t.Fatalf("fast account %s must not take a probation slot", id)
+		}
+	}
+	for _, id := range first {
+		if p, _ := f.AuthPriorityInMemory(id); p != 1 {
+			t.Fatalf("rotated-out probation account %s should return to normal priority, got %d", id, p)
+		}
+	}
+}
+
+func TestGateHoldsPrioritiesUntilEnoughOfPoolIsRankable(t *testing.T) {
+	f := newFakeAuths(100)
+	tr, _ := newTestTracker(f, true)
+	// Only 5 of 100 measured: "top 20%" would be a single account absorbing all traffic.
+	for i := 0; i < 5; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*1000)
+	}
+	tr.Recompute()
+	snap := tr.Snapshot()
+	if snap.GateOpen || snap.Applied != 0 || snap.GateReason == "" || snap.MinEligible != 10 {
+		t.Fatalf("gate should be closed: open=%v applied=%d reason=%q min=%d", snap.GateOpen, snap.Applied, snap.GateReason, snap.MinEligible)
+	}
+	if f.sets != 0 {
+		t.Fatalf("no priority may be rewritten while the gate is closed, got %d writes", f.sets)
+	}
+	if snap.Fast != 1 || snap.Eligible != 5 || snap.EligiblePercent != 5 {
+		t.Fatalf("ranking should still be computed for display: fast=%d eligible=%d pct=%v", snap.Fast, snap.Eligible, snap.EligiblePercent)
+	}
+	for i := 5; i < 10; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*1000)
+	}
+	tr.Recompute()
+	snap = tr.Snapshot()
+	if !snap.GateOpen || snap.Applied == 0 {
+		t.Fatalf("gate should open at 10%%: open=%v applied=%d", snap.GateOpen, snap.Applied)
+	}
+	if p, _ := f.AuthPriorityInMemory("acct-00"); p != 2 {
+		t.Fatalf("fastest account should be promoted once the gate opens, got %d", p)
+	}
+	// The pool grows (new credentials appear): the gate closes again and priorities go back.
+	for i := 100; i < 200; i++ {
+		id := fmt.Sprintf("acct-%03d", i)
+		f.auths = append(f.auths, &coreauth.Auth{ID: id, Provider: "codex", Attributes: map[string]string{"priority": "1"}, Metadata: map[string]any{"access_token": "tok"}})
+		f.prio[id] = 1
+	}
+	tr.Recompute()
+	snap = tr.Snapshot()
+	if snap.GateOpen || snap.Applied != 0 {
+		t.Fatalf("gate should close when the rankable share drops: open=%v applied=%d", snap.GateOpen, snap.Applied)
+	}
+	if p, _ := f.AuthPriorityInMemory("acct-00"); p != 1 {
+		t.Fatalf("baseline priority should be restored when the gate closes, got %d", p)
 	}
 }
 

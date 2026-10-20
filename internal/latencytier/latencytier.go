@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -61,6 +62,9 @@ type Config struct {
 	ProbationPercent float64 `json:"probation_percent"`
 	// ProbationMin is the minimum number of probation slots per cycle.
 	ProbationMin int `json:"probation_min"`
+	// MinEligiblePercent gates priority rewrites: they only happen while at least this fraction of
+	// the tracked pool is rankable, so a handful of measured credentials never absorbs all traffic.
+	MinEligiblePercent float64 `json:"min_eligible_percent"`
 	// PenaltyMs is the sample recorded for a failed request.
 	PenaltyMs int `json:"penalty_ms"`
 	// RecomputeSeconds is the tier recomputation cadence.
@@ -73,21 +77,22 @@ type Config struct {
 // DefaultConfig returns the parameters agreed for the first rollout.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:          false,
-		FastEnterPercent: 0.20,
-		FastExitPercent:  0.30,
-		SlowEnterPercent: 0.40,
-		SlowExitPercent:  0.50,
-		HalfLifeSeconds:  600,
-		MinSamples:       5,
-		InactiveMinutes:  30,
-		ProbationPercent: 0.05,
-		ProbationMin:     3,
-		PenaltyMs:        30000,
-		RecomputeSeconds: 60,
-		FastPriority:     2,
-		NormalPriority:   1,
-		SlowPriority:     0,
+		Enabled:            false,
+		FastEnterPercent:   0.20,
+		FastExitPercent:    0.30,
+		SlowEnterPercent:   0.40,
+		SlowExitPercent:    0.50,
+		HalfLifeSeconds:    600,
+		MinSamples:         5,
+		InactiveMinutes:    30,
+		ProbationPercent:   0.20,
+		ProbationMin:       3,
+		MinEligiblePercent: 0.10,
+		PenaltyMs:          30000,
+		RecomputeSeconds:   60,
+		FastPriority:       2,
+		NormalPriority:     1,
+		SlowPriority:       0,
 	}
 }
 
@@ -123,6 +128,9 @@ func (c Config) Validate() error {
 	if c.ProbationPercent < 0 || c.ProbationPercent >= 1 {
 		return errors.New("probation_percent must be between 0 and 1")
 	}
+	if c.MinEligiblePercent < 0 || c.MinEligiblePercent >= 1 {
+		return errors.New("min_eligible_percent must be between 0 and 1")
+	}
 	if c.HalfLifeSeconds <= 0 || c.MinSamples <= 0 || c.InactiveMinutes <= 0 || c.PenaltyMs <= 0 || c.RecomputeSeconds <= 0 || c.ProbationMin < 0 {
 		return errors.New("half_life_seconds, min_samples, inactive_minutes, penalty_ms, recompute_seconds must be positive and probation_min non-negative")
 	}
@@ -148,6 +156,8 @@ type accountStat struct {
 	Samples    int64     `json:"samples"`
 	Failures   int64     `json:"failures"`
 	LastSample time.Time `json:"last_sample"`
+	// LastProbation records when the credential was last promoted for exploration.
+	LastProbation time.Time `json:"last_probation"`
 	// Recent holds the last recentOutcomeWindow outcomes, true = failure, newest last.
 	Recent []bool `json:"recent"`
 	// Minutes maps unix-minute to request count for the rolling 10 minute window.
@@ -230,6 +240,8 @@ type AccountView struct {
 	Recent10m      int       `json:"recent_10m"`
 	LastSample     time.Time `json:"last_sample"`
 	Status         string    `json:"status"`
+	// Active reports whether the credential produced a sample within InactiveMinutes.
+	Active bool `json:"active"`
 }
 
 // Snapshot is the management API payload.
@@ -245,6 +257,11 @@ type Snapshot struct {
 	Applied     int           `json:"applied"`
 	Accounts    []AccountView `json:"accounts"`
 	Persistence string        `json:"persistence,omitempty"`
+	// GateOpen reports whether enough of the pool is rankable for priorities to be rewritten.
+	GateOpen        bool    `json:"gate_open"`
+	GateReason      string  `json:"gate_reason,omitempty"`
+	EligiblePercent float64 `json:"eligible_percent"`
+	MinEligible     int     `json:"min_eligible"`
 }
 
 type persisted struct {
@@ -271,7 +288,11 @@ type Tracker struct {
 	computedAt time.Time
 	path       string
 	persistErr string
-	now        func() time.Time
+	// gateOpen is the last recompute's verdict on whether priorities may be rewritten.
+	gateOpen    bool
+	gateReason  string
+	minEligible int
+	now         func() time.Time
 }
 
 // New builds a tracker. path may be empty to disable persistence.
@@ -412,10 +433,15 @@ func (t *Tracker) Recompute() {
 	}
 
 	inactive := time.Duration(t.cfg.InactiveMinutes) * time.Minute
+	active := func(st *accountStat) bool {
+		return !st.LastSample.IsZero() && now.Sub(st.LastSample) <= inactive
+	}
+	// Eligibility only needs enough samples. Under strict priority the non-fast tiers get
+	// little traffic, so demanding recent activity would empty the ranking within minutes.
 	eligible := make([]ranked, 0, len(t.stats))
 	t.eligible = make(map[string]bool, len(t.stats))
 	for id, st := range t.stats {
-		if st.Samples >= int64(t.cfg.MinSamples) && !st.LastSample.IsZero() && now.Sub(st.LastSample) <= inactive {
+		if st.Samples >= int64(t.cfg.MinSamples) {
 			eligible = append(eligible, ranked{id: id, ewma: st.EWMA})
 			t.eligible[id] = true
 		}
@@ -445,6 +471,10 @@ func (t *Tracker) Recompute() {
 		case frac >= 1-t.cfg.SlowEnterPercent:
 			tier = TierSlow
 		}
+		if tier == TierFast && !active(t.stats[r.id]) {
+			// A credential nobody measured recently has to re-earn the fast tier.
+			tier = TierNormal
+		}
 		newTiers[r.id] = tier
 	}
 	for id := range t.stats {
@@ -453,7 +483,23 @@ func (t *Tracker) Recompute() {
 		}
 	}
 
-	// Probation: temporarily promote the least recently sampled non-fast credentials.
+	// Gate: with only a few rankable credentials "top 20%" degenerates to one or two accounts
+	// that would then receive the whole pool's traffic. Priorities stay untouched until the
+	// rankable share of the pool reaches MinEligiblePercent.
+	t.minEligible = int(math.Ceil(t.cfg.MinEligiblePercent * float64(len(t.stats))))
+	if t.minEligible < 1 {
+		t.minEligible = 1
+	}
+	t.gateOpen = len(eligible) >= t.minEligible
+	if t.gateOpen {
+		t.gateReason = ""
+	} else {
+		t.gateReason = fmt.Sprintf("可排名 %d/%d 未达门槛 %d（%.0f%%），优先级未改写", len(eligible), len(t.stats), t.minEligible, t.cfg.MinEligiblePercent*100)
+	}
+
+	// Probation: temporarily promote the least recently touched non-fast credentials that the
+	// selector could actually pick, rotating through the pool so dead accounts are tried once
+	// and then pushed to the back of the queue.
 	fastCount := 0
 	for _, tier := range newTiers {
 		if tier == TierFast {
@@ -466,12 +512,16 @@ func (t *Tracker) Recompute() {
 	}
 	candidates := make([]string, 0, len(newTiers))
 	for id, tier := range newTiers {
-		if tier != TierFast {
-			candidates = append(candidates, id)
+		if tier == TierFast {
+			continue
 		}
+		if t.auths != nil && !selectable(known[id], now) {
+			continue
+		}
+		candidates = append(candidates, id)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		a, b := t.stats[candidates[i]].LastSample, t.stats[candidates[j]].LastSample
+		a, b := t.stats[candidates[i]].lastTouch(), t.stats[candidates[j]].lastTouch()
 		if a.Equal(b) {
 			return candidates[i] < candidates[j]
 		}
@@ -496,13 +546,74 @@ func (t *Tracker) Recompute() {
 	t.computedAt = now
 
 	if t.cfg.Enabled && t.auths != nil {
-		t.applyLocked()
-		for _, id := range demoted {
-			t.auths.InvalidateSessionAffinity(id)
+		if t.gateOpen {
+			for id := range newProbation {
+				t.stats[id].LastProbation = now
+			}
+			t.applyLocked()
+			for _, id := range demoted {
+				t.auths.InvalidateSessionAffinity(id)
+			}
+		} else if len(t.baseline) > 0 {
+			// The pool shrank below the gate: hand the original priorities back.
+			t.restoreBaselineLocked()
 		}
 	}
 	t.mu.Unlock()
 	t.persist()
+}
+
+// lastTouch is the later of the last sample and the last probation, used for rotation.
+func (st *accountStat) lastTouch() time.Time {
+	if st.LastProbation.After(st.LastSample) {
+		return st.LastProbation
+	}
+	return st.LastSample
+}
+
+// selectable mirrors the conditions under which the selector would hand a request to the
+// credential, so probation slots are not wasted on accounts that cannot serve anyway.
+func selectable(a *coreauth.Auth, now time.Time) bool {
+	if a == nil || a.Disabled || a.Unavailable {
+		return false
+	}
+	switch a.Status {
+	case coreauth.StatusDisabled, coreauth.StatusError:
+		return false
+	}
+	if !a.NextRetryAfter.IsZero() && a.NextRetryAfter.After(now) {
+		return false
+	}
+	if exp := metadataTime(a.Metadata, "expired"); !exp.IsZero() && exp.Before(now) {
+		// The access token expired and was never refreshed: the upstream will reject it.
+		return false
+	}
+	for model, state := range a.ModelStates {
+		if state == nil || !isTrackedModel(model, "") {
+			continue
+		}
+		if state.Unavailable && (state.NextRetryAfter.IsZero() || state.NextRetryAfter.After(now)) {
+			return false
+		}
+	}
+	return true
+}
+
+func metadataTime(meta map[string]any, key string) time.Time {
+	if meta == nil {
+		return time.Time{}
+	}
+	switch v := meta[key].(type) {
+	case time.Time:
+		return v
+	case string:
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+			if ts, err := time.Parse(layout, strings.TrimSpace(v)); err == nil {
+				return ts
+			}
+		}
+	}
+	return time.Time{}
 }
 
 func (t *Tracker) desiredPriorityLocked(id string) int {
@@ -563,7 +674,9 @@ func (t *Tracker) Snapshot() Snapshot {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	snap := Snapshot{Config: t.cfg, ComputedAt: t.computedAt, Tracked: len(t.stats), Applied: len(t.applied), Persistence: t.persistErr}
+	snap := Snapshot{Config: t.cfg, ComputedAt: t.computedAt, Tracked: len(t.stats), Applied: len(t.applied), Persistence: t.persistErr,
+		GateOpen: t.gateOpen, GateReason: t.gateReason, MinEligible: t.minEligible}
+	inactive := time.Duration(t.cfg.InactiveMinutes) * time.Minute
 	snap.Accounts = make([]AccountView, 0, len(t.stats))
 	for id, st := range t.stats {
 		view := AccountView{
@@ -579,6 +692,7 @@ func (t *Tracker) Snapshot() Snapshot {
 			RecentWindow:   len(st.Recent),
 			Recent10m:      st.recentCount(now),
 			LastSample:     st.LastSample,
+			Active:         !st.LastSample.IsZero() && now.Sub(st.LastSample) <= inactive,
 		}
 		if view.Tier == "" {
 			view.Tier = TierNormal
@@ -606,6 +720,9 @@ func (t *Tracker) Snapshot() Snapshot {
 			snap.Eligible++
 		}
 		snap.Accounts = append(snap.Accounts, view)
+	}
+	if snap.Tracked > 0 {
+		snap.EligiblePercent = math.Round(float64(snap.Eligible)/float64(snap.Tracked)*1000) / 10
 	}
 	tierOrder := map[Tier]int{TierFast: 0, TierNormal: 1, TierSlow: 2}
 	sort.Slice(snap.Accounts, func(i, j int) bool {
@@ -657,7 +774,8 @@ func (t *Tracker) Load() error {
 		}
 		return err
 	}
-	var p persisted
+	// Start from the defaults so fields added after the snapshot was written keep their defaults.
+	p := persisted{Config: DefaultConfig()}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return err
 	}

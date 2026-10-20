@@ -466,6 +466,7 @@
           <label class="inline-flex items-center gap-1.5">慢档退出线 <input id="lt-slow_exit_percent" type="number" step="0.01" min="0.01" max="0.99" class="w-20 rounded-lg border border-slate-300 px-2 py-1"></label>
           <label class="inline-flex items-center gap-1.5">半衰期(秒) <input id="lt-half_life_seconds" type="number" step="1" min="1" class="w-24 rounded-lg border border-slate-300 px-2 py-1"></label>
           <label class="inline-flex items-center gap-1.5">最少样本 <input id="lt-min_samples" type="number" step="1" min="1" class="w-20 rounded-lg border border-slate-300 px-2 py-1"></label>
+          <label class="inline-flex items-center gap-1.5" title="可排名的号占号池的比例达到此值才改写优先级，避免只有几个号入榜时流量全压到一个号上">入榜门槛比例 <input id="lt-min_eligible_percent" type="number" step="0.01" min="0" max="0.99" class="w-20 rounded-lg border border-slate-300 px-2 py-1"></label>
           <label class="inline-flex items-center gap-1.5">失活(分钟) <input id="lt-inactive_minutes" type="number" step="1" min="1" class="w-20 rounded-lg border border-slate-300 px-2 py-1"></label>
           <label class="inline-flex items-center gap-1.5">试用比例 <input id="lt-probation_percent" type="number" step="0.01" min="0" max="0.99" class="w-20 rounded-lg border border-slate-300 px-2 py-1"></label>
           <label class="inline-flex items-center gap-1.5">试用最少 <input id="lt-probation_min" type="number" step="1" min="0" class="w-20 rounded-lg border border-slate-300 px-2 py-1"></label>
@@ -1931,7 +1932,7 @@
     if (modelRows.length) paintModels();
   }, 1000);
   // ---- codex latency tiering ----
-  var LT_FIELDS = ['fast_enter_percent', 'fast_exit_percent', 'slow_enter_percent', 'slow_exit_percent', 'half_life_seconds', 'min_samples', 'inactive_minutes', 'probation_percent', 'probation_min', 'penalty_ms', 'recompute_seconds'];
+  var LT_FIELDS = ['fast_enter_percent', 'fast_exit_percent', 'slow_enter_percent', 'slow_exit_percent', 'half_life_seconds', 'min_samples', 'min_eligible_percent', 'inactive_minutes', 'probation_percent', 'probation_min', 'penalty_ms', 'recompute_seconds'];
   var ltState = { snapshot: null, loading: false, configDirty: false };
   function ltEl(id) { return document.getElementById('lt-' + id); }
   function setLtResult(msg, kind) {
@@ -2014,8 +2015,12 @@
     var snap = ltState.snapshot; if (!snap) return;
     var sum = ltEl('summary');
     if (sum) {
-      sum.textContent = '共 ' + snap.tracked + ' 号，可排名 ' + snap.eligible + '，快 ' + snap.fast + ' / 普通 ' + snap.normal + ' / 慢 ' + snap.slow + '，试用 ' + snap.probation +
-        '，上次重算 ' + ltFmtAgo(snap.computed_at) + (snap.config && snap.config.enabled ? '，调度已启用' : '，仅统计') + (snap.persistence ? '，快照写入失败：' + snap.persistence : '');
+      var mode = '，仅统计';
+      if (snap.config && snap.config.enabled) {
+        mode = snap.gate_open ? '，调度已启用（已改写 ' + snap.applied + ' 个号的优先级）' : '，已开启但未生效：' + (snap.gate_reason || '入榜不足');
+      }
+      sum.textContent = '共 ' + snap.tracked + ' 号，可排名 ' + snap.eligible + '（' + (snap.eligible_percent || 0) + '%，门槛 ' + snap.min_eligible + '），快 ' + snap.fast + ' / 普通 ' + snap.normal + ' / 慢 ' + snap.slow + '，试用 ' + snap.probation +
+        '，上次重算 ' + ltFmtAgo(snap.computed_at) + mode + (snap.persistence ? '，快照写入失败：' + snap.persistence : '');
     }
     var planSel = ltEl('filter-plan');
     var plans = {};
