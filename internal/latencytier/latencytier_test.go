@@ -311,8 +311,22 @@ func TestOverloadCountsAsSmallPenaltyNotFullFailure(t *testing.T) {
 	tr, _ := newTestTracker(f, false)
 	tr.HandleUsage(context.Background(), overloadRecord("acct-00"))
 	tr.HandleUsage(context.Background(), record("acct-01", 0, true))
-	if tr.stats["acct-00"].EWMA != 3000 || tr.stats["acct-00"].Failures != 1 {
-		t.Fatalf("overload should record overload_penalty_ms and count as failure: ewma=%v failures=%d", tr.stats["acct-00"].EWMA, tr.stats["acct-00"].Failures)
+	st0 := tr.stats["acct-00"]
+	if st0.Samples != 0 || st0.Weight != 0 || st0.Failures != 1 || len(st0.Recent) != 1 || !st0.Recent[0] || st0.recentCount(tr.now()) != 1 {
+		t.Fatalf("overload must count as a failure and activity but not as a latency sample: %+v", st0)
+	}
+	cfg := tr.Config()
+	cfg.OverloadPenaltyMs = 3000
+	if err := tr.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	tr.HandleUsage(context.Background(), overloadRecord("acct-00"))
+	if tr.stats["acct-00"].EWMA != 3000 || tr.stats["acct-00"].Samples != 1 {
+		t.Fatalf("with a configured overload penalty the sample is recorded: ewma=%v samples=%d", tr.stats["acct-00"].EWMA, tr.stats["acct-00"].Samples)
+	}
+	cfg.OverloadPenaltyMs = 0
+	if err := tr.SetConfig(cfg); err != nil {
+		t.Fatal(err)
 	}
 	if tr.stats["acct-01"].EWMA != 30000 {
 		t.Fatalf("other failures keep the full penalty, got %v", tr.stats["acct-01"].EWMA)
@@ -323,6 +337,26 @@ func TestOverloadCountsAsSmallPenaltyNotFullFailure(t *testing.T) {
 	feed(tr, "acct-01", 5, 12000)
 	if tr.stats["acct-00"].EWMA >= tr.stats["acct-01"].EWMA {
 		t.Fatalf("overloaded-but-fast account ranks behind slow one: %v vs %v", tr.stats["acct-00"].EWMA, tr.stats["acct-01"].EWMA)
+	}
+}
+
+func TestPriorityIsReappliedWhenRuntimeValueDrifts(t *testing.T) {
+	f := newFakeAuths(20)
+	tr, _ := newTestTracker(f, true)
+	for i := 0; i < 20; i++ {
+		feed(tr, fmt.Sprintf("acct-%02d", i), 5, 1000+i*500)
+	}
+	tr.Recompute()
+	if p, _ := f.AuthPriorityInMemory("acct-00"); p != 2 {
+		t.Fatalf("acct-00 should be promoted, got %d", p)
+	}
+	// Simulate an auth file reload that resets the runtime attribute.
+	f.mu.Lock()
+	f.prio["acct-00"] = 1
+	f.mu.Unlock()
+	tr.Recompute()
+	if p, _ := f.AuthPriorityInMemory("acct-00"); p != 2 {
+		t.Fatalf("drifted priority must be re-applied on the next cycle, got %d", p)
 	}
 }
 

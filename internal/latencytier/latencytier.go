@@ -67,8 +67,10 @@ type Config struct {
 	MinEligiblePercent float64 `json:"min_eligible_percent"`
 	// PenaltyMs is the sample recorded for a failed request.
 	PenaltyMs int `json:"penalty_ms"`
-	// OverloadPenaltyMs is the sample recorded for an upstream "server overloaded" rejection.
-	// Overload hits every credential alike, so it only costs the retry it causes, not a full penalty.
+	// OverloadPenaltyMs is the latency sample recorded for an upstream "server overloaded" rejection.
+	// Overload hits every credential alike, so by default (0) it is counted as a failure but does not
+	// touch the first-token average; the ranking then reflects how fast the credential answers when
+	// it does answer.
 	OverloadPenaltyMs int `json:"overload_penalty_ms"`
 	// TrustPlus treats never-measured plus-plan credentials as fast until they are ranked.
 	TrustPlus bool `json:"trust_plus"`
@@ -90,11 +92,11 @@ func DefaultConfig() Config {
 		HalfLifeSeconds:    180,
 		MinSamples:         5,
 		InactiveMinutes:    30,
-		ProbationPercent:   0.20,
+		ProbationPercent:   0.05,
 		ProbationMin:       3,
 		MinEligiblePercent: 0.10,
 		PenaltyMs:          30000,
-		OverloadPenaltyMs:  3000,
+		OverloadPenaltyMs:  0,
 		TrustPlus:          true,
 		RecomputeSeconds:   60,
 		FastPriority:       2,
@@ -194,6 +196,23 @@ func (s *accountStat) recentCount(now time.Time) int {
 }
 
 func (s *accountStat) observe(now time.Time, ms float64, failed bool, halfLife time.Duration) {
+	s.observeWith(now, ms, failed, true, halfLife)
+}
+
+// observeWith records an outcome; when hasLatency is false only the failure/activity counters move.
+func (s *accountStat) observeWith(now time.Time, ms float64, failed, hasLatency bool, halfLife time.Duration) {
+	if !hasLatency {
+		if failed {
+			s.Failures++
+		}
+		s.LastSample = now
+		s.Recent = append(s.Recent, failed)
+		if len(s.Recent) > recentOutcomeWindow {
+			s.Recent = s.Recent[len(s.Recent)-recentOutcomeWindow:]
+		}
+		s.touchMinute(now)
+		return
+	}
 	if s.Weight > 0 && !s.EWMAAt.IsZero() {
 		dt := now.Sub(s.EWMAAt)
 		if dt < 0 {
@@ -217,6 +236,10 @@ func (s *accountStat) observe(now time.Time, ms float64, failed bool, halfLife t
 	if len(s.Recent) > recentOutcomeWindow {
 		s.Recent = s.Recent[len(s.Recent)-recentOutcomeWindow:]
 	}
+	s.touchMinute(now)
+}
+
+func (s *accountStat) touchMinute(now time.Time) {
 	if s.Minutes == nil {
 		s.Minutes = make(map[int64]int)
 	}
@@ -366,7 +389,7 @@ func (t *Tracker) HandleUsage(_ context.Context, rec usage.Record) {
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ms, failed, ok := sampleFromRecord(rec, t.cfg.PenaltyMs, t.cfg.OverloadPenaltyMs)
+	ms, failed, hasLatency, ok := sampleFromRecord(rec, t.cfg.PenaltyMs, t.cfg.OverloadPenaltyMs)
 	if !ok {
 		return
 	}
@@ -375,7 +398,7 @@ func (t *Tracker) HandleUsage(_ context.Context, rec usage.Record) {
 		st = &accountStat{AuthID: rec.AuthID}
 		t.stats[rec.AuthID] = st
 	}
-	st.observe(now, ms, failed, time.Duration(t.cfg.HalfLifeSeconds)*time.Second)
+	st.observeWith(now, ms, failed, hasLatency, time.Duration(t.cfg.HalfLifeSeconds)*time.Second)
 }
 
 func isCodexOAuth(provider, authType string) bool {
@@ -392,25 +415,30 @@ func isTrackedModel(model, alias string) bool {
 	return false
 }
 
-// sampleFromRecord converts a usage record into (milliseconds, failed, usable).
-func sampleFromRecord(rec usage.Record, penaltyMs, overloadPenaltyMs int) (float64, bool, bool) {
+// sampleFromRecord converts a usage record into (milliseconds, failed, hasLatency, usable).
+// hasLatency is false for pool-wide overload rejections when no overload penalty is configured:
+// they count as failures but must not move the first-token average.
+func sampleFromRecord(rec usage.Record, penaltyMs, overloadPenaltyMs int) (float64, bool, bool, bool) {
 	if rec.Failed {
 		if isOverloadFailure(rec.Fail) {
-			return float64(overloadPenaltyMs), true, true
+			if overloadPenaltyMs <= 0 {
+				return 0, true, false, true
+			}
+			return float64(overloadPenaltyMs), true, true, true
 		}
-		return float64(penaltyMs), true, true
+		return float64(penaltyMs), true, true, true
 	}
 	if rec.Stream && rec.Detail.OutputTokens == 0 && rec.Detail.ReasoningTokens == 0 && rec.Detail.TotalTokens == 0 {
 		// A streamed response that produced nothing is a stream cut after response.created.
-		return float64(penaltyMs), true, true
+		return float64(penaltyMs), true, true, true
 	}
 	if rec.TTFT > 0 {
-		return float64(rec.TTFT.Milliseconds()), false, true
+		return float64(rec.TTFT.Milliseconds()), false, true, true
 	}
 	if rec.Latency > 0 {
-		return float64(rec.Latency.Milliseconds()), false, true
+		return float64(rec.Latency.Milliseconds()), false, true, true
 	}
-	return 0, false, false
+	return 0, false, false, false
 }
 
 // isOverloadFailure recognises OpenAI's pool-wide "servers are currently overloaded" rejection,
@@ -688,7 +716,10 @@ func (t *Tracker) applyLocked() {
 			}
 			t.baseline[id] = base
 		}
-		if last, ok := t.applied[id]; ok && last == want {
+		// Always compare against the live value: an auth file rewrite (token refresh) replaces the
+		// runtime attributes and would silently undo an earlier promotion.
+		if current, ok := t.auths.AuthPriorityInMemory(id); ok && current == want {
+			t.applied[id] = want
 			continue
 		}
 		t.auths.SetAuthPriorityInMemory(id, want)
