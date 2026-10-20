@@ -185,6 +185,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/oauth-request-scoped-errors", s.mgmt.PatchOAuthRequestScopedErrors)
 		mgmt.DELETE("/oauth-request-scoped-errors", s.mgmt.DeleteOAuthRequestScopedErrors)
 
+		mgmt.GET("/latency-tier", s.mgmt.GetLatencyTier)
+		mgmt.PUT("/latency-tier/config", s.mgmt.PutLatencyTierConfig)
+		mgmt.POST("/latency-tier/recompute", s.mgmt.PostLatencyTierRecompute)
+
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)

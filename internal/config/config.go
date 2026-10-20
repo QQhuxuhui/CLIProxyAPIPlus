@@ -79,6 +79,11 @@ type Config struct {
 	// CommercialMode disables high-overhead request logging and HTTP middleware features to minimize per-request memory usage.
 	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
 
+	// LatencyTier configures codex first-token latency tiering (see internal/latencytier).
+	// Only the initial enabled flag lives here; runtime parameters are managed through
+	// the management API and persisted next to usage-stats.
+	LatencyTier LatencyTierConfig `yaml:"latency-tier" json:"latency-tier"`
+
 	// LoggingToFile controls whether application logs are written to rotating files or stdout.
 	LoggingToFile bool `yaml:"logging-to-file" json:"logging-to-file"`
 

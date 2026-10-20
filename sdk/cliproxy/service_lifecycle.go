@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/latencytier"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagestats"
@@ -98,6 +100,9 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+		// The snapshot lives under the auth dir (a mounted volume) so it survives image
+		// upgrades; the sub-directory keeps it out of the auth-file watcher's scope.
+		latencytier.Install(ctx, s.coreManager, s.cfg.LatencyTier.Enabled, filepath.Join(s.cfg.AuthDir, ".latency-tier", "state.json"))
 	}
 
 	if !homeEnabled {

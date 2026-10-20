@@ -292,6 +292,13 @@ type TLSConfig struct {
 	Key string `yaml:"key" json:"key"`
 }
 
+// LatencyTierConfig holds the startup default for codex first-token latency tiering.
+type LatencyTierConfig struct {
+	// Enabled is the initial switch; the management API can flip it at runtime and the
+	// persisted snapshot takes precedence on restart.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
 // PprofConfig holds pprof HTTP server settings.
 type PprofConfig struct {
 	// Enable toggles the pprof HTTP debug server.
