@@ -145,13 +145,15 @@ type Manager struct {
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
 	hook                      Hook
-	resultPolicy              atomic.Pointer[resultPolicyHolder]
-	mu                        sync.RWMutex
-	selectorMu                sync.Mutex
-	configCooldownMu          sync.Mutex
-	auths                     map[string]*Auth
-	authEpochs                map[string]uint64
-	scheduler                 *authScheduler
+	// inFlight counts executions in progress per credential (observability only).
+	inFlight         inFlightCounter
+	resultPolicy     atomic.Pointer[resultPolicyHolder]
+	mu               sync.RWMutex
+	selectorMu       sync.Mutex
+	configCooldownMu sync.Mutex
+	auths            map[string]*Auth
+	authEpochs       map[string]uint64
+	scheduler        *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler      PluginScheduler
 	schedulerCandidateMu sync.Mutex

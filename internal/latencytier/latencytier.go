@@ -146,6 +146,7 @@ type AuthAccess interface {
 	SetAuthPriorityInMemory(id string, priority int) bool
 	AuthPriorityInMemory(id string) (int, bool)
 	InvalidateSessionAffinity(authID string)
+	InFlight(id string) int
 }
 
 type accountStat struct {
@@ -242,6 +243,8 @@ type AccountView struct {
 	Status         string    `json:"status"`
 	// Active reports whether the credential produced a sample within InactiveMinutes.
 	Active bool `json:"active"`
+	// InFlight is the number of requests the credential is serving right now.
+	InFlight int `json:"in_flight"`
 }
 
 // Snapshot is the management API payload.
@@ -262,6 +265,7 @@ type Snapshot struct {
 	GateReason      string  `json:"gate_reason,omitempty"`
 	EligiblePercent float64 `json:"eligible_percent"`
 	MinEligible     int     `json:"min_eligible"`
+	InFlightTotal   int     `json:"in_flight_total"`
 }
 
 type persisted struct {
@@ -704,6 +708,8 @@ func (t *Tracker) Snapshot() Snapshot {
 			if p, ok := t.auths.AuthPriorityInMemory(id); ok {
 				view.Priority = p
 			}
+			view.InFlight = t.auths.InFlight(id)
+			snap.InFlightTotal += view.InFlight
 		}
 		switch view.Tier {
 		case TierFast:
