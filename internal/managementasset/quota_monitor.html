@@ -305,7 +305,6 @@
         <button id="tabbtn-stats" data-tab="stats" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">调用统计</button>
         <button id="tabbtn-health" data-tab="health" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">模型健康</button>
         <button id="tabbtn-proxy" data-tab="proxy" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">代理设置</button>
-        <button id="tabbtn-latency" data-tab="latency" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">快号优先</button>
       </nav>
     </div>
   </header>
@@ -444,63 +443,6 @@
           </div>
           <div id="provider-proxy-result" class="mt-4 text-sm text-slate-500 min-h-[20px]"></div>
           <p class="mt-2 text-xs text-slate-400">类型名即账号列表里“类型”一列显示的 provider，不区分大小写。每行的“测试”按该行填写的地址探测；该行留空时按全局代理探测。</p>
-        </div>
-      </div>
-    </section>
-
-    <section id="tab-latency" hidden>
-      <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h3 class="text-base font-semibold text-slate-900">快号优先</h3>
-            <p class="mt-1 text-sm text-slate-500">自动把 codex 请求优先分给最近首字最快的号。号变慢会自动让位，变快会自动回来；plus 号没测过时先按快号用，测出慢再降。上游整体过载不算号的错。</p>
-          </div>
-          <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
-            <input id="lt-enabled" type="checkbox" class="h-5 w-5 accent-indigo-600"> <span id="lt-enabled-text">开启</span>
-          </label>
-        </div>
-        <div id="lt-status" class="mt-4 rounded-lg px-4 py-3 text-sm bg-slate-50 text-slate-600">加载中…</div>
-        <div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div class="rounded-lg border border-slate-200 px-4 py-3"><div class="text-xs text-slate-500">号池</div><div id="lt-card-tracked" class="mt-1 text-xl font-semibold text-slate-900">—</div></div>
-          <div class="rounded-lg border border-slate-200 px-4 py-3"><div class="text-xs text-slate-500">已测出快慢</div><div id="lt-card-eligible" class="mt-1 text-xl font-semibold text-slate-900">—</div></div>
-          <div class="rounded-lg border border-slate-200 px-4 py-3"><div class="text-xs text-slate-500">快 / 普通 / 慢</div><div id="lt-card-tiers" class="mt-1 text-xl font-semibold text-slate-900">—</div></div>
-          <div class="rounded-lg border border-slate-200 px-4 py-3"><div class="text-xs text-slate-500">正在处理的请求</div><div id="lt-card-inflight" class="mt-1 text-xl font-semibold text-slate-900">—</div></div>
-        </div>
-        <details id="lt-advanced" class="mt-4 text-sm">
-          <summary class="cursor-pointer text-slate-500 hover:text-slate-700">高级设置</summary>
-          <div class="mt-3 flex flex-wrap items-center gap-4">
-            <label class="inline-flex items-center gap-1.5" title="首字最快的这部分号作为快号优先承接流量">快号占比 <input id="lt-fast_enter_percent" type="number" step="1" min="1" max="99" class="w-16 rounded-lg border border-slate-300 px-2 py-1"> %</label>
-            <label class="inline-flex items-center gap-1.5" title="已测出快慢的号占号池比例达到此值才开始调度，避免只测了几个号就把流量压到它们身上">生效门槛 <input id="lt-min_eligible_percent" type="number" step="1" min="0" max="99" class="w-16 rounded-lg border border-slate-300 px-2 py-1"> %</label>
-            <label class="inline-flex items-center gap-1.5" title="每轮额外拉几个普通/慢号试跑，发现变快的号">试用名额 <input id="lt-probation_percent" type="number" step="1" min="0" max="99" class="w-16 rounded-lg border border-slate-300 px-2 py-1"> %（按快号数算）</label>
-            <button id="lt-save" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:translate-y-px transition">保存</button>
-            <button id="lt-reset" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">恢复默认</button>
-            <button id="lt-recompute" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">立即重算</button>
-          </div>
-        </details>
-        <div id="lt-result" class="mt-2 text-sm text-slate-500 min-h-[20px]"></div>
-        <div class="mt-4 flex flex-wrap items-center gap-2 text-sm">
-          <div id="lt-chips" class="inline-flex rounded-lg border border-slate-200 overflow-hidden">
-            <button data-tier="" class="px-3 py-1.5 bg-indigo-600 text-white">全部</button>
-            <button data-tier="fast" class="px-3 py-1.5 hover:bg-slate-50">快</button>
-            <button data-tier="normal" class="px-3 py-1.5 hover:bg-slate-50">普通</button>
-            <button data-tier="slow" class="px-3 py-1.5 hover:bg-slate-50">慢</button>
-            <button data-tier="probation" class="px-3 py-1.5 hover:bg-slate-50">试用中</button>
-            <button data-tier="busy" class="px-3 py-1.5 hover:bg-slate-50">有请求在跑</button>
-            <button data-tier="full" class="px-3 py-1.5 hover:bg-slate-50" title="到达单号并发上限的号">已满</button>
-          </div>
-          <select id="lt-filter-plan" class="rounded-lg border border-slate-300 px-2 py-1.5"><option value="">全部套餐</option></select>
-          <select id="lt-sort" class="rounded-lg border border-slate-300 px-2 py-1.5">
-            <option value="tier">按状态</option><option value="ewma">首字最快</option><option value="inflight">并发最高</option><option value="recent10m">近 10 分钟最多</option><option value="failrate">失败最多</option><option value="last">最近有请求</option>
-          </select>
-          <input id="lt-filter-name" type="text" spellcheck="false" placeholder="搜索账号" class="rounded-lg border border-slate-300 px-3 py-1.5 w-52">
-          <span id="lt-count" class="text-slate-400"></span>
-        </div>
-        <div class="mt-3 overflow-x-auto">
-          <table id="lt-table" class="data-table">
-            <thead><tr><th>#</th><th>账号</th><th>套餐</th><th>状态</th><th title="最近请求的上游首字时间，越近的权重越大">首字</th><th title="此刻正在这个号上处理的请求数 / 单号上限。到达上限的号暂时不再分配新请求，快档全满时请求落到下一档">并发</th><th>近 10 分钟</th><th>累计</th><th>失败（近 10 次）</th><th>最后请求</th></tr></thead>
-            <tbody id="lt-rows"></tbody>
-          </table>
-          <div id="lt-empty" class="px-4 py-6 text-center text-sm text-slate-400" hidden>暂无数据</div>
         </div>
       </div>
     </section>
@@ -701,7 +643,6 @@
         if (reason === 'manual' || reason === 'login') requestModelStats();
         else if (reason === 'auto') maybeAutoRefreshModelStats();
       }
-      if (currentTab === 'latency') loadLatencyTier();
       els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
       setStatus('', '');
     }).catch(function (e) { setStatus('网络错误：' + e, 'err'); });
@@ -1471,14 +1412,13 @@
   }
   function switchTab(name) {
     currentTab = name;
-    ['accounts', 'stats', 'health', 'proxy', 'latency'].forEach(function (tabName) {
+    ['accounts', 'stats', 'health', 'proxy'].forEach(function (tabName) {
       var panel = document.getElementById('tab-' + tabName);
       var button = document.getElementById('tabbtn-' + tabName);
       if (panel) panel.hidden = tabName !== name;
       if (button) button.className = tabBtnClass(tabName === name);
     });
     if (name === 'proxy') loadProxyOnce();
-    if (name === 'latency') loadLatencyTier();
     if (name === 'stats' && (!statsState.loaded || ModelStatsLogic.shouldRefreshOnActivate(statsState.lastSuccessAt, Date.now()))) requestModelStats();
   }
 
@@ -1795,7 +1735,7 @@
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   els['account-page-prev'].addEventListener('click', function () { accountPage--; renderAccountView({ resetPage: false, rebuildOptions: false }); });
   els['account-page-next'].addEventListener('click', function () { accountPage++; renderAccountView({ resetPage: false, rebuildOptions: false }); });
-  ['accounts', 'stats', 'health', 'proxy', 'latency'].forEach(function (n) {
+  ['accounts', 'stats', 'health', 'proxy'].forEach(function (n) {
     var b = document.getElementById('tabbtn-' + n);
     if (b) b.addEventListener('click', function () { switchTab(n); });
   });
@@ -1931,200 +1871,6 @@
   setInterval(function () {          // Refresh cooldown countdowns every second.
     if (modelRows.length) paintModels();
   }, 1000);
-  // ---- codex latency tiering ----
-  var LT_PERCENT_FIELDS = ['fast_enter_percent', 'min_eligible_percent', 'probation_percent'];
-  var LT_DEFAULTS = { fast_enter_percent: 20, min_eligible_percent: 10, probation_percent: 20 };
-  var ltState = { snapshot: null, loading: false, configDirty: false, tier: '', saving: false };
-  function ltEl(id) { return document.getElementById('lt-' + id); }
-  function setLtResult(msg, kind) {
-    var el = ltEl('result');
-    if (!el) return;
-    var cls = kind === 'err' ? 'text-red-600' : (kind === 'ok' ? 'text-emerald-600' : 'text-slate-500');
-    el.textContent = msg || '';
-    el.className = 'mt-2 text-sm min-h-[20px] ' + cls;
-  }
-  function ltFillConfig(cfg) {
-    if (!cfg) return;
-    if (!ltState.saving) { ltEl('enabled').checked = !!cfg.enabled; ltEl('enabled-text').textContent = cfg.enabled ? '已开启' : '开启'; }
-    if (ltState.configDirty) return;
-    LT_PERCENT_FIELDS.forEach(function (f) { var el = ltEl(f); if (el && cfg[f] !== undefined) el.value = Math.round(cfg[f] * 100); });
-  }
-  function ltPutConfig(patch, okMsg) {
-    var k = getStoredKey();
-    if (!k) { setLtResult('请先登录', 'err'); return Promise.resolve(false); }
-    var cfg = (ltState.snapshot && ltState.snapshot.config) ? JSON.parse(JSON.stringify(ltState.snapshot.config)) : {};
-    Object.keys(patch).forEach(function (key) { cfg[key] = patch[key]; });
-    return fetch('/v0/management/latency-tier/config', {
-      method: 'PUT',
-      headers: { 'Authorization': 'Bearer ' + k, 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg)
-    }).then(function (resp) {
-      if (resp.ok) { setLtResult(okMsg || '已保存', 'ok'); return true; }
-      return readError(resp).then(function (m) { setLtResult('保存失败：' + (m || ('HTTP ' + resp.status)), 'err'); return false; });
-    }).catch(function (e) { setLtResult('保存失败：网络错误 ' + e, 'err'); return false; });
-  }
-  function toggleLatencyTier() {
-    var on = ltEl('enabled').checked;
-    ltState.saving = true;
-    ltEl('enabled-text').textContent = on ? '开启中…' : '关闭中…';
-    ltPutConfig({ enabled: on }, on ? '已开启快号优先' : '已关闭，所有号恢复原来的优先级').then(function (ok) {
-      ltState.saving = false;
-      if (!ok) { ltEl('enabled').checked = !on; }
-      loadLatencyTier(true);
-    });
-  }
-  function saveLatencyTier() {
-    var patch = {};
-    var bad = null;
-    LT_PERCENT_FIELDS.forEach(function (f) {
-      var el = ltEl(f); if (!el || el.value === '') return;
-      var v = parseFloat(el.value);
-      if (isNaN(v) || v < 0 || v >= 100) { bad = f; return; }
-      patch[f] = v / 100;
-    });
-    if (bad) { setLtResult('百分比要在 0 到 99 之间', 'err'); return; }
-    if (patch.fast_enter_percent !== undefined) {
-      // 退出线跟着入线走：跌出快号前 10% 的缓冲带才让位，避免频繁抖动。
-      patch.fast_exit_percent = Math.min(0.99, patch.fast_enter_percent + 0.10);
-    }
-    setLtResult('保存中…', '');
-    ltPutConfig(patch, '已保存，下次重算生效（最多 1 分钟）').then(function (ok) { if (ok) { ltState.configDirty = false; loadLatencyTier(true); } });
-  }
-  function resetLatencyTier() {
-    LT_PERCENT_FIELDS.forEach(function (f) { var el = ltEl(f); if (el) el.value = LT_DEFAULTS[f]; });
-    ltState.configDirty = true;
-    saveLatencyTier();
-  }
-  function loadLatencyTier(force) {
-    var k = getStoredKey();
-    if (!k || (ltState.loading && !force)) return;
-    ltState.loading = true;
-    fetch('/v0/management/latency-tier', { headers: { 'Authorization': 'Bearer ' + k } })
-      .then(function (resp) {
-        if (!resp.ok) { return readError(resp).then(function (m) { setLtResult('读取失败：' + (m || ('HTTP ' + resp.status)), 'err'); return null; }); }
-        return resp.json();
-      })
-      .then(function (d) { if (d) { ltState.snapshot = d; ltFillConfig(d.config); renderLatencyTier(); } })
-      .catch(function (e) { setLtResult('网络错误：' + e, 'err'); })
-      .then(function () { ltState.loading = false; });
-  }
-  function recomputeLatencyTier() {
-    var k = getStoredKey();
-    if (!k) { setLtResult('请先登录', 'err'); return; }
-    setLtResult('重算中…', '');
-    fetch('/v0/management/latency-tier/recompute', { method: 'POST', headers: { 'Authorization': 'Bearer ' + k } })
-      .then(function (resp) {
-        if (!resp.ok) { return readError(resp).then(function (m) { setLtResult('重算失败：' + (m || ('HTTP ' + resp.status)), 'err'); return null; }); }
-        return resp.json();
-      })
-      .then(function (d) { if (d) { ltState.snapshot = d; ltFillConfig(d.config); renderLatencyTier(); setLtResult('已重算', 'ok'); } })
-      .catch(function (e) { setLtResult('网络错误：' + e, 'err'); });
-  }
-  function ltFmtMs(ms) { if (!ms && ms !== 0) return '—'; return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'; }
-  function ltFmtAgo(iso) {
-    if (!iso || iso.indexOf('0001-01-01') === 0) return '—';
-    var t = new Date(iso).getTime(); if (!t) return '—';
-    var s = Math.max(0, Math.round((Date.now() - t) / 1000));
-    if (s < 60) return s + ' 秒前';
-    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
-    return Math.floor(s / 3600) + ' 小时前';
-  }
-  function ltBadge(text, color) { return '<span class="inline-block rounded-full px-2 py-0.5 text-xs font-medium" style="background:' + color + '20;color:' + color + '">' + text + '</span>'; }
-  function ltStatusCell(v, minSamples) {
-    var parts = [];
-    if (v.probation) parts.push(ltBadge('试用中', '#7c3aed'));
-    else if (v.tier === 'fast' && v.trusted) parts.push(ltBadge('快 · 先信后验', '#0d9488'));
-    else if (v.tier === 'fast') parts.push(ltBadge('快', '#16a34a'));
-    else if (v.tier === 'slow') parts.push(ltBadge('慢', '#dc2626'));
-    else if (v.eligible) parts.push(ltBadge('普通', '#64748b'));
-    else parts.push(ltBadge('待测 ' + v.samples + '/' + minSamples, '#94a3b8'));
-    if (v.status && v.status !== 'active') parts.push(ltBadge(v.status === 'error' ? '异常' : v.status, '#f59e0b'));
-    return parts.join(' ');
-  }
-  function renderLatencyTier() {
-    var snap = ltState.snapshot; if (!snap) return;
-    var cfg = snap.config || {};
-    var status = ltEl('status');
-    if (status) {
-      var text, cls;
-      if (!cfg.enabled) {
-        text = '已关闭。只在后台记录每个号的首字时间，不影响选号。'; cls = 'bg-slate-50 text-slate-600';
-      } else if (!snap.gate_open) {
-        text = '已开启，等待数据：已测出 ' + (snap.eligible_percent || 0) + '% 的号的快慢，达到 ' + Math.round((cfg.min_eligible_percent || 0) * 100) + '% 后自动开始调度。'; cls = 'bg-amber-50 text-amber-800';
-      } else {
-        var h = snap.hits_10m || {}; var hTot = 0; Object.keys(h).forEach(function (k) { hTot += h[k]; });
-        var onFast = hTot ? Math.round(100 * ((h.fast || 0) + (h.trusted || 0)) / hTot) : 0;
-        text = '运行中：' + snap.fast + ' 个快号优先承接流量，' + snap.slow + ' 个慢号已让位，' + snap.probation + ' 个号在试用。近 10 分钟 ' + hTot + ' 个请求中 ' + onFast + '% 落在快号、' + (hTot ? Math.round(100 * (h.probation || 0) / hTot) : 0) + '% 在试用号。'; cls = 'bg-emerald-50 text-emerald-800';
-      }
-      if (snap.persistence) { text += ' 快照写入失败：' + snap.persistence; cls = 'bg-red-50 text-red-700'; }
-      status.textContent = text + '（' + ltFmtAgo(snap.computed_at) + '更新）';
-      status.className = 'mt-4 rounded-lg px-4 py-3 text-sm ' + cls;
-    }
-    ltEl('card-tracked').textContent = snap.tracked;
-    ltEl('card-eligible').textContent = snap.eligible + ' 个（' + (snap.eligible_percent || 0) + '%）';
-    ltEl('card-tiers').textContent = snap.fast + ' / ' + snap.normal + ' / ' + snap.slow;
-    ltEl('card-inflight').textContent = (snap.in_flight_total || 0) + (snap.in_flight_limit ? '（上限 ' + snap.in_flight_limit + '/号，' + (snap.saturated || 0) + ' 个号已满）' : '');
-    var planSel = ltEl('filter-plan');
-    var plans = {};
-    (snap.accounts || []).forEach(function (v) { if (v.plan) plans[v.plan] = true; });
-    var keep = planSel.value;
-    planSel.innerHTML = '<option value="">全部套餐</option>' + Object.keys(plans).sort().map(function (p) { return '<option value="' + p + '">' + p + '</option>'; }).join('');
-    planSel.value = keep;
-    var tierF = ltState.tier, planF = planSel.value, nameF = ltEl('filter-name').value.trim().toLowerCase(), sortBy = ltEl('sort').value;
-    var rows = (snap.accounts || []).filter(function (v) {
-      if (tierF === 'probation' && !v.probation) return false;
-      if (tierF === 'busy' && !v.in_flight) return false;
-      if (tierF === 'full' && !(v.in_flight_limit && v.in_flight >= v.in_flight_limit)) return false;
-      if (tierF && tierF !== 'probation' && tierF !== 'busy' && v.tier !== tierF) return false;
-      if (planF && v.plan !== planF) return false;
-      if (nameF && String(v.label || v.auth_id).toLowerCase().indexOf(nameF) < 0) return false;
-      return true;
-    });
-    var failRate = function (v) { return v.recent_window ? v.recent_failures / v.recent_window : 0; };
-    if (sortBy === 'ewma') rows.sort(function (a, b) { return (a.eligible === b.eligible ? a.ewma_ms - b.ewma_ms : (a.eligible ? -1 : 1)); });
-    else if (sortBy === 'inflight') rows.sort(function (a, b) { return (b.in_flight || 0) - (a.in_flight || 0); });
-    else if (sortBy === 'recent10m') rows.sort(function (a, b) { return b.recent_10m - a.recent_10m; });
-    else if (sortBy === 'failrate') rows.sort(function (a, b) { return failRate(b) - failRate(a); });
-    else if (sortBy === 'last') rows.sort(function (a, b) { return new Date(b.last_sample).getTime() - new Date(a.last_sample).getTime(); });
-    ltEl('count').textContent = rows.length + ' / ' + (snap.accounts || []).length + ' 个号';
-    var minSamples = cfg.min_samples || 5;
-    var body = ltEl('rows');
-    body.innerHTML = rows.map(function (v, i) {
-      var fr = v.recent_window ? (v.recent_failures + ' / ' + v.recent_window) : '—';
-      return '<tr>' +
-        '<td class="text-slate-400">' + (i + 1) + '</td>' +
-        '<td title="' + v.auth_id + '">' + (v.label || v.auth_id) + '</td>' +
-        '<td>' + (v.plan || '—') + '</td>' +
-        '<td>' + ltStatusCell(v, minSamples) + '</td>' +
-        '<td>' + (v.samples ? ltFmtMs(v.ewma_ms) : '—') + '</td>' +
-        '<td' + (v.in_flight_limit && v.in_flight >= v.in_flight_limit ? ' class="font-semibold text-red-600" title="已满，暂不分配新请求"' : (v.in_flight ? ' class="font-semibold text-indigo-700"' : ' class="text-slate-400"')) + '>' + (v.in_flight || 0) + (v.in_flight_limit ? ' / ' + v.in_flight_limit : '') + '</td>' +
-        '<td>' + v.recent_10m + '</td>' +
-        '<td>' + v.samples + '</td>' +
-        '<td' + (v.recent_failures ? ' style="color:#dc2626"' : '') + '>' + fr + '</td>' +
-        '<td>' + ltFmtAgo(v.last_sample) + '</td>' +
-        '</tr>';
-    }).join('');
-    ltEl('empty').hidden = rows.length > 0;
-  }
-  (function bindLatencyTier() {
-    var save = ltEl('save'), rec = ltEl('recompute'), reset = ltEl('reset');
-    if (save) save.addEventListener('click', saveLatencyTier);
-    if (rec) rec.addEventListener('click', recomputeLatencyTier);
-    if (reset) reset.addEventListener('click', resetLatencyTier);
-    ['filter-plan', 'sort'].forEach(function (id) { var el = ltEl(id); if (el) el.addEventListener('change', renderLatencyTier); });
-    var name = ltEl('filter-name'); if (name) name.addEventListener('input', renderLatencyTier);
-    var enabled = ltEl('enabled'); if (enabled) enabled.addEventListener('change', toggleLatencyTier);
-    LT_PERCENT_FIELDS.forEach(function (f) { var el = ltEl(f); if (el) el.addEventListener('input', function () { ltState.configDirty = true; }); });
-    var chips = ltEl('chips');
-    if (chips) chips.addEventListener('click', function (ev) {
-      var btn = ev.target.closest('button[data-tier]'); if (!btn) return;
-      ltState.tier = btn.getAttribute('data-tier');
-      Array.prototype.forEach.call(chips.querySelectorAll('button'), function (b) {
-        b.className = (b === btn) ? 'px-3 py-1.5 bg-indigo-600 text-white' : 'px-3 py-1.5 hover:bg-slate-50';
-      });
-      renderLatencyTier();
-    });
-  })();
 })();
 </script>
 </body>

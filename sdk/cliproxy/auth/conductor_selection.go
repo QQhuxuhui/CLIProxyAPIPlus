@@ -603,13 +603,6 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 		return nil, newAuthUnavailableErrorWithCause(earliest, now, lastCandidateErr)
 	}
 
-	// Credentials at their in-flight cap step aside so a saturated top tier spills into the next
-	// one. If every candidate is saturated the cap is waived for this pick: queueing on a busy
-	// credential beats failing the request.
-	if filtered, dropped := m.inFlight.dropSaturatedAuths(availableByPriority); dropped > 0 && len(filtered) > 0 {
-		availableByPriority = filtered
-	}
-
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
 }
 

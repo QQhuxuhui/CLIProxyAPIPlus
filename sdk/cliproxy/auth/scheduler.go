@@ -45,7 +45,6 @@ type scheduledGenerationMeta struct {
 type authScheduler struct {
 	mu                  sync.Mutex
 	strategy            schedulerStrategy
-	inFlight            *inFlightCounter
 	providers           map[string]*providerScheduler
 	authProviders       map[string]string
 	authGenerations     map[string]scheduledGenerationMeta
@@ -328,11 +327,6 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
-	if capped := s.inFlightCappedPredicate(predicate); capped != nil {
-		if picked := shard.pickReadyLocked(preferWebsocket, strategy, capped); picked != nil {
-			return picked, nil
-		}
-	}
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
 	}
@@ -383,26 +377,6 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	if strategy == schedulerStrategyCurrent {
 		strategy = s.strategy
 	}
-	// First pass skips credentials at their in-flight cap; when that leaves nothing the cap is
-	// waived rather than failing the request.
-	if s.inFlight != nil && inFlightLimitsConfigured() {
-		if picked, providerKey, errPick := s.pickMixedLocked(normalized, model, tried, strategy, pinnedAuthID, eligibility, modelKey, true); errPick == nil && picked != nil {
-			return picked, providerKey, nil
-		}
-	}
-	return s.pickMixedLocked(normalized, model, tried, strategy, pinnedAuthID, eligibility, modelKey, false)
-}
-
-func (s *authScheduler) pickMixedLocked(normalized []string, model string, tried map[string]struct{}, strategy schedulerStrategy, pinnedAuthID string, eligibility authSelectionEligibility, modelKey string, capped bool) (*Auth, string, error) {
-	wrap := func(predicate func(*scheduledAuth) bool) func(*scheduledAuth) bool {
-		if !capped {
-			return predicate
-		}
-		if c := s.inFlightCappedPredicate(predicate); c != nil {
-			return c
-		}
-		return predicate
-	}
 	if pinnedAuthID != "" {
 		providerKey := s.authProviders[pinnedAuthID]
 		if providerKey == "" || !containsProvider(normalized, providerKey) {
@@ -413,14 +387,14 @@ func (s *authScheduler) pickMixedLocked(normalized []string, model string, tried
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
-		predicate := wrap(scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin))
+		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 		if picked := shard.pickReadyLocked(false, strategy, predicate); picked != nil {
 			return picked, providerKey, nil
 		}
 		return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
 	}
 
-	predicate := wrap(scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin))
+	predicate := scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin)
 	candidateShards := make([]*modelScheduler, len(normalized))
 	bestPriority := 0
 	hasCandidate := false
@@ -653,20 +627,6 @@ func scheduledAuthPredicate(eligibility authSelectionEligibility, tried map[stri
 			}
 		}
 		return true
-	}
-}
-
-// inFlightCappedPredicate narrows the predicate to credentials below their provider's in-flight
-// cap. It returns nil when no cap is configured so callers can skip the capped pass.
-func (s *authScheduler) inFlightCappedPredicate(predicate func(*scheduledAuth) bool) func(*scheduledAuth) bool {
-	if s == nil || s.inFlight == nil || !inFlightLimitsConfigured() {
-		return nil
-	}
-	return func(entry *scheduledAuth) bool {
-		if !predicate(entry) {
-			return false
-		}
-		return !s.inFlight.saturated(entry.auth)
 	}
 }
 

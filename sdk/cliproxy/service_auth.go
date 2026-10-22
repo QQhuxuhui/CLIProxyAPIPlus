@@ -542,7 +542,6 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval, cfg.MaxRetryCredentials)
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	coreauth.SetProviderTransientErrorCooldownSeconds(cfg.ProviderTransientErrorCooldownSeconds)
-	coreauth.SetProviderInFlightLimit(cfg.ProviderInFlightLimit)
 	coreauth.SetQuotaCooldownBaseSeconds(cfg.QuotaCooldownBaseSeconds)
 	coreauth.SetCooldownProbeGate(cfg.CooldownProbeGate)
 }
