@@ -1072,3 +1072,19 @@ nonstream-keepalive-interval: 0
 #         - 'tools.#(name=="apply_patch")'
 #         # Nested additional_tools structure in input[] (Codex CLI >= 0.154 "Responses Lite"):
 #         - 'input.#(type=="additional_tools")#.tools.#(name=="functions")#.tools.#(name=="apply_patch")#'
+
+# Adaptive per-credential Codex RPM. Both switches default off; statistics remain active.
+# Retry-After cooldown handling is independent of these switches.
+# Headroom 1.0 uses the learned ceiling; 0.75 reserves 25% of each account's capacity.
+# Session affinity still picks the bound account first; only when that account is at its
+# cap is the session rebound to another account chosen by the normal strategy.
+# Home dispatch owns admission remotely; this algorithm applies to local pools only.
+provider-request-rate-cap:
+  codex:
+    enabled: false
+    fail-fast: false
+    initial-per-minute: 20
+    min-per-minute: 5
+    max-per-minute: 60
+    probe-interval: 5m
+    headroom: 1.0

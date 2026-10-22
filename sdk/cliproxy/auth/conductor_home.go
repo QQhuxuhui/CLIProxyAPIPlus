@@ -281,6 +281,12 @@ func isHomeRequestRetryExceededError(err error) bool {
 }
 
 func shouldReturnLastErrorOnPickFailure(homeMode bool, lastErr error, errPick error) bool {
+	if isPoolCapacityError(errPick) {
+		return false
+	}
+	if isPoolCapacityError(lastErr) {
+		return true
+	}
 	if lastErr == nil {
 		return false
 	}

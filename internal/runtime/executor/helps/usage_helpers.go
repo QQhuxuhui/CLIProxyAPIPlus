@@ -192,6 +192,7 @@ func (r *UsageReporter) Publish(ctx context.Context, detail usage.Detail) {
 
 func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string, detail usage.Detail) {
 	record, ok := r.buildAdditionalModelRecord(model, detail)
+	record.AdditionalModel = true
 	if !ok {
 		return
 	}

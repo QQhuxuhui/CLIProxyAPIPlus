@@ -236,6 +236,10 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 		m.homeSessionAliases.clear()
 	}
 	m.runtimeConfig.Store(cfg)
+	m.rateCap.configure(cfg.ProviderRequestRateCap["codex"])
+	m.rateCap.mu.Lock()
+	m.rateCap.home = cfg.Home.Enabled
+	m.rateCap.mu.Unlock()
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if clearedCooldowns && oldCooldownStore != nil {
 		m.mu.Lock()
@@ -838,6 +842,7 @@ func cooldownReason(statusMessage string, quota QuotaState, lastErr *Error) stri
 
 // MarkResult records an execution result and notifies hooks.
 func (m *Manager) MarkResult(ctx context.Context, result Result) {
+	m.observeRateResult(ctx, result)
 	if result.AuthID == "" {
 		return
 	}
@@ -1048,19 +1053,32 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 										otherState.Unavailable = true
 										otherState.Status = StatusError
 										otherQuotaNext := next
-										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherQuotaNext) {
+										replaceRateReset := auth.Provider == "codex" && explicitReset && reasonCode == "RATE_LIMIT_EXCEEDED" && otherState.Quota.ReasonCode == "RATE_LIMIT_EXCEEDED"
+										if !replaceRateReset && otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherQuotaNext) {
 											otherQuotaNext = otherState.Quota.NextRecoverAt
 										}
 										otherRetryAfter := otherQuotaNext
-										// Propagation only extends a sibling's still-live
-										// per-model deadline; it never shortens one.
-										if !otherState.NextRetryAfter.IsZero() && otherState.NextRetryAfter.After(otherRetryAfter) {
+										// An explicit rate reset replaces the previous rate window,
+										// but independent per-model restrictions retain their deadlines.
+										if (!replaceRateReset || otherState.NextRetryAfter.After(otherState.Quota.NextRecoverAt)) && otherState.NextRetryAfter.After(otherRetryAfter) {
 											otherRetryAfter = otherState.NextRetryAfter
 										}
+										if auth.Provider == "codex" && (!otherState.Quota.NextRecoverAt.After(next) || replaceRateReset) {
+											otherState.Quota.ReasonCode = reasonCode
+											otherState.Quota.ResetAt = resetAt
+										}
 										otherState.NextRetryAfter = otherRetryAfter
+										var propagatedReason string
+										var propagatedReset time.Time
+										if auth.Provider == "codex" {
+											propagatedReason = otherState.Quota.ReasonCode
+											propagatedReset = otherState.Quota.ResetAt
+										}
 										applyCooldownFields(&otherState.Quota, QuotaState{
 											Exceeded:      true,
 											Reason:        "credential_quota",
+											ReasonCode:    propagatedReason,
+											ResetAt:       propagatedReset,
 											NextRecoverAt: otherQuotaNext,
 											BackoffLevel:  backoffLevel,
 										})
@@ -1070,8 +1088,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								auth.Quota.Exceeded = true
 								auth.Quota.Reason = "credential_quota"
 								authNext := next
-								if auth.Quota.NextRecoverAt.After(authNext) {
+								if !(auth.Provider == "codex" && explicitReset && reasonCode == "RATE_LIMIT_EXCEEDED" && auth.Quota.ReasonCode == "RATE_LIMIT_EXCEEDED") && auth.Quota.NextRecoverAt.After(authNext) {
 									authNext = auth.Quota.NextRecoverAt
+								}
+								if auth.Provider == "codex" && authNext.Equal(next) {
+									auth.Quota.ReasonCode = reasonCode
+									auth.Quota.ResetAt = resetAt
 								}
 								auth.Quota.NextRecoverAt = authNext
 								auth.NextRetryAfter = authNext

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -326,6 +327,29 @@ func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
 	}
+	return err
+}
+
+// newCodexStatusErrWithHeaders preserves account-wide HTTP rate windows while
+// leaving in-stream failures and usage-limit classification unchanged.
+func newCodexStatusErrWithHeaders(statusCode int, body []byte, headers http.Header, modelLevelCooling bool) statusErr {
+	return newCodexStatusErrWithHeadersAt(statusCode, body, headers, modelLevelCooling, time.Now())
+}
+
+func newCodexStatusErrWithHeadersAt(statusCode int, body []byte, headers http.Header, modelLevelCooling bool, now time.Time) statusErr {
+	err := newCodexStatusErrWithCooling(statusCode, body, modelLevelCooling)
+	if statusCode != http.StatusTooManyRequests || isCodexUsageLimitError(body) {
+		return err
+	}
+	delay := time.Minute
+	raw := strings.TrimSpace(headers.Get("Retry-After"))
+	if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 && seconds <= int64((1<<63-1)/time.Second) {
+		delay = time.Duration(seconds) * time.Second
+	} else if deadline, errParse := http.ParseTime(raw); errParse == nil {
+		delay = max(0, deadline.Sub(now))
+	}
+	err.quota = &cliproxyexecutor.QuotaDetail{ReasonCode: "RATE_LIMIT_EXCEEDED", ResetAt: now.Add(delay)}
+	err.credentialScoped = true
 	return err
 }
 

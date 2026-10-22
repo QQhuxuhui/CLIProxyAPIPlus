@@ -53,6 +53,7 @@ func (s *Server) setupRoutes() {
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/quota-monitor.html", s.serveQuotaMonitor)
+	s.engine.GET("/quota-monitor/echarts.min.js", s.serveQuotaMonitorECharts)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)

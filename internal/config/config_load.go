@@ -95,6 +95,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	for provider, rate := range cfg.ProviderRequestRateCap {
+		if errValidate := rate.Validate(); errValidate != nil {
+			return nil, fmt.Errorf("provider-request-rate-cap.%s: %w", provider, errValidate)
+		}
+		cfg.ProviderRequestRateCap[provider] = rate.WithDefaults()
+	}
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate

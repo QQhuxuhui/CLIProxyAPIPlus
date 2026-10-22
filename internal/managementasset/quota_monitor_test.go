@@ -1,6 +1,7 @@
 package managementasset
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -376,7 +377,18 @@ func TestQuotaMonitorHTMLHidesUsageStatsModalOnLoad(t *testing.T) {
 
 func TestQuotaMonitorHTMLHasNoRemoteScripts(t *testing.T) {
 	s := string(QuotaMonitorHTML())
-	if strings.Contains(s, `<script src=`) || strings.Contains(s, "cdn.tailwindcss.com") {
+	scripts := regexp.MustCompile(`<script[^>]+src=["']([^"']+)["']`).FindAllStringSubmatch(s, -1)
+	for _, script := range scripts {
+		if script[1] != "/quota-monitor/echarts.min.js" {
+			t.Fatalf("unexpected script source: %s", script[1])
+		}
+	}
+	if strings.Contains(s, "cdn.tailwindcss.com") {
 		t.Fatal("quota monitor must not execute remote scripts")
+	}
+	// ECharts is injected lazily from the same origin when the pool tab opens.
+	dynamic := regexp.MustCompile(`\.src\s*=\s*["']([^"']+)["']`).FindAllStringSubmatch(s, -1)
+	if len(dynamic) != 1 || dynamic[0][1] != "/quota-monitor/echarts.min.js" {
+		t.Fatalf("unexpected dynamic script sources: %v", dynamic)
 	}
 }

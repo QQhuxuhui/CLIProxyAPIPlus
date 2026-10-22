@@ -408,7 +408,7 @@ func concurrencyGateSkip(c *gin.Context) bool {
 		return true
 	}
 	switch path := c.Request.URL.Path; path {
-	case "/", "/health", "/healthz", "/management.html", "/quota-monitor.html":
+	case "/", "/health", "/healthz", "/management.html", "/quota-monitor.html", "/quota-monitor/echarts.min.js":
 		return true
 	case "/v0/management", "/management":
 		return true

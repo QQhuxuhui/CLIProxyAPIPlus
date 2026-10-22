@@ -43,6 +43,7 @@ type scheduledGenerationMeta struct {
 
 // authScheduler keeps the incremental provider/model scheduling state used by Manager.
 type authScheduler struct {
+	rateCap             *requestRateCap
 	mu                  sync.Mutex
 	strategy            schedulerStrategy
 	providers           map[string]*providerScheduler
@@ -327,6 +328,10 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+	predicate, errRate := s.ratePredicateLocked(ctx, []string{providerKey}, modelKey, predicate)
+	if errRate != nil {
+		return nil, errRate
+	}
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
 	}
@@ -388,6 +393,10 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+		predicate, errRate := s.ratePredicateLocked(ctx, []string{providerKey}, modelKey, predicate)
+		if errRate != nil {
+			return nil, "", errRate
+		}
 		if picked := shard.pickReadyLocked(false, strategy, predicate); picked != nil {
 			return picked, providerKey, nil
 		}
@@ -395,6 +404,10 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 
 	predicate := scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin)
+	predicate, errRate := s.ratePredicateLocked(ctx, normalized, modelKey, predicate)
+	if errRate != nil {
+		return nil, "", errRate
+	}
 	candidateShards := make([]*modelScheduler, len(normalized))
 	bestPriority := 0
 	hasCandidate := false
@@ -1568,4 +1581,36 @@ func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]in
 	}
 	current[picked.auth.ID] = saturatingAddInt64(current[picked.auth.ID], -totalWeight)
 	return picked
+}
+
+// ratePredicateLocked filters capacity before priority and transport preferences.
+func (s *authScheduler) ratePredicateLocked(ctx context.Context, providers []string, model string, base func(*scheduledAuth) bool) (func(*scheduledAuth) bool, error) {
+	if rateBypassed(ctx) || !s.rateCap.enabled() {
+		return base, nil
+	}
+	candidates := make([]rateCandidate, 0)
+	for _, provider := range providers {
+		state := s.providers[provider]
+		if state == nil {
+			continue
+		}
+		shard := state.ensureModelLocked(model, time.Now())
+		if shard == nil {
+			continue
+		}
+		shard.promoteExpiredLocked(time.Now())
+		for _, entry := range shard.entries {
+			if entry == nil || entry.auth == nil || (base != nil && !base(entry)) {
+				continue
+			}
+			candidates = append(candidates, rateCandidate{entry.auth, entry.state != scheduledStateReady, entry.state == scheduledStateCooldown || (entry.state == scheduledStateBlocked && entry.nextRetryAt.After(time.Now())), entry.nextRetryAt})
+		}
+	}
+	allowed, err := s.rateCap.filter(candidates)
+	if err != nil || allowed == nil {
+		return base, err
+	}
+	return func(entry *scheduledAuth) bool {
+		return entry != nil && entry.auth != nil && allowed[entry.auth.ID] && (base == nil || base(entry))
+	}, nil
 }

@@ -536,6 +536,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	bootstrapEligible := func(err error) bool {
+		if statusFromError(err) == 529 {
+			return false
+		}
 		status := statusFromError(err)
 		if status == 0 {
 			return true

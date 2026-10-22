@@ -39,7 +39,9 @@ func (cfg *Config) ConcurrentRequestWaitTimeoutDuration() time.Duration {
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
-	SDKConfig `yaml:",inline"`
+	// ProviderRequestRateCap configures adaptive per-credential request windows.
+	ProviderRequestRateCap map[string]RequestRateCapConfig `yaml:"provider-request-rate-cap" json:"provider-request-rate-cap"`
+	SDKConfig              `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`

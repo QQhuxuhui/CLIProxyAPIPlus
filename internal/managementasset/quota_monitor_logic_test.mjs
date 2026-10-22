@@ -307,3 +307,79 @@ test('selectedEmails keeps list order, drops duplicates, and counts accounts wit
   });
   assert.deepEqual(plain(logic.selectedEmails([], entries)), { emails: [], missing: 0 });
 });
+
+vm.runInContext(logicBlock('CODEX_POOL_LOGIC'), context);
+test('Codex pool charts distinguish rate limits and exhausted quota', () => {
+  const charts = plain(context.CodexPoolLogic.chartOptions({
+    points: [{time:'2026-10-22T12:00:00Z',attempts:40,capacity:100,ttft_p50:7,ttft_p90:10,overload:3,rate_limits:2,quota_exhausted:1,other_failures:4}],
+    limits: [{limit:20,accounts:8}],
+  }));
+  assert.equal(charts.length, 4);
+  assert.deepEqual(charts[0].series.map(s=>s.data), [[40],[100]]);
+  assert.deepEqual(charts[2].series.map(s=>s.data), [[3],[2],[1],[4]]);
+  assert.equal(charts[2].series.every(s=>s.stack==='fail'), true);
+  assert.deepEqual(charts[3].xAxis.data, [20]);
+  assert.deepEqual(charts[3].series[0].data, [8]);
+});
+test('Codex pool cards preserve negative remaining capacity and missing TTFT', () => {
+  const cards=plain(context.CodexPoolLogic.cards({remaining:-3,success_rate:.75,ttft_p50:0,ttft_p90:0}));
+  assert.equal(cards.find(c=>c[0]==='剩余容量 / RPM')[1], -3);
+  assert.equal(cards.find(c=>c[0]==='近 5 分钟成功率')[1], '75.0%');
+  assert.equal(cards.find(c=>c[0]==='首字 p50')[1], '—');
+});
+
+function poolLifecycleFixture() {
+  const elements = new Map(), scripts = [];
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, {value:'',checked:false,disabled:false,textContent:'',className:'',appendChild(){},addEventListener(){},reportValidity(){return true;},reset(){}});
+    return elements.get(id);
+  };
+  element('pool-config').elements = ['enabled','fail-fast','initial','min','max','probe','headroom','save'].map(id=>element('pool-'+id));
+  let resolveSave;
+  const saveResponse = new Promise(resolve=>{resolveSave=resolve;});
+  const sandbox = vm.createContext({
+    Date,Math,String,Number,Array,Object,JSON,AbortController,
+    currentTab:'pool',firstSuccess:true,getStoredKey:()=> 'test-key',
+    document:{getElementById:element,createElement:()=>({remove(){},appendChild(){}}),head:{appendChild:script=>scripts.push(script)}},
+    window:{addEventListener(){}},setInterval:()=>1,clearInterval(){},fetch:()=>saveResponse,
+    readError:()=>Promise.resolve('failed'),clearKey(){},setStatus(){}
+  });
+  vm.runInContext(logicBlock('CODEX_POOL_LOGIC'), sandbox);
+  const start=html.indexOf('  var poolState ='),end=html.indexOf('  // ---- Proxy settings ----',start);
+  assert.ok(start>=0 && end>start);
+  vm.runInContext(html.slice(start,end),sandbox);
+  const data={config:{enabled:false,'fail-fast':false,'initial-per-minute':20,'min-per-minute':5,'max-per-minute':60,'probe-interval':'5m',headroom:1},home_mode:false,success_rate:0,points:[],limits:[]};
+  sandbox.renderPool(data);sandbox.loadPoolECharts();
+  element('pool-enabled').checked=true;element('pool-fail-fast').checked=true;element('pool-headroom').value='0.75';sandbox.poolState.dirty=true;
+  const finishCharts = success => {
+    if(success){sandbox.window.echarts={init:()=>({setOption(){},resize(){},dispose(){}})};scripts[0].onload();}
+    else scripts[0].onerror();
+  };
+  return {sandbox,element,resolveSave,finishCharts};
+}
+
+for (const success of [true,false]) {
+  test(`late chart ${success?'load':'failure'} preserves pending-save form locks`,async()=>{
+    const {sandbox,element,resolveSave,finishCharts}=poolLifecycleFixture();
+    sandbox.savePool({preventDefault(){}});
+    assert.equal(element('pool-enabled').disabled,true);
+    finishCharts(success);
+    assert.equal(element('pool-enabled').disabled,true);
+    assert.equal(element('pool-fail-fast').disabled,true);
+    assert.equal(element('pool-headroom').value,'0.75');
+    assert.equal(element('pool-status').textContent,'保存中…');
+    resolveSave({ok:true});await new Promise(setImmediate);
+    assert.equal(element('pool-enabled').disabled,false);
+    assert.equal(element('pool-enabled').checked,true);
+  });
+  test(`late chart ${success?'load':'failure'} after save keeps committed form values`,async()=>{
+    const {sandbox,element,resolveSave,finishCharts}=poolLifecycleFixture();
+    sandbox.savePool({preventDefault(){}});resolveSave({ok:true});await new Promise(setImmediate);
+    assert.equal(sandbox.poolState.dirty,false);
+    finishCharts(success);
+    assert.equal(element('pool-enabled').checked,true);
+    assert.equal(element('pool-fail-fast').checked,true);
+    assert.equal(element('pool-headroom').value,'0.75');
+    assert.equal(element('pool-status').textContent,'已保存，等待配置热更新');
+  });
+}

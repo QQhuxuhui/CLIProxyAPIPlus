@@ -250,6 +250,22 @@
     .stats-total { grid-column: 2; grid-row: 1; text-align: right; }
     .stats-breakdown { grid-column: 1 / -1; grid-row: 3; margin-top: 0; text-align: left; }
   }
+
+  .pool-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:18px; }
+  .pool-settings,.pool-chart-card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:20px; }
+  .pool-switches { display:flex; flex-wrap:wrap; gap:24px; font-size:14px; margin-bottom:18px; }
+  .pool-fields { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)) auto; gap:14px; align-items:end; margin-bottom:14px; }
+  .pool-fields label { font-size:12px; color:#64748b; }
+  .pool-fields input { display:block; width:100%; border:1px solid #cbd5e1; border-radius:6px; padding:8px; margin-top:5px; color:#0f172a; }
+  .pool-cards { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0; }
+  .pool-metric { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:16px; font-size:12px; color:#64748b; }
+  .pool-metric strong { display:block; margin-top:8px; font-size:26px; color:#0f172a; font-variant-numeric:tabular-nums; }
+  .pool-charts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+  .pool-chart-card { min-width:0; }
+  .pool-chart-card h3 { font-size:14px; font-weight:600; }
+  .pool-chart { height:280px; width:100%; overflow:hidden; }
+  nav { overflow-x:auto; white-space:nowrap; }
+  @media(max-width:760px) { .pool-fields,.pool-cards {grid-template-columns:repeat(2,minmax(0,1fr));} .pool-charts {grid-template-columns:1fr;} }
 </style>
 </head>
 <body class="bg-slate-50 text-slate-800 antialiased">
@@ -305,13 +321,14 @@
         <button id="tabbtn-stats" data-tab="stats" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">调用统计</button>
         <button id="tabbtn-health" data-tab="health" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">模型健康</button>
         <button id="tabbtn-proxy" data-tab="proxy" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">代理设置</button>
+      <button id="tabbtn-pool" data-tab="pool" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">Codex 号池</button>
       </nav>
     </div>
   </header>
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
 
-    <!-- Tab: 账号统计 -->
+    <!-- Tab: Accounts -->
     <section id="tab-accounts">
       <h2 class="text-sm font-semibold text-slate-900 mb-3">账号列表</h2>
       <div class="account-filters">
@@ -351,7 +368,7 @@
       </div>
     </section>
 
-    <!-- Tab: 调用统计 -->
+    <!-- Tab: Usage statistics -->
     <section id="tab-stats" hidden>
       <div class="stats-card bg-white border border-slate-200 rounded-xl shadow-sm">
         <div class="stats-header">
@@ -384,7 +401,7 @@
       </div>
     </section>
 
-    <!-- Tab: 模型健康 -->
+    <!-- Tab: Model health -->
     <section id="tab-health" hidden>
       <section id="dashboard" class="mb-5" hidden>
         <div id="dash-strip" class="bg-white border border-slate-200 rounded-xl shadow-sm px-5 py-4 space-y-1.5">
@@ -403,7 +420,7 @@
       </div>
     </section>
 
-    <!-- Tab: 代理设置 -->
+    <!-- Tab: Proxy settings -->
     <section id="tab-proxy" hidden>
       <div class="max-w-3xl">
         <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
@@ -447,6 +464,33 @@
       </div>
     </section>
 
+    <section id="tab-pool" hidden>
+      <div class="pool-heading"><div><h2 class="text-lg font-semibold text-slate-900">Codex 号池</h2><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
+      <form id="pool-config" class="pool-settings">
+        <div class="pool-switches">
+          <label><input id="pool-enabled" type="checkbox"> 启用速率上限算法</label>
+          <label><input id="pool-fail-fast" type="checkbox" disabled> 容量满时快速失败（529）</label>
+        </div>
+        <div class="pool-fields">
+          <label>初始 RPM<input id="pool-initial" type="number" min="1" max="1000000" required></label>
+          <label>最低 RPM<input id="pool-min" type="number" min="1" max="1000000" required></label>
+          <label>最高 RPM<input id="pool-max" type="number" min="1" max="1000000" required></label>
+          <label>上探间隔<input id="pool-probe" type="text" placeholder="5m" required></label>
+          <label>容量系数<input id="pool-headroom" type="number" min="0.01" max="1" step="0.01" required></label>
+          <button id="pool-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+        </div>
+        <p id="pool-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
+      </form>
+      <div id="pool-cards" class="pool-cards"></div>
+      <p id="pool-charts-status" class="text-xs text-slate-500 mb-3" role="status" aria-live="polite"></p>
+      <div class="pool-charts">
+        <div class="pool-chart-card"><h3>请求 RPM / 预测容量</h3><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="每分钟上游请求量与预测容量折线图"></div></div>
+        <div class="pool-chart-card"><h3>成功请求首字延迟</h3><div id="pool-ttft-chart" class="pool-chart" role="img" aria-label="每分钟首字延迟 p50 与 p90 折线图"></div></div>
+        <div class="pool-chart-card"><h3>每分钟失败构成</h3><div id="pool-failures-chart" class="pool-chart" role="img" aria-label="过载、限流、额度耗尽及其他错误堆叠柱状图"></div></div>
+        <div class="pool-chart-card"><h3>学到的单号上限分布</h3><div id="pool-limits-chart" class="pool-chart" role="img" aria-label="单号每分钟请求上限分布直方图"></div></div>
+      </div>
+      <p class="muted text-xs mt-4">过载请求也占用窗口；首字百分位由固定边界直方图估计。成功率、有效成功容量与首字卡片统计最近 5 个分钟桶，快速失败计数统计最近 60 个分钟桶。</p>
+    </section>
   </main>
 </div>
 
@@ -524,6 +568,7 @@
     document.getElementById('login-view').hidden = true;
     document.getElementById('app-view').hidden = false;
     loadProxyOnce();
+    if (currentTab === 'pool') startPool();
   }
   function showLogin() {
     document.getElementById('app-view').hidden = true;
@@ -531,6 +576,7 @@
   }
 
   function clearRenderedData() {
+    clearPool();
     accountsData = []; modelRows = []; accountPage = 1; selectedAccounts = [];
     els['account-bulk-bar'].hidden = true;
     els['account-select-all'].checked = false;
@@ -639,6 +685,7 @@
       showApp();
       render(data.files || []);
       fetchSummary(k);
+      if (currentTab === 'pool' && reason === 'manual') fetchPool();
       if (currentTab === 'stats') {
         if (reason === 'manual' || reason === 'login') requestModelStats();
         else if (reason === 'auto') maybeAutoRefreshModelStats();
@@ -1033,7 +1080,7 @@
 
   function accountPlan(a) { return AccountViewLogic.accountPlan(a); }
   function isAntigravity(a) { return String(a && a.provider || '').toLowerCase() === 'antigravity'; }
-  // Antigravity accounts carry a manual "刷新额度" control because their 套餐/credits
+  // Antigravity accounts carry a manual quota-refresh control because their plan/credits
   // are only fetched lazily by the executor; non-antigravity rows show plain text.
   function planCell(a) {
     if (isAntigravity(a)) {
@@ -1142,7 +1189,7 @@
     return td(status);
   }
 
-  // Compact error label next to 状态: the error code for structured upstream
+  // Compact error label next to status: the error code for structured upstream
   // bodies, the OAuth reason for flat ones, the raw text otherwise.
   function errorCell(a) {
     var detail = AccountViewLogic.statusError(a);
@@ -1411,16 +1458,134 @@
       (active ? 'text-indigo-600 border-indigo-600' : 'text-slate-500 border-transparent hover:text-slate-800');
   }
   function switchTab(name) {
+    if (name!=='pool') stopPool();
     currentTab = name;
-    ['accounts', 'stats', 'health', 'proxy'].forEach(function (tabName) {
+    ['accounts', 'stats', 'health', 'proxy', 'pool'].forEach(function (tabName) {
       var panel = document.getElementById('tab-' + tabName);
       var button = document.getElementById('tabbtn-' + tabName);
       if (panel) panel.hidden = tabName !== name;
       if (button) button.className = tabBtnClass(tabName === name);
     });
+    if (name === 'pool') startPool();
     if (name === 'proxy') loadProxyOnce();
     if (name === 'stats' && (!statsState.loaded || ModelStatsLogic.shouldRefreshOnActivate(statsState.lastSuccessAt, Date.now()))) requestModelStats();
   }
+
+  // ---- Codex pool ----
+  /* CODEX_POOL_LOGIC_START */
+  var CodexPoolLogic = {
+    chartOptions: function (data) {
+      var points = data.points || [], times = points.map(function (p) { return new Date(p.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); });
+      function chart(series, unit) { return { animation:false, tooltip:{trigger:'axis',renderMode:'richText'}, legend:{bottom:0,type:'scroll'}, grid:{left:55,right:20,top:25,bottom:60}, xAxis:{type:'category',data:times}, yAxis:{type:'value',name:unit || ''}, series:series }; }
+      function series(name, field, type, stack) { return {name:name,type:type || 'line',stack:stack,showSymbol:false,data:points.map(function (p) { return p[field] || 0; })}; }
+      return [
+        chart([series('上游请求','attempts'),series('预测容量','capacity')],'RPM'),
+        chart([series('p50','ttft_p50'),series('p90','ttft_p90')],'秒'),
+        chart([series('过载 502/503','overload','bar','fail'),series('429 限流','rate_limits','bar','fail'),series('额度耗尽','quota_exhausted','bar','fail'),series('其他','other_failures','bar','fail')],'次'),
+        {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},grid:{left:55,right:20,top:25,bottom:40},xAxis:{type:'category',data:(data.limits || []).map(function (b) {return b.limit;})},yAxis:{type:'value',name:'账号数'},series:[{type:'bar',data:(data.limits || []).map(function (b) {return b.accounts;})}]}
+      ];
+    },
+    cards: function (d) {
+      return [['可调度账号',d.schedulable],['预测容量 / RPM',d.capacity],['当前 RPM',d.rpm],['剩余容量 / RPM',d.remaining],['已满账号',d.full],['近 5 分钟成功率',(100*d.success_rate).toFixed(1)+'%'],['首字 p50',d.ttft_p50 ? d.ttft_p50+' s' : '—'],['首字 p90',d.ttft_p90 ? d.ttft_p90+' s' : '—'],['有效成功容量 / RPM',Number(d.effective_capacity || 0).toFixed(1)],['冷却中账号',d.cooling],['快速失败 / 60 分钟',d.fast_failures]];
+    }
+  };
+  /* CODEX_POOL_LOGIC_END */
+  var poolState = {timer:null, controller:null, generation:0, charts:[], loaded:false, dirty:false, saving:false, home:false, saveToken:0, saveController:null, lastData:null, chartsLoading:false, chartsFailed:false};
+  // ECharts (~1 MB) is loaded on first entry to this tab; a failed load is retried on the next entry.
+  function loadPoolECharts() {
+    if (window.echarts || poolState.chartsLoading) return;
+    poolState.chartsLoading=true;poolState.chartsFailed=false;
+    var script=document.createElement('script');
+    script.src='/quota-monitor/echarts.min.js';
+    script.onload=function(){poolState.chartsLoading=false;if(currentTab==='pool' && poolState.lastData)renderPoolCharts(poolState.lastData);};
+    script.onerror=function(){poolState.chartsLoading=false;poolState.chartsFailed=true;script.remove();if(currentTab==='pool' && poolState.lastData)renderPoolCharts(poolState.lastData);};
+    document.head.appendChild(script);
+  }
+  function poolEl(id) {return document.getElementById('pool-' + id);}
+  function poolStatus(message, failed) {poolEl('status').textContent=message;poolEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function stopPool() {
+    poolState.generation++;
+    if (poolState.timer) clearInterval(poolState.timer);
+    poolState.timer=null;
+    if (poolState.controller) poolState.controller.abort();
+    poolState.controller=null;
+  }
+  function clearPool() {
+    stopPool();poolState.saveToken++;if(poolState.saveController)poolState.saveController.abort();poolState.saveController=null;poolState.charts.forEach(function(c){c.dispose();});poolState.charts=[];
+    poolState.loaded=false;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
+    poolEl('config').reset();setPoolSaving(false);poolEl('save').disabled=true;poolEl('fail-fast').disabled=true;
+    poolEl('cards').textContent='';poolEl('updated').textContent='';poolEl('charts-status').textContent='';poolStatus('',false);
+  }
+  function renderPool(data) {
+    poolState.lastData=data;
+    poolState.home=!!data.home_mode;
+    if (!poolState.loaded || !poolState.dirty) {
+      var c=data.config;
+      poolEl('enabled').checked=c.enabled;poolEl('fail-fast').checked=c['fail-fast'];
+      poolEl('initial').value=c['initial-per-minute'];poolEl('min').value=c['min-per-minute'];poolEl('max').value=c['max-per-minute'];
+      poolEl('probe').value=c['probe-interval'];poolEl('headroom').value=c.headroom;
+    }
+    poolEl('enabled').disabled=poolState.home;
+    poolEl('fail-fast').disabled=poolState.home || !poolEl('enabled').checked;
+    poolEl('save').disabled=poolState.home || poolState.saving;
+    poolState.loaded=true;
+    poolEl('cards').textContent='';
+    CodexPoolLogic.cards(data).forEach(function(pair){
+      var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
+      card.className='pool-metric';label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);poolEl('cards').appendChild(card);
+    });
+    renderPoolCharts(data);
+    poolEl('updated').textContent='更新于 '+new Date().toLocaleTimeString();
+    if (!poolState.dirty && !poolState.saving) poolStatus(poolState.home?'Home 模式：容量由 Home 调度端管理，本机算法未启用。':'关闭算法仍持续采集统计；开启后优先避开已满账号。',false);
+  }
+  // Asset callbacks update charts only; cached snapshots must not rewrite saved form values.
+  function renderPoolCharts(data) {
+    if (window.echarts) {
+      if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart'].forEach(function(id){poolState.charts.push(window.echarts.init(poolEl(id)));});
+      CodexPoolLogic.chartOptions(data).forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
+    }
+    var failed=!window.echarts && poolState.chartsFailed;
+    poolEl('charts-status').textContent=window.echarts?'':(failed?'图表资源加载失败，数值统计仍可查看；重新进入本页签会再次加载。':'图表加载中…');
+    poolEl('charts-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');
+  }
+  function fetchPool() {
+    var key=getStoredKey();
+    if (!key || currentTab!=='pool' || !firstSuccess || poolState.controller || poolState.saving) return;
+    var generation=poolState.generation,controller=new AbortController();poolState.controller=controller;
+    fetch('/v0/management/codex-pool',{headers:{Authorization:'Bearer '+key},signal:controller.signal})
+      .then(function(resp){
+        if (generation!==poolState.generation || key!==getStoredKey()) return null;
+        if (resp.status===401 || resp.status===403) {clearKey();setStatus('管理访问已失效，请重新登录','err');return null;}
+        if (!resp.ok) throw new Error('HTTP '+resp.status);
+        return resp.json();
+      }).then(function(data){if(data && generation===poolState.generation && key===getStoredKey()) renderPool(data);})
+      .catch(function(e){if(e.name!=='AbortError' && generation===poolState.generation) poolStatus('号池数据加载失败：'+e.message+'；稍后自动重试',true);})
+      .finally(function(){if(poolState.controller===controller) poolState.controller=null;});
+  }
+  function startPool() {loadPoolECharts();if(poolState.saving || poolState.timer || poolState.controller)return;stopPool();fetchPool();poolState.timer=setInterval(fetchPool,10000);}
+  function setPoolSaving(saving) {
+    poolState.saving=saving;
+    Array.from(poolEl('config').elements).forEach(function(el){el.disabled=saving || poolState.home;});
+    poolEl('fail-fast').disabled=saving || poolState.home || !poolEl('enabled').checked;
+    poolEl('save').disabled=saving || poolState.home || !poolState.loaded;
+  }
+  function savePool(event) {
+    event.preventDefault();
+    var key=getStoredKey();if(!key || !poolState.loaded || poolState.saving || poolState.home) return;
+    if (!poolEl('config').reportValidity()) return;
+    var enabled=poolEl('enabled').checked;
+    var config={enabled:enabled,'fail-fast':enabled && poolEl('fail-fast').checked,'initial-per-minute':Number(poolEl('initial').value),'min-per-minute':Number(poolEl('min').value),'max-per-minute':Number(poolEl('max').value),'probe-interval':poolEl('probe').value.trim(),headroom:Number(poolEl('headroom').value)};
+    stopPool();var saveToken=++poolState.saveToken,controller=new AbortController();poolState.saveController=controller;setPoolSaving(true);poolStatus('保存中…',false);
+    fetch('/v0/management/codex-pool/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(config),signal:controller.signal})
+      .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
+      .then(function(){if(saveToken===poolState.saveToken && key===getStoredKey()){poolState.dirty=false;poolStatus('已保存，等待配置热更新',false);}})
+      .catch(function(e){if(saveToken===poolState.saveToken && e.name!=='AbortError')poolStatus('保存失败：'+e.message,true);})
+      .finally(function(){if(saveToken===poolState.saveToken){poolState.saveController=null;setPoolSaving(false);if(currentTab==='pool')poolState.timer=setInterval(fetchPool,10000);}});
+  }
+  poolEl('config').addEventListener('submit',savePool);
+  poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});
+  poolEl('enabled').addEventListener('change',function(){poolEl('fail-fast').disabled=!this.checked;if(!this.checked)poolEl('fail-fast').checked=false;});
+  window.addEventListener('resize',function(){poolState.charts.forEach(function(c){c.resize();});});
 
   // ---- Proxy settings ----
   var proxyLoaded = false;
@@ -1735,7 +1900,7 @@
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   els['account-page-prev'].addEventListener('click', function () { accountPage--; renderAccountView({ resetPage: false, rebuildOptions: false }); });
   els['account-page-next'].addEventListener('click', function () { accountPage++; renderAccountView({ resetPage: false, rebuildOptions: false }); });
-  ['accounts', 'stats', 'health', 'proxy'].forEach(function (n) {
+  ['accounts', 'stats', 'health', 'proxy', 'pool'].forEach(function (n) {
     var b = document.getElementById('tabbtn-' + n);
     if (b) b.addEventListener('click', function () { switchTab(n); });
   });

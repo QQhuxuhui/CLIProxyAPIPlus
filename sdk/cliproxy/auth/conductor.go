@@ -139,6 +139,7 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	rateCap                   *requestRateCap
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
@@ -213,6 +214,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
+		rateCap:               newRequestRateCap(),
 		store:                 store,
 		executors:             make(map[string]ProviderExecutor),
 		selector:              selector,
@@ -233,6 +235,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
 	}
 	manager.scheduler = newAuthScheduler(selector)
+	manager.scheduler.rateCap = manager.rateCap
 	return manager
 }
 

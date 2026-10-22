@@ -96,6 +96,9 @@ func unwrapExecutionBoundaryError(err error) error {
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
+	if isPoolCapacityError(fallback) {
+		return fallback
+	}
 	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
 		return fallback
 	}
@@ -119,7 +122,8 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
-func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
+	defer func() { m.recordPoolFailure(resultErr) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -148,6 +152,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
 		}
+		errExec = m.poolCapacityAfterExecutionFailure(ctx, normalized, retryModel, opts, errExec)
 		lastErr = errExec
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, normalized, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
@@ -179,6 +184,10 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, rateBypassContextKey{}, true)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -230,7 +239,8 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
-func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response *cliproxyexecutor.StreamResult, resultErr error) {
+	defer func() { m.recordPoolFailure(resultErr) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -278,6 +288,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
 			return nil, unwrapExecutionBoundaryError(errStream)
 		}
+		errStream = m.poolCapacityAfterExecutionFailure(ctx, normalized, retryModel, opts, errStream)
 		lastErr = errStream
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, normalized, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
@@ -494,12 +505,15 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
 		if errPick != nil {
+			if isPoolCapacityError(busyErr) {
+				return cliproxyexecutor.Response{}, busyErr
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
 			// All candidates were exhausted after skipping busy accounts: surface
 			// the capacity signal (retryable) rather than a generic pick failure.
-			if lastErr == nil && busyErr != nil {
+			if busyErr != nil && (lastErr == nil || isPoolCapacityError(busyErr)) {
 				return cliproxyexecutor.Response{}, busyErr
 			}
 			return cliproxyexecutor.Response{}, errPick
@@ -580,7 +594,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			startExec := time.Now()
+			var errRate error
+			execCtx, errRate = m.beginRateAttempt(execCtx, auth)
+			if errRate != nil {
+				if !cliproxyexecutor.UpstreamAttempted(execCtx) {
+					delete(attempted, auth.ID)
+				}
+				accountBusy = true
+				busyErr = errRate
+				break
+			}
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			m.finishRateDispatch(execCtx)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -608,7 +633,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
+					var errRate error
+					execCtx, errRate = m.beginRateAttempt(execCtx, auth)
+					if errRate != nil {
+						if !cliproxyexecutor.UpstreamAttempted(execCtx) {
+							delete(attempted, auth.ID)
+						}
+						accountBusy = true
+						busyErr = errRate
+						break
+					}
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					m.finishRateDispatch(execCtx)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1178,6 +1214,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			pooled = false
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
+		if isPoolCapacityError(errStream) && !cliproxyexecutor.UpstreamAttempted(execCtx) {
+			delete(attempted, auth.ID)
+		}
 		if errStream != nil {
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream

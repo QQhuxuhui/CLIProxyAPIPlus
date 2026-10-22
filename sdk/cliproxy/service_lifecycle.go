@@ -50,6 +50,9 @@ func (s *Service) Run(ctx context.Context) error {
 		s.homeMu.Unlock()
 	}()
 
+	if s.coreManager != nil {
+		s.coreManager.StartCodexPoolMetrics(ctx)
+	}
 	usage.StartDefault(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {

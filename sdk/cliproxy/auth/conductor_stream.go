@@ -206,6 +206,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 }
 
 func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel, executionModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult, routing *apiKeyModelRoutingSnapshot, allowRetry bool, ephemeralResult bool) (*cliproxyexecutor.StreamResult, error) {
+	rateParentCtx := ctx
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -241,7 +242,16 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 		startStream := time.Now()
+		var errRate error
+		ctx, errRate = m.beginRateAttempt(ctx, auth)
+		if errRate != nil {
+			return nil, errRate
+		}
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+		m.finishRateDispatch(ctx)
+		if provider == "codex" && cliproxyexecutor.UpstreamAttempted(ctx) {
+			cliproxyexecutor.MarkUpstreamAttempt(rateParentCtx)
+		}
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
@@ -261,7 +271,16 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					ctx = newUpstreamAttemptContext(ctx)
 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 					startRetry := time.Now()
+					var errRate error
+					ctx, errRate = m.beginRateAttempt(ctx, auth)
+					if errRate != nil {
+						return nil, errRate
+					}
 					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					m.finishRateDispatch(ctx)
+					if provider == "codex" && cliproxyexecutor.UpstreamAttempted(ctx) {
+						cliproxyexecutor.MarkUpstreamAttempt(rateParentCtx)
+					}
 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 					if hasUpstreamExecutionAttempt(errStream) {
 						upstreamErr = errStream
@@ -337,7 +356,16 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
 					startRetry := time.Now()
+					var errRate error
+					ctx, errRate = m.beginRateAttempt(ctx, auth)
+					if errRate != nil {
+						return nil, errRate
+					}
 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					m.finishRateDispatch(ctx)
+					if provider == "codex" && cliproxyexecutor.UpstreamAttempted(ctx) {
+						cliproxyexecutor.MarkUpstreamAttempt(rateParentCtx)
+					}
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)

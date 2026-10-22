@@ -77,3 +77,20 @@ func UpstreamAttempted(ctx context.Context) bool {
 	tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker)
 	return ok && tracker != nil && tracker.attempted.Load()
 }
+
+type upstreamRequestRetryObserverKey struct{}
+
+// WithUpstreamRequestRetryObserver records additional sends hidden within an executor call.
+func WithUpstreamRequestRetryObserver(ctx context.Context, observer func()) context.Context {
+	return context.WithValue(ctx, upstreamRequestRetryObserverKey{}, observer)
+}
+
+// ObserveUpstreamRequestRetry is called immediately before resending a generation request.
+func ObserveUpstreamRequestRetry(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	if observe, ok := ctx.Value(upstreamRequestRetryObserverKey{}).(func()); ok && observe != nil {
+		observe()
+	}
+}
