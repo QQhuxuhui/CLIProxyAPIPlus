@@ -274,3 +274,39 @@ func TestRegisterExecutorsForAuths_InterleavedBindings(t *testing.T) {
 		})
 	}
 }
+
+func TestRegisterExecutorForAuth_KeepsUnchangedNativeExecutor(t *testing.T) {
+	cfg := &config.Config{}
+	service := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+	auth := &coreauth.Auth{ID: "ag-1", Provider: "antigravity"}
+
+	service.registerExecutorForAuth(auth, false)
+	first, ok := service.coreManager.Executor("antigravity")
+	if !ok {
+		t.Fatal("expected antigravity executor")
+	}
+
+	service.registerExecutorForAuth(&coreauth.Auth{ID: "ag-2", Provider: "antigravity"}, false)
+	if again, _ := service.coreManager.Executor("antigravity"); again != first {
+		t.Fatal("unforced registration with unchanged config should keep the bound executor")
+	}
+
+	service.registerExecutorForAuth(auth, true)
+	forced, _ := service.coreManager.Executor("antigravity")
+	if forced == first {
+		t.Fatal("forced registration should rebind the executor")
+	}
+
+	service.cfg = &config.Config{}
+	service.registerExecutorForAuth(auth, false)
+	if rebound, _ := service.coreManager.Executor("antigravity"); rebound == forced {
+		t.Fatal("config change should rebind the executor")
+	}
+
+	service.coreManager.RegisterExecutor(runtimeexecutor.NewAntigravityExecutor(service.cfg))
+	replaced, _ := service.coreManager.Executor("antigravity")
+	service.registerExecutorForAuth(auth, false)
+	if current, _ := service.coreManager.Executor("antigravity"); current == replaced {
+		t.Fatal("an executor installed elsewhere should be rebound like before")
+	}
+}

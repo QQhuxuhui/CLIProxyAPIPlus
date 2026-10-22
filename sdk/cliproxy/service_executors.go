@@ -326,22 +326,22 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	}
 	switch strings.ToLower(a.Provider) {
 	case constant.Gemini:
-		s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewGeminiExecutor(cfg))
 	case constant.GeminiInteractions:
-		s.coreManager.RegisterExecutor(executor.NewGeminiInteractionsExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewGeminiInteractionsExecutor(cfg))
 	case "vertex":
-		s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewGeminiVertexExecutor(cfg))
 	case "aistudio":
 		if s.wsGateway != nil {
 			s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(cfg, a.ID, s.wsGateway))
 		}
 		return
 	case "antigravity":
-		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewAntigravityExecutor(cfg))
 	case "claude":
-		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewClaudeExecutor(cfg))
 	case "kimi":
-		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewKimiExecutor(cfg))
 	case "xai":
 		if !forceReplace {
 			existingExecutor, hasExecutor := s.coreManager.Executor("xai")
@@ -354,9 +354,9 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		}
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
 	case "devin":
-		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewDevinExecutor(cfg))
 	case "meta":
-		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+		s.registerNativeExecutor(cfg, forceReplace, executor.NewMetaExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -372,6 +372,26 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		// OAuth refresh to the plugin AuthProvider when one is registered.
 		s.registerOpenAICompatProviderExecutor(providerKey, a, cfg, forceReplace, true)
 	}
+}
+
+// registerNativeExecutor binds a native provider executor. Without forceReplace it keeps
+// the executor this service last bound for the provider when it is still installed and
+// built from the same config: every auth update reaches this path, and each rebind takes
+// the manager write lock and scans every auth.
+func (s *Service) registerNativeExecutor(cfg *config.Config, forceReplace bool, next coreauth.ProviderExecutor) {
+	provider := strings.ToLower(strings.TrimSpace(next.Identifier()))
+	if !forceReplace {
+		if bound, ok := s.nativeExecutorBindings[provider]; ok && bound.cfg == cfg {
+			if existing, hasExecutor := s.coreManager.Executor(provider); hasExecutor && existing == bound.executor {
+				return
+			}
+		}
+	}
+	s.coreManager.RegisterExecutor(next)
+	if s.nativeExecutorBindings == nil {
+		s.nativeExecutorBindings = make(map[string]nativeExecutorBinding)
+	}
+	s.nativeExecutorBindings[provider] = nativeExecutorBinding{executor: next, cfg: cfg}
 }
 
 // registerOpenAICompatProviderExecutor binds a native OpenAI-compat executor, optionally
@@ -613,4 +633,9 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
 	return true
+}
+
+type nativeExecutorBinding struct {
+	executor coreauth.ProviderExecutor
+	cfg      *config.Config
 }

@@ -38,6 +38,8 @@ type Service struct {
 	// configRuntimeMu orders side-effecting runtime application after config commits.
 	configRuntimeMu        sync.Mutex
 	executorRegistrationMu sync.Mutex
+	// nativeExecutorBindings records native executors bound by this service; guarded by executorRegistrationMu.
+	nativeExecutorBindings map[string]nativeExecutorBinding
 	authUpdateMu           sync.Mutex
 	authRevisions          map[string]uint64
 	authRegWaitMu          sync.Mutex
