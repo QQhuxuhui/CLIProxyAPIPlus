@@ -350,6 +350,9 @@ codex:
   identity-confuse: false
   # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
+  # Optional: replace the built-in cloaking User-Agent (raise the client version without a release).
+  # The Originator header follows the product name before the first "/".
+  # cloaking-user-agent: "codex-tui/0.160.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.160.0)"
   # Hold back the frames that carry nothing the client has seen - the handshake (response.created,
   # response.in_progress, the websocket metadata frames), keepalive heartbeats, and the *.added
   # announcements of an item or part that is still empty - until the upstream emits its first

@@ -1920,8 +1920,47 @@ func TestApplyCodexWebsocketHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeader
 	}
 }
 
+func TestApplyCodexCloakingHeadersUsesConfiguredUserAgent(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("User-Agent", "client-ua")
+	headers.Set("Originator", "client-origin")
+	cfg := &config.Config{Codex: config.CodexConfig{CloakingUserAgent: " codex_cli_rs/0.161.0 (Mac OS 26.5.2; arm64) "}}
+
+	applyCodexCloakingHeaders(headers, cfg)
+
+	if got := headers.Get("User-Agent"); got != "codex_cli_rs/0.161.0 (Mac OS 26.5.2; arm64)" {
+		t.Fatalf("User-Agent = %q, want configured cloaking user agent", got)
+	}
+	if got := headers.Get("Originator"); got != "codex_cli_rs" {
+		t.Fatalf("Originator = %q, want %q", got, "codex_cli_rs")
+	}
+
+	applyCodexCloakingHeaders(headers, &config.Config{})
+	if got := headers.Get("User-Agent"); got != codexUserAgent {
+		t.Fatalf("User-Agent = %q, want built-in %q", got, codexUserAgent)
+	}
+	if got := headers.Get("Originator"); got != codexOriginator {
+		t.Fatalf("Originator = %q, want built-in %q", got, codexOriginator)
+	}
+}
+
+func TestApplyModelHeaderOverridesKeepsConfiguredCloakingUserAgent(t *testing.T) {
+	const configured = "codex-tui/0.161.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.161.0)"
+	headers := http.Header{}
+	cfg := &config.Config{Codex: config.CodexConfig{CloakingUserAgent: configured}}
+
+	applyModelHeaderOverrides(headers, "gpt-5.6-luna", cfg)
+
+	if got := headers.Get("User-Agent"); got != configured {
+		t.Fatalf("User-Agent = %q, want configured cloaking user agent %q", got, configured)
+	}
+	if got := headers.Get("Originator"); got != "codex-tui" {
+		t.Fatalf("Originator = %q, want %q", got, "codex-tui")
+	}
+}
+
 func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
-	const wantUA = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	const wantUA = "codex-tui/0.160.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.160.0)"
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -1937,7 +1976,7 @@ func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
 	}
 
 	applyCodexHeaders(req, auth, "oauth-token", true, cfg)
-	applyModelHeaderOverrides(req.Header, "gpt-5.6-luna")
+	applyModelHeaderOverrides(req.Header, "gpt-5.6-luna", nil)
 
 	if got := req.Header.Get("User-Agent"); got != wantUA {
 		t.Fatalf("User-Agent = %q, want %q", got, wantUA)
@@ -1946,7 +1985,7 @@ func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
 		t.Fatal("expected Session_id to be set for Mac OS User-Agent override")
 	}
 
-	applyModelHeaderOverrides(req.Header, "gpt-5.4")
+	applyModelHeaderOverrides(req.Header, "gpt-5.4", nil)
 	if got := req.Header.Get("User-Agent"); got != wantUA {
 		t.Fatalf("User-Agent after no-op override = %q, want %q", got, wantUA)
 	}
@@ -1972,7 +2011,7 @@ func TestApplyModelHeaderOverridesMultipleHeaders(t *testing.T) {
 	headers.Set("Originator", "old-origin")
 	headers.Set("X-Test-Header", "old-value")
 
-	applyModelHeaderOverrides(headers, "test-override-headers-model")
+	applyModelHeaderOverrides(headers, "test-override-headers-model", nil)
 
 	if got := headers.Get("User-Agent"); got != "custom-ua/1.0" {
 		t.Fatalf("User-Agent = %q, want custom-ua/1.0", got)

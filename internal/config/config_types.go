@@ -198,6 +198,9 @@ type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
+	// CloakingUserAgent replaces the built-in Codex User-Agent forced by cloaking; the Originator
+	// follows its product name. Empty keeps the built-in identity.
+	CloakingUserAgent string `yaml:"cloaking-user-agent,omitempty" json:"cloaking-user-agent,omitempty"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
 	// which the client has seen anything from - the handshake (response.created, response.in_progress,
 	// the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item

@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	codexUserAgent             = "codex-tui/0.160.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.160.0)"
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
@@ -288,7 +288,8 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 }
 
 // applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.
-func applyModelHeaderOverrides(headers http.Header, modelName string) {
+// A configured codex.cloaking-user-agent still wins over a per-model User-Agent override.
+func applyModelHeaderOverrides(headers http.Header, modelName string, cfg *config.Config) {
 	if headers == nil {
 		return
 	}
@@ -298,6 +299,10 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
 	}
 	for key, value := range overrides {
 		headers.Set(key, value)
+	}
+	if userAgent, originator, configured := codexCloakingIdentity(cfg); configured && cfg != nil && !cfg.Codex.DisableCodexCloaking {
+		headers.Set("User-Agent", userAgent)
+		headers.Set("Originator", originator)
 	}
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && codexSessionHeaderValue(headers) == "" {
 		headers.Set("Session_id", uuid.NewString())
@@ -373,8 +378,27 @@ func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
 	if headers == nil || cfg == nil || cfg.Codex.DisableCodexCloaking {
 		return
 	}
-	headers.Set("User-Agent", codexUserAgent)
-	headers.Set("Originator", codexOriginator)
+	userAgent, originator, _ := codexCloakingIdentity(cfg)
+	headers.Set("User-Agent", userAgent)
+	headers.Set("Originator", originator)
+}
+
+// codexCloakingIdentity returns the User-Agent and Originator forced by cloaking. A configured
+// codex.cloaking-user-agent replaces the built-in one so the client version can be raised without
+// a release; its Originator is the product name before the first "/".
+func codexCloakingIdentity(cfg *config.Config) (userAgent, originator string, configured bool) {
+	if cfg == nil {
+		return codexUserAgent, codexOriginator, false
+	}
+	value := strings.TrimSpace(cfg.Codex.CloakingUserAgent)
+	if value == "" {
+		return codexUserAgent, codexOriginator, false
+	}
+	originator = codexOriginator
+	if product, _, ok := strings.Cut(value, "/"); ok && strings.TrimSpace(product) != "" {
+		originator = strings.TrimSpace(product)
+	}
+	return value, originator, true
 }
 
 func normalizeCodexInstructions(body []byte, nativeRequest ...bool) []byte {
