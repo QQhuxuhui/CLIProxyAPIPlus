@@ -205,6 +205,91 @@ func applyCodexIdentityConfuseHeaders(headers http.Header, state *codexIdentityC
 	headers.Set("X-Codex-Window-Id", state.promptCacheKey+":0")
 }
 
+// codexFastSessionState remembers a fast-group Session-Id remap so the upstream echo of the
+// effective prompt_cache_key (which follows the Session-Id header) can be restored.
+type codexFastSessionState struct {
+	original string
+	fast     string
+}
+
+// applyCodexFastSessionHeader remaps the outgoing upstream Session-Id header onto the fast
+// Session-Id pool. It must run after every other Session-Id write (client passthrough,
+// cacheHelper, model header overrides, identity-confuse) so its value is the one sent.
+// Only the header changes: the body prompt_cache_key and all internal session identities
+// keep the original value. Only the HTTP/SSE /responses path calls this; the websocket
+// transport is intentionally excluded pending isolation tests, and compact and image
+// requests are left untouched.
+func applyCodexFastSessionHeader(cfg *config.Config, headers http.Header, reporter *helps.UsageReporter) codexFastSessionState {
+	if cfg == nil || headers == nil {
+		return codexFastSessionState{}
+	}
+	original := codexSessionHeaderValue(headers)
+	value, group := helps.SelectCodexFastSession(cfg, original)
+	if group == helps.CodexFastSessionGroupOff {
+		return codexFastSessionState{}
+	}
+	reporter.SetCodexFastSessionGroup(group)
+	if group != helps.CodexFastSessionGroupFast || value == original {
+		return codexFastSessionState{}
+	}
+	setCodexSessionHeaderCasePreserved(headers, "Session-Id", value)
+	return codexFastSessionState{original: original, fast: value}
+}
+
+// restoreResponsePayload rewrites the upstream echo of prompt_cache_key from the fast value
+// back to the original header value. It must run on raw upstream bytes before the
+// identity-confuse response handling, so that handling sees the value it sent. Only
+// response.prompt_cache_key of response.* events and the top-level prompt_cache_key of a
+// response object are touched, and only when they equal the fast value. The payload may be
+// a single SSE line, raw JSON, or a full SSE body.
+func (s codexFastSessionState) restoreResponsePayload(payload []byte) []byte {
+	if s.fast == "" || s.original == "" || !bytes.Contains(payload, []byte(s.fast)) {
+		return payload
+	}
+	lines := bytes.Split(payload, []byte("\n"))
+	changed := false
+	for i, line := range lines {
+		if restored, ok := s.restoreResponseLine(line); ok {
+			lines[i] = restored
+			changed = true
+		}
+	}
+	if !changed {
+		return payload
+	}
+	return bytes.Join(lines, []byte("\n"))
+}
+
+func (s codexFastSessionState) restoreResponseLine(line []byte) ([]byte, bool) {
+	if !bytes.Contains(line, []byte(s.fast)) {
+		return nil, false
+	}
+	start := 0
+	if bytes.HasPrefix(line, dataTag) {
+		start = len(dataTag)
+	}
+	for start < len(line) && (line[start] == ' ' || line[start] == '\t') {
+		start++
+	}
+	jsonPart := line[start:]
+	if len(jsonPart) == 0 || jsonPart[0] != '{' {
+		return nil, false
+	}
+	updated := jsonPart
+	if gjson.GetBytes(updated, "response.prompt_cache_key").String() == s.fast {
+		updated, _ = sjson.SetBytes(bytes.Clone(updated), "response.prompt_cache_key", s.original)
+	}
+	if gjson.GetBytes(updated, "object").String() == "response" && gjson.GetBytes(updated, "prompt_cache_key").String() == s.fast {
+		updated, _ = sjson.SetBytes(bytes.Clone(updated), "prompt_cache_key", s.original)
+	}
+	if bytes.Equal(updated, jsonPart) {
+		return nil, false
+	}
+	out := make([]byte, 0, start+len(updated))
+	out = append(out, line[:start]...)
+	return append(out, updated...), true
+}
+
 func applyCodexTurnMetadataIdentityConfuse(rawTurnMetadata string, state *codexIdentityConfuseState) string {
 	updatedTurnMetadata := rawTurnMetadata
 	if state == nil || !state.enabled {

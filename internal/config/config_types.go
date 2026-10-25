@@ -235,6 +235,128 @@ type CodexConfig struct {
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
+	// FastSessionIDs remaps the outgoing upstream Session-Id header of HTTP/SSE Codex
+	// /responses requests onto a pool of known-fast values.
+	FastSessionIDs CodexFastSessionIDsConfig `yaml:"fast-session-ids" json:"fast-session-ids"`
+}
+
+// CodexFastSessionIDsConfig configures the Codex fast Session-Id pool.
+// Only the upstream Session-Id header is rewritten; the body prompt_cache_key and every
+// internal session identity stay unchanged.
+type CodexFastSessionIDsConfig struct {
+	// Enable turns the remapping on. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Percent is the canary share (0-100) of original session identities that are remapped.
+	// The share is chosen by a stable hash of the original identity, so a conversation stays
+	// in the same group across requests.
+	Percent int `yaml:"percent" json:"percent"`
+	// Seed lists known fast Session-Id values.
+	Seed []string `yaml:"seed" json:"seed"`
+	// ProbeIntervalSeconds is the background prober interval. 0 disables the prober (default);
+	// positive values below 60 are raised to 60.
+	ProbeIntervalSeconds int `yaml:"probe-interval-seconds" json:"probe-interval-seconds"`
+	// ProbeCandidates is the number of random new candidates tried per round while the pool
+	// is below PoolSize. Default 6.
+	ProbeCandidates int `yaml:"probe-candidates" json:"probe-candidates"`
+	// ProbeBaselines is the number of fresh random values probed per round as the baseline
+	// (median). Default 5, minimum 3.
+	ProbeBaselines int `yaml:"probe-baselines" json:"probe-baselines"`
+	// PoolSize is the maximum number of members; discovery stops when full. Default 12.
+	PoolSize int `yaml:"pool-size" json:"pool-size"`
+	// BaselineThresholdMs gates judging: a round is only judged when the baseline median of
+	// the server-side wait (first output delta minus response.created) is at least this value.
+	// Default 2500.
+	BaselineThresholdMs int `yaml:"baseline-threshold-ms" json:"baseline-threshold-ms"`
+	// AdmitRatio marks a probe fast when its server-side wait is below AdmitRatio * baseline
+	// median. Default 0.4.
+	AdmitRatio float64 `yaml:"admit-ratio" json:"admit-ratio"`
+	// Consecutive is the number of judged rounds needed to admit and to remove. Default 2.
+	Consecutive int `yaml:"consecutive" json:"consecutive"`
+	// ProbeModel is the model used by probe requests. Default "gpt-6-luna".
+	ProbeModel string `yaml:"probe-model" json:"probe-model"`
+	// Rollback configures automatic runtime disabling when the fast group underperforms.
+	Rollback CodexFastSessionRollbackConfig `yaml:"rollback" json:"rollback"`
+}
+
+// CodexFastSessionRollbackConfig configures automatic rollback of the fast Session-Id pool.
+type CodexFastSessionRollbackConfig struct {
+	// Enable turns automatic rollback on. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// WindowMinutes is the comparison window (1-60). Default 10.
+	WindowMinutes int `yaml:"window-minutes" json:"window-minutes"`
+	// MinSamples is the per-group sample count required within the window. Default 30.
+	MinSamples int `yaml:"min-samples" json:"min-samples"`
+	// TTFTWorsePercent triggers rollback when the fast-group small-request TTFT p50 is worse
+	// than the control group by more than this percentage. Default 20.
+	TTFTWorsePercent float64 `yaml:"ttft-worse-percent" json:"ttft-worse-percent"`
+	// FailureWorsePoints triggers rollback when the fast-group failure rate exceeds the
+	// control group by more than this many percentage points. Default 5.
+	FailureWorsePoints float64 `yaml:"failure-worse-points" json:"failure-worse-points"`
+}
+
+// DefaultCodexFastSessionProbeModel is the default probe model.
+const DefaultCodexFastSessionProbeModel = "gpt-6-luna"
+
+// Normalize clamps Percent to 0-100, trims, drops empty, and de-duplicates Seed entries while
+// preserving their order, and applies defaults and bounds to the prober and rollback fields.
+func (c *CodexFastSessionIDsConfig) Normalize() {
+	if c == nil {
+		return
+	}
+	c.Percent = min(max(c.Percent, 0), 100)
+	c.Seed = NormalizeCodexFastSessionIDs(c.Seed)
+	if c.ProbeIntervalSeconds < 0 {
+		c.ProbeIntervalSeconds = 0
+	} else if c.ProbeIntervalSeconds > 0 && c.ProbeIntervalSeconds < 60 {
+		c.ProbeIntervalSeconds = 60
+	}
+	c.ProbeCandidates = normalizeBoundedInt(c.ProbeCandidates, 6, 50)
+	c.ProbeBaselines = max(normalizeBoundedInt(c.ProbeBaselines, 5, 50), 3)
+	c.PoolSize = normalizeBoundedInt(c.PoolSize, 12, 100)
+	c.BaselineThresholdMs = normalizeBoundedInt(c.BaselineThresholdMs, 2500, 600000)
+	if c.AdmitRatio <= 0 || c.AdmitRatio >= 1 {
+		c.AdmitRatio = 0.4
+	}
+	c.Consecutive = normalizeBoundedInt(c.Consecutive, 2, 10)
+	c.ProbeModel = strings.TrimSpace(c.ProbeModel)
+	if c.ProbeModel == "" {
+		c.ProbeModel = DefaultCodexFastSessionProbeModel
+	}
+	c.Rollback.WindowMinutes = normalizeBoundedInt(c.Rollback.WindowMinutes, 10, 60)
+	c.Rollback.MinSamples = normalizeBoundedInt(c.Rollback.MinSamples, 30, 1000000)
+	if c.Rollback.TTFTWorsePercent <= 0 {
+		c.Rollback.TTFTWorsePercent = 20
+	}
+	if c.Rollback.FailureWorsePoints <= 0 {
+		c.Rollback.FailureWorsePoints = 5
+	}
+}
+
+// normalizeBoundedInt returns def for non-positive values and caps values above maxValue.
+func normalizeBoundedInt(value, def, maxValue int) int {
+	if value <= 0 {
+		return def
+	}
+	return min(value, maxValue)
+}
+
+// NormalizeCodexFastSessionIDs trims values, drops empty entries, and removes duplicates
+// while preserving order. It returns nil when no value remains.
+func NormalizeCodexFastSessionIDs(values []string) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.

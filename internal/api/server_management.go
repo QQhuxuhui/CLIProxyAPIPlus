@@ -29,6 +29,7 @@ func (s *Server) registerManagementRoutes() {
 	{
 		mgmt.GET("/codex-pool", s.mgmt.GetCodexPool)
 		mgmt.PUT("/codex-pool/config", s.mgmt.PutCodexPoolConfig)
+		mgmt.GET("/codex-fast-session", s.mgmt.GetCodexFastSession)
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)

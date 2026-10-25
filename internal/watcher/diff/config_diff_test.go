@@ -220,6 +220,27 @@ func TestBuildConfigChangeDetails_CodexOrphanDelegationCompatibility(t *testing.
 	expectContains(t, changes, "codex.orphan-delegation-compatibility: false -> true")
 }
 
+func TestBuildConfigChangeDetails_CodexFastSessionIDs(t *testing.T) {
+	oldCfg := &config.Config{Codex: config.CodexConfig{FastSessionIDs: config.CodexFastSessionIDsConfig{Percent: 10, Seed: []string{"a"}}}}
+	newCfg := &config.Config{Codex: config.CodexConfig{FastSessionIDs: config.CodexFastSessionIDsConfig{Enable: true, Percent: 50, Seed: []string{"a", "b"}}}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "codex.fast-session-ids.enable: false -> true")
+	expectContains(t, changes, "codex.fast-session-ids.percent: 10 -> 50")
+	expectContains(t, changes, "codex.fast-session-ids.seed: updated (1 -> 2 entries)")
+
+	newCfg.Codex.FastSessionIDs.ProbeIntervalSeconds = 600
+	newCfg.Codex.FastSessionIDs.AdmitRatio = 0.4
+	newCfg.Codex.FastSessionIDs.ProbeBaselines = 5
+	newCfg.Codex.FastSessionIDs.Rollback = config.CodexFastSessionRollbackConfig{Enable: true, MinSamples: 30}
+	changes = BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "codex.fast-session-ids.probe-interval-seconds: 0 -> 600")
+	expectContains(t, changes, "codex.fast-session-ids.admit-ratio: 0 -> 0.4")
+	expectContains(t, changes, "codex.fast-session-ids.probe-baselines: 0 -> 5")
+	expectContains(t, changes, "codex.fast-session-ids.rollback.enable: false -> true")
+	expectContains(t, changes, "codex.fast-session-ids.rollback.min-samples: 0 -> 30")
+}
+
 func TestBuildConfigChangeDetails_XAIKeys(t *testing.T) {
 	oldRetry := 1
 	newRetry := 0

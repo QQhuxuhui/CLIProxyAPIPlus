@@ -202,6 +202,57 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}
+	oldFastSession := oldCfg.Codex.FastSessionIDs
+	newFastSession := newCfg.Codex.FastSessionIDs
+	if oldFastSession.Enable != newFastSession.Enable {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.enable: %t -> %t", oldFastSession.Enable, newFastSession.Enable))
+	}
+	if oldFastSession.Percent != newFastSession.Percent {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.percent: %d -> %d", oldFastSession.Percent, newFastSession.Percent))
+	}
+	if !reflect.DeepEqual(oldFastSession.Seed, newFastSession.Seed) {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.seed: updated (%d -> %d entries)", len(oldFastSession.Seed), len(newFastSession.Seed)))
+	}
+	if oldFastSession.ProbeIntervalSeconds != newFastSession.ProbeIntervalSeconds {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.probe-interval-seconds: %d -> %d", oldFastSession.ProbeIntervalSeconds, newFastSession.ProbeIntervalSeconds))
+	}
+	if oldFastSession.ProbeCandidates != newFastSession.ProbeCandidates {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.probe-candidates: %d -> %d", oldFastSession.ProbeCandidates, newFastSession.ProbeCandidates))
+	}
+	if oldFastSession.ProbeBaselines != newFastSession.ProbeBaselines {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.probe-baselines: %d -> %d", oldFastSession.ProbeBaselines, newFastSession.ProbeBaselines))
+	}
+	if oldFastSession.PoolSize != newFastSession.PoolSize {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.pool-size: %d -> %d", oldFastSession.PoolSize, newFastSession.PoolSize))
+	}
+	if oldFastSession.BaselineThresholdMs != newFastSession.BaselineThresholdMs {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.baseline-threshold-ms: %d -> %d", oldFastSession.BaselineThresholdMs, newFastSession.BaselineThresholdMs))
+	}
+	if oldFastSession.AdmitRatio != newFastSession.AdmitRatio {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.admit-ratio: %g -> %g", oldFastSession.AdmitRatio, newFastSession.AdmitRatio))
+	}
+	if oldFastSession.Consecutive != newFastSession.Consecutive {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.consecutive: %d -> %d", oldFastSession.Consecutive, newFastSession.Consecutive))
+	}
+	if strings.TrimSpace(oldFastSession.ProbeModel) != strings.TrimSpace(newFastSession.ProbeModel) {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.probe-model: %s -> %s", displayOptionalValue(oldFastSession.ProbeModel), displayOptionalValue(newFastSession.ProbeModel)))
+	}
+	oldRollback, newRollback := oldFastSession.Rollback, newFastSession.Rollback
+	if oldRollback.Enable != newRollback.Enable {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.rollback.enable: %t -> %t", oldRollback.Enable, newRollback.Enable))
+	}
+	if oldRollback.WindowMinutes != newRollback.WindowMinutes {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.rollback.window-minutes: %d -> %d", oldRollback.WindowMinutes, newRollback.WindowMinutes))
+	}
+	if oldRollback.MinSamples != newRollback.MinSamples {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.rollback.min-samples: %d -> %d", oldRollback.MinSamples, newRollback.MinSamples))
+	}
+	if oldRollback.TTFTWorsePercent != newRollback.TTFTWorsePercent {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.rollback.ttft-worse-percent: %g -> %g", oldRollback.TTFTWorsePercent, newRollback.TTFTWorsePercent))
+	}
+	if oldRollback.FailureWorsePoints != newRollback.FailureWorsePoints {
+		changes = append(changes, fmt.Sprintf("codex.fast-session-ids.rollback.failure-worse-points: %g -> %g", oldRollback.FailureWorsePoints, newRollback.FailureWorsePoints))
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}

@@ -52,6 +52,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	if s.coreManager != nil {
 		s.coreManager.StartCodexPoolMetrics(ctx)
+		s.startCodexFastSessionProber(ctx)
 	}
 	usage.StartDefault(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled

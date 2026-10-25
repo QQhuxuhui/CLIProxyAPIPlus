@@ -457,6 +457,36 @@ codex:
     #       - "turn:turn.example.com:3478?transport=udp"
     #     username: "user"
     #     credential: "secret"
+  # Remap the outgoing upstream Session-Id header of HTTP/SSE Codex /responses requests onto a
+  # pool of known-fast values (rendezvous hashing, stable per conversation). The body
+  # prompt_cache_key and internal session identities are never changed. WebSocket, compact and
+  # image requests are not affected. Status: GET /v0/management/codex-fast-session.
+  # fast-session-ids:
+  #   enable: false
+  #   percent: 10 # 0-100 canary share, chosen by a stable hash of the original identity
+  #   seed: []    # known fast Session-Id values
+  #   # Background prober: each round sends tiny streaming probes (random baseline values,
+  #   # every member, and new candidates) through healthy codex OAuth accounts and only
+  #   # judges when the baseline is slow enough (peak hours). Probes are judged on the
+  #   # server-side wait (first output delta minus response.created), which excludes
+  #   # connect/TLS time. A baseline value that turns out fast becomes a pending candidate.
+  #   # Probes never feed usage stats.
+  #   probe-interval-seconds: 0    # 0 = prober off (default); suggested 600, minimum 60
+  #   probe-baselines: 5           # random baseline values per round (median), minimum 3
+  #   probe-candidates: 6          # random new candidates per round while pool < pool-size
+  #   pool-size: 12                # max members; discovery stops when full
+  #   baseline-threshold-ms: 2500  # only judge when the baseline wait median >= this
+  #   admit-ratio: 0.4             # fast = probe wait < admit-ratio * baseline median
+  #   consecutive: 2               # judged rounds needed to admit, and to remove
+  #   probe-model: "gpt-6-luna"
+  #   # Automatic runtime disable when the fast group does worse than the control group.
+  #   # Re-enabled only when enable/percent/seed change in the config.
+  #   rollback:
+  #     enable: false
+  #     window-minutes: 10
+  #     min-samples: 30            # per group, within the window
+  #     ttft-worse-percent: 20     # small-request (input < 20000 tokens) TTFT p50
+  #     failure-worse-points: 5    # failure rate, percentage points
 
 # Antigravity provider behavior.
 # antigravity:
