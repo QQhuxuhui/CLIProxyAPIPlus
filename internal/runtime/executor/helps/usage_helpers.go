@@ -52,7 +52,8 @@ type UsageReporter struct {
 	once                sync.Once
 	// codexFastSessionGroup tags the request with its Codex fast Session-Id group so the
 	// published record also feeds the per-group stats.
-	codexFastSessionGroup string
+	codexFastSessionGroup      string
+	codexFastSessionGeneration uint64
 }
 
 type usageExecutor interface {
@@ -130,11 +131,12 @@ func (r *UsageReporter) SetStream(stream bool) {
 
 // SetCodexFastSessionGroup tags the request with its Codex fast Session-Id group.
 // Callers should invoke this method before Publish or EnsurePublished on the request thread.
-func (r *UsageReporter) SetCodexFastSessionGroup(group string) {
+func (r *UsageReporter) SetCodexFastSessionGroup(group string, generation uint64) {
 	if r == nil {
 		return
 	}
 	r.codexFastSessionGroup = group
+	r.codexFastSessionGeneration = generation
 }
 
 // SetSessionHierarchy sets the explicit session and parent session identifiers.
@@ -440,7 +442,7 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	if r.codexFastSessionGroup != "" {
-		observeCodexFastSessionRecord(r.codexFastSessionGroup, record)
+		observeCodexFastSessionRecord(r.codexFastSessionGroup, record, r.codexFastSessionGeneration)
 	}
 	usage.PublishRecord(ctx, record)
 }

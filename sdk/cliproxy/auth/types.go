@@ -106,6 +106,8 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+	// codexProbeAttempt belongs only to the clone reserved for a background probe.
+	codexProbeAttempt *rateAttemptRef
 }
 
 const (

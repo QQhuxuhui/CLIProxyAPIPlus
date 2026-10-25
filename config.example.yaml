@@ -463,7 +463,7 @@ codex:
   # image requests are not affected. Status: GET /v0/management/codex-fast-session.
   # fast-session-ids:
   #   enable: false
-  #   percent: 10 # 0-100 canary share, chosen by a stable hash of the original identity
+  #   percent: 10 # 0-100 identity share; capped at 99 when rollback.enable is true
   #   seed: []    # known fast Session-Id values
   #   # Background prober: each round sends tiny streaming probes (random baseline values,
   #   # every member, and new candidates) through healthy codex OAuth accounts and only
@@ -474,13 +474,15 @@ codex:
   #   probe-interval-seconds: 0    # 0 = prober off (default); suggested 600, minimum 60
   #   probe-baselines: 5           # random baseline values per round (median), minimum 3
   #   probe-candidates: 6          # random new candidates per round while pool < pool-size
-  #   pool-size: 12                # max members; discovery stops when full
+  #   pool-size: 12                # max members and pending candidates; discovery stops when full
   #   baseline-threshold-ms: 2500  # only judge when the baseline wait median >= this
   #   admit-ratio: 0.4             # fast = probe wait < admit-ratio * baseline median
   #   consecutive: 2               # judged rounds needed to admit, and to remove
   #   probe-model: "gpt-6-luna"
   #   # Automatic runtime disable when the fast group does worse than the control group.
-  #   # Re-enabled only when enable/percent/seed change in the config.
+  #   # Keeps at least 1% of identities as controls (not a guaranteed request share).
+  #   # Status exposes percent and effective_percent; minimum samples are still required.
+  #   # Re-enabled when enable/percent/seed/rollback.enable changes, with a fresh stats window.
   #   rollback:
   #     enable: false
   #     window-minutes: 10

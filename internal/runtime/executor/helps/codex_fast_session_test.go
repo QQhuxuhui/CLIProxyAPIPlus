@@ -1,8 +1,10 @@
 package helps
 
 import (
+	"context"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,7 +147,7 @@ func TestCodexFastSessionPassthrough(t *testing.T) {
 			t.Fatalf("%s: Select = %q/%q, want %q/off", tc.name, value, group, tc.id)
 		}
 	}
-	if value, group := SelectCodexFastSession(nil, "conv"); value != "conv" || group != CodexFastSessionGroupOff {
+	if value, group, _ := SelectCodexFastSession(nil, "conv"); value != "conv" || group != CodexFastSessionGroupOff {
 		t.Fatalf("nil config: Select = %q/%q, want conv/off", value, group)
 	}
 }
@@ -230,5 +232,110 @@ func TestCodexFastSessionObserveRecordFilters(t *testing.T) {
 	after := CodexFastSessions().Snapshot(10).Groups[CodexFastSessionGroupControl].TotalRequests
 	if after != before+1 {
 		t.Fatalf("control requests = %d, want %d", after, before+1)
+	}
+}
+
+func TestCodexFastSessionFullRolloutKeepsRollbackControl(t *testing.T) {
+	pool := NewCodexFastSessionPool()
+	cfg := config.CodexFastSessionIDsConfig{Enable: true, Percent: 100, Seed: []string{"fast"}, Rollback: config.CodexFastSessionRollbackConfig{Enable: true}}
+	cfg.Normalize()
+	pool.ApplyConfig(cfg)
+	for _, id := range codexFastSessionTestIDs(20000) {
+		_, group := pool.Select(id)
+		pool.Observe(group, group == CodexFastSessionGroupFast, time.Second, 100)
+	}
+	pool.EvaluateRollback(cfg.Rollback)
+	snap := pool.Snapshot(10)
+	if !snap.Rollback.Disabled {
+		t.Fatalf("all fast requests failed without rollback: %+v, control=%d", snap.RollbackCheck, snap.Groups[CodexFastSessionGroupControl].WindowRequests)
+	}
+	cfg.Rollback.Enable = false
+	pool.ApplyConfig(cfg)
+	for _, id := range codexFastSessionTestIDs(1000) {
+		if _, group := pool.Select(id); group != CodexFastSessionGroupFast {
+			t.Fatalf("rollback disabled: %s selected %s", id, group)
+		}
+	}
+}
+
+func TestCodexFastSessionReenableClearsEvaluationWindow(t *testing.T) {
+	pool, cfg := codexFastSessionRollbackPool(t)
+	observeN(pool, CodexFastSessionGroupFast, 30, 30, 0)
+	observeN(pool, CodexFastSessionGroupControl, 30, 0, time.Second)
+	pool.EvaluateRollback(cfg.Rollback)
+	cfg.Seed = []string{"replacement"}
+	pool.ApplyConfig(cfg)
+	pool.EvaluateRollback(cfg.Rollback)
+	snap := pool.Snapshot(10)
+	if snap.Rollback.Disabled || snap.Groups[CodexFastSessionGroupFast].WindowRequests != 0 {
+		t.Fatalf("old samples disabled fresh pool: %+v", snap)
+	}
+	if snap.Groups[CodexFastSessionGroupFast].TotalRequests != 30 {
+		t.Fatal("lifetime totals should survive a new evaluation window")
+	}
+}
+
+func TestCodexFastSessionOldInflightDoesNotRefillWindow(t *testing.T) {
+	pool := NewCodexFastSessionPool()
+	cfg := config.CodexFastSessionIDsConfig{Enable: true, Percent: 100, Seed: []string{"old"}}
+	pool.ApplyConfig(cfg)
+	_, group, epoch := pool.selectTracked("conversation")
+	cfg.Seed = []string{"new"}
+	pool.ApplyConfig(cfg)
+	pool.observeGeneration(group, true, 0, 100, epoch)
+	_, group, epoch = pool.selectTracked("conversation")
+	pool.observeGeneration(group, false, time.Second, 100, epoch)
+	stats := pool.Snapshot(10).Groups[CodexFastSessionGroupFast]
+	if stats.WindowRequests != 1 || stats.WindowFailures != 0 || stats.TotalRequests != 2 || stats.TotalFailures != 1 {
+		t.Fatalf("mixed configuration generations: %+v", stats)
+	}
+}
+
+func TestCodexFastSessionReporterRetainsSelectionGeneration(t *testing.T) {
+	pool := CodexFastSessions()
+	cfg := config.CodexFastSessionIDsConfig{Enable: true, Percent: 100, Seed: []string{"old-inflight"}}
+	pool.ApplyConfig(cfg)
+	_, group, epoch := pool.selectTracked("conversation")
+	reporter := &UsageReporter{generate: true}
+	reporter.SetCodexFastSessionGroup(group, epoch)
+	cfg.Seed = []string{"new-inflight"}
+	pool.ApplyConfig(cfg)
+	reporter.PublishFailure(context.Background(), fmt.Errorf("late failure"))
+	if stats := pool.Snapshot(10).Groups[CodexFastSessionGroupFast]; stats.WindowRequests != 0 {
+		t.Fatalf("old reporter contaminated new window: %+v", stats)
+	}
+}
+
+func TestCodexFastSessionConcurrentReloadAndObservation(t *testing.T) {
+	pool := NewCodexFastSessionPool()
+	cfg := config.CodexFastSessionIDsConfig{Enable: true, Percent: 50, Seed: []string{"fast"}, Rollback: config.CodexFastSessionRollbackConfig{Enable: true}}
+	cfg.Normalize()
+	pool.ApplyConfig(cfg)
+	var workers sync.WaitGroup
+	for worker := 0; worker < 3; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := 0; i < 100; i++ {
+				_, group, epoch := pool.selectTracked(fmt.Sprint(i))
+				pool.observeGeneration(group, false, time.Second, 100, epoch)
+				pool.Snapshot(10)
+				pool.EvaluateRollback(cfg.Rollback)
+			}
+		}()
+	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		changed := cfg
+		for i := 0; i < 100; i++ {
+			changed.Percent = 50 + i%2
+			pool.ApplyConfig(changed)
+		}
+	}()
+	workers.Wait()
+	snap := pool.Snapshot(10)
+	if snap.Groups[CodexFastSessionGroupFast].TotalRequests+snap.Groups[CodexFastSessionGroupControl].TotalRequests != 300 {
+		t.Fatal("concurrent reload lost lifetime observations")
 	}
 }

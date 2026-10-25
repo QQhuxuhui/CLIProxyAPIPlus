@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -23,7 +24,7 @@ type codexFastSessionEchoResult struct {
 
 // runCodexFastSessionEcho sends one request through the HTTP executor against an upstream that
 // echoes echo(sentSessionID) as the response prompt_cache_key, and returns what the client got.
-func runCodexFastSessionEcho(t *testing.T, cfg *config.Config, stream bool, echo func(sent string) string) codexFastSessionEchoResult {
+func runCodexFastSessionEcho(t *testing.T, cfg *config.Config, stream bool, echo func(sent string) string, authIDs ...string) codexFastSessionEchoResult {
 	t.Helper()
 	sent := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +40,9 @@ func runCodexFastSessionEcho(t *testing.T, cfg *config.Config, stream bool, echo
 
 	exec := NewCodexExecutor(cfg)
 	auth := &cliproxyauth.Auth{ID: "auth-1", Attributes: map[string]string{"base_url": server.URL, "api_key": "test"}}
+	if len(authIDs) > 0 {
+		auth.ID = authIDs[0]
+	}
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5.4",
 		Payload: []byte(`{"model":"gpt-5.4","prompt_cache_key":"conv-original","input":[{"type":"message","role":"user","content":"hi"}]}`),
@@ -169,5 +173,28 @@ func TestCodexFastSessionRestoreResponsePayloadIsTargeted(t *testing.T) {
 
 	if out := (codexFastSessionState{}).restoreResponsePayload([]byte(payload)); string(out) != payload {
 		t.Fatal("empty state must not change the payload")
+	}
+}
+
+func TestCodexFastSessionCanaryStableAcrossAuthSwitch(t *testing.T) {
+	seed := []string{"fast-a", "fast-b"}
+	cfg := codexFastSessionTestConfig(true, 50, seed...)
+	cfg.Codex.IdentityConfuse = true
+	cfg.Routing.SessionAffinity = true
+	var firstGroup bool
+	var firstFast string
+	for i := 0; i < 20; i++ {
+		got := runCodexFastSessionEcho(t, cfg, true, echoSentSessionID, fmt.Sprintf("auth-%d", i))
+		fast := slices.Contains(seed, got.sentSessionID)
+		if i == 0 {
+			firstGroup = fast
+			firstFast = got.sentSessionID
+		}
+		if fast != firstGroup || (fast && got.sentSessionID != firstFast) {
+			t.Fatalf("same conversation moved after account switch: first=%s now=%s", firstFast, got.sentSessionID)
+		}
+		if !bytes.Contains(got.client, []byte(`"prompt_cache_key":"conv-original"`)) {
+			t.Fatalf("client identity changed: %s", got.client)
+		}
 	}
 }

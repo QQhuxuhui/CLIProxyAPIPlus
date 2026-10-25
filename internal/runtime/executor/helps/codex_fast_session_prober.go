@@ -218,6 +218,9 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 	start := p.deps.Now()
 	members := p.pool.Members()
 	p.mu.Lock()
+	if len(members) >= cfg.PoolSize {
+		clear(p.pending)
+	}
 	pending := make([]string, 0, len(p.pending))
 	for value := range p.pending {
 		if !slices.Contains(members, value) {
@@ -226,6 +229,14 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 	}
 	p.mu.Unlock()
 	slices.Sort(pending)
+	if len(pending) > cfg.PoolSize {
+		p.mu.Lock()
+		for _, value := range pending[cfg.PoolSize:] {
+			delete(p.pending, value)
+		}
+		p.mu.Unlock()
+		pending = pending[:cfg.PoolSize]
+	}
 
 	targets := make([]codexFastSessionProbeTarget, 0, cfg.ProbeBaselines+len(members)+len(pending)+cfg.ProbeCandidates)
 	for i := 0; i < cfg.ProbeBaselines; i++ {
@@ -349,6 +360,11 @@ func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig
 			}
 			if result.Error != "" {
 				result.Verdict = codexFastSessionVerdictFailed
+				// Failed, unconfirmed candidates must release their bounded pending slot.
+				// Members are retained: a failed probe is not evidence of slow routing.
+				if result.Kind == codexFastSessionProbeCandidate {
+					delete(p.pending, result.Value)
+				}
 				continue
 			}
 			pass := gaps[i] < limit
@@ -406,8 +422,11 @@ func (p *CodexFastSessionProber) judgeMemberLocked(cfg config.CodexFastSessionID
 }
 
 func (p *CodexFastSessionProber) judgeCandidateLocked(cfg config.CodexFastSessionIDsConfig, value string, pass bool, gap, baseline time.Duration) {
-	if !pass {
+	if !pass || len(p.pool.Members()) >= cfg.PoolSize {
 		delete(p.pending, value)
+		return
+	}
+	if _, exists := p.pending[value]; !exists && len(p.pending) >= cfg.PoolSize {
 		return
 	}
 	p.pending[value]++

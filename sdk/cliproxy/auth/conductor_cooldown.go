@@ -842,6 +842,12 @@ func cooldownReason(statusMessage string, quota QuotaState, lastErr *Error) stri
 
 // MarkResult records an execution result and notifies hooks.
 func (m *Manager) MarkResult(ctx context.Context, result Result) {
+	m.markResult(ctx, result, false)
+}
+
+// markResult shares availability updates with background probes while keeping
+// probe outcomes out of business counters, hooks, and session affinity.
+func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 	m.observeRateResult(ctx, result)
 	if result.AuthID == "" {
 		return
@@ -849,7 +855,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if m != nil {
+	if m != nil && !probe {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
 			if result.AuthID == "" {
@@ -887,12 +893,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if codexCredentialInvalidated(auth) && (result.Success || statusCode != http.StatusUnauthorized) {
 			clearCodexCredentialInvalidation(auth, now)
 		}
-		auth.recordRecentRequest(now, result.Success)
+		if !probe {
+			auth.recordRecentRequest(now, result.Success)
+			if result.Success {
+				auth.Success++
+			} else {
+				auth.Failed++
+			}
+		}
 		if result.Success {
-			auth.Success++
 			auth.AuthFailures = 0
 		} else {
-			auth.Failed++
 			if statusCode == http.StatusUnauthorized {
 				auth.AuthFailures++
 			} else {
@@ -1196,9 +1207,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
 	}
 
-	m.hook.OnResult(ctx, result)
-	m.publishErrorEvent(result, authSnapshot)
-	m.updateSessionAffinity(result)
+	if !probe {
+		m.hook.OnResult(ctx, result)
+		m.publishErrorEvent(result, authSnapshot)
+		m.updateSessionAffinity(result)
+	}
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {

@@ -84,7 +84,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel, e.cfg)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
-	fastSessionState := applyCodexFastSessionHeader(e.cfg, httpReq.Header, reporter)
+	fastSessionState := applyCodexFastSessionHeader(e.cfg, httpReq.Header, reporter, identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -103,7 +103,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		AuthValue: authValue,
 	})
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClient(httpClient)
+	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -126,7 +126,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		err = newCodexStatusErrWithHeaders(httpResp.StatusCode, b, httpResp.Header, e.modelLevelCooling())
 		return resp, err
 	}
-	data, errRead := io.ReadAll(httpResp.Body)
+	data, errRead := helps.ReadResponsesBodyWithTTFT(httpResp.Body, reporter)
 	upstreamData := applyCodexIdentityConfuseResponsePayload(fastSessionState.restoreResponsePayload(data), identityState)
 	helps.AppendAPIResponseChunk(ctx, e.cfg, upstreamData)
 

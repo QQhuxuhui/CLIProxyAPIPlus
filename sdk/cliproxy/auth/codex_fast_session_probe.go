@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"strings"
 )
 
@@ -64,5 +66,35 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 	account := r.getLocked(best.ID, now)
 	r.sequence++
 	account.attempts = append(account.attempts, rateAttempt{id: r.sequence, at: now})
-	return best.Clone(), ""
+	probe := best.Clone()
+	probe.codexProbeAttempt = &rateAttemptRef{authID: best.ID}
+	probe.codexProbeAttempt.token.Store(r.sequence)
+	return probe, ""
+}
+
+// MarkCodexProbeResult feeds probe failures into normal credential cooling and rate
+// learning without publishing business results or recording business request metrics.
+// The reservation is consumed once, including successful or canceled probes.
+func (m *Manager) MarkCodexProbeResult(ctx context.Context, auth *Auth, model string, err error) {
+	if m == nil || auth == nil || auth.codexProbeAttempt == nil {
+		return
+	}
+	attempt := auth.codexProbeAttempt
+	token := attempt.token.Swap(0)
+	if token == 0 || err == nil || errors.Is(err, context.Canceled) || (ctx != nil && ctx.Err() != nil) {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ref := &rateAttemptRef{authID: attempt.authID}
+	ref.token.Store(token)
+	ctx = context.WithValue(ctx, rateAttemptContextKey{}, ref)
+	result := Result{
+		AuthID: attempt.authID, Provider: "codex", Model: model,
+		Error: resultErrorFromError(err), CredentialScope: isCredentialScopedError(err),
+		SkipQuotaObservation: true,
+	}
+	fillQuotaHints(&result, err)
+	m.markResult(ctx, result, true)
 }

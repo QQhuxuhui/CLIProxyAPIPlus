@@ -41,15 +41,17 @@ const (
 type CodexFastSessionPool struct {
 	nowFunc func() time.Time
 
-	mu           sync.RWMutex
-	enabled      bool
-	percent      int
-	seed         []string
-	members      []string
-	disabled     bool
-	rollback     CodexFastSessionRollbackStatus
-	events       []CodexFastSessionEvent
-	lastRollback CodexFastSessionRollbackCheck
+	mu              sync.RWMutex
+	enabled         bool
+	percent         int
+	rollbackEnabled bool
+	epoch           atomic.Uint64
+	seed            []string
+	members         []string
+	disabled        bool
+	rollback        CodexFastSessionRollbackStatus
+	events          []CodexFastSessionEvent
+	lastRollback    CodexFastSessionRollbackCheck
 
 	statsMu sync.Mutex
 	stats   map[string]*codexFastSessionGroupStats
@@ -108,15 +110,16 @@ type CodexFastSessionRollbackCheck struct {
 
 // CodexFastSessionSnapshot is a read-only view of the pool for status reporting.
 type CodexFastSessionSnapshot struct {
-	Enable        bool                                     `json:"enable"`
-	Percent       int                                      `json:"percent"`
-	Seed          []string                                 `json:"seed"`
-	Members       []string                                 `json:"members"`
-	Groups        map[string]CodexFastSessionGroupSnapshot `json:"groups"`
-	Rollback      CodexFastSessionRollbackStatus           `json:"rollback"`
-	RollbackCheck CodexFastSessionRollbackCheck            `json:"rollback_check"`
-	Events        []CodexFastSessionEvent                  `json:"events"`
-	Prober        *CodexFastSessionProbeStatus             `json:"prober,omitempty"`
+	Enable           bool                                     `json:"enable"`
+	Percent          int                                      `json:"percent"`
+	EffectivePercent int                                      `json:"effective_percent"`
+	Seed             []string                                 `json:"seed"`
+	Members          []string                                 `json:"members"`
+	Groups           map[string]CodexFastSessionGroupSnapshot `json:"groups"`
+	Rollback         CodexFastSessionRollbackStatus           `json:"rollback"`
+	RollbackCheck    CodexFastSessionRollbackCheck            `json:"rollback_check"`
+	Events           []CodexFastSessionEvent                  `json:"events"`
+	Prober           *CodexFastSessionProbeStatus             `json:"prober,omitempty"`
 }
 
 var defaultCodexFastSessionPool = NewCodexFastSessionPool()
@@ -141,23 +144,35 @@ func (p *CodexFastSessionPool) now() time.Time {
 
 // ApplyConfig syncs enable/percent and, when the configured seed changed since the last call,
 // replaces the pool members with the new seed. Members added or removed at runtime survive
-// until the seed itself changes. Any change of enable/percent/seed also clears a runtime
-// rollback.
+// until the seed itself changes. Changes to enable/percent/seed/rollback.enable clear
+// a runtime rollback and start a new evaluation generation.
 func (p *CodexFastSessionPool) ApplyConfig(cfg config.CodexFastSessionIDsConfig) {
 	if p == nil {
 		return
 	}
 	cfg.Normalize()
 	p.mu.RLock()
-	unchanged := p.enabled == cfg.Enable && p.percent == cfg.Percent && slices.Equal(p.seed, cfg.Seed)
+	unchanged := p.enabled == cfg.Enable && p.percent == cfg.Percent && p.rollbackEnabled == cfg.Rollback.Enable && slices.Equal(p.seed, cfg.Seed)
 	p.mu.RUnlock()
 	if unchanged {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.enabled == cfg.Enable && p.percent == cfg.Percent && p.rollbackEnabled == cfg.Rollback.Enable && slices.Equal(p.seed, cfg.Seed) {
+		return
+	}
 	p.enabled = cfg.Enable
 	p.percent = cfg.Percent
+	p.rollbackEnabled = cfg.Rollback.Enable
+	// A new mapping configuration starts a fresh evaluation generation. Preserve lifetime totals.
+	p.statsMu.Lock()
+	p.epoch.Add(1)
+	for _, stats := range p.stats {
+		stats.buckets = [60]codexFastSessionBucket{}
+	}
+	p.statsMu.Unlock()
+	p.lastRollback = CodexFastSessionRollbackCheck{}
 	if !slices.Equal(p.seed, cfg.Seed) {
 		p.seed = slices.Clone(cfg.Seed)
 		p.members = slices.Clone(cfg.Seed)
@@ -173,13 +188,17 @@ func (p *CodexFastSessionPool) ApplyConfig(cfg config.CodexFastSessionIDsConfig)
 	}
 }
 
-// Disable turns the mapping off at runtime until enable/percent/seed change in the config.
+// Disable turns mapping off until enable/percent/seed/rollback.enable changes.
 func (p *CodexFastSessionPool) Disable(reason string) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.disableLocked(reason)
+}
+
+func (p *CodexFastSessionPool) disableLocked(reason string) {
 	if p.disabled {
 		return
 	}
@@ -276,18 +295,32 @@ func (p *CodexFastSessionPool) Members() []string {
 // original value with group "control" when originalID falls outside the canary share;
 // otherwise the rendezvous-hashing winner with group "fast".
 func (p *CodexFastSessionPool) Select(originalID string) (string, string) {
-	if p == nil || originalID == "" {
-		return originalID, CodexFastSessionGroupOff
+	value, group, _ := p.selectTracked(originalID)
+	return value, group
+}
+
+// effectivePercentLocked reserves a stable control cohort while automatic rollback is enabled.
+func (p *CodexFastSessionPool) effectivePercentLocked() int {
+	if p.rollbackEnabled {
+		return min(p.percent, 99)
+	}
+	return p.percent
+}
+
+func (p *CodexFastSessionPool) selectTracked(originalID string) (string, string, uint64) {
+	if p == nil {
+		return originalID, CodexFastSessionGroupOff, 0
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if !p.enabled || p.disabled || len(p.members) == 0 {
-		return originalID, CodexFastSessionGroupOff
+	epoch := p.epoch.Load()
+	if originalID == "" || !p.enabled || p.disabled || len(p.members) == 0 {
+		return originalID, CodexFastSessionGroupOff, epoch
 	}
-	if codexFastSessionHash(codexFastSessionCanarySalt+originalID)%100 >= uint64(p.percent) {
-		return originalID, CodexFastSessionGroupControl
+	if codexFastSessionHash(codexFastSessionCanarySalt+originalID)%100 >= uint64(p.effectivePercentLocked()) {
+		return originalID, CodexFastSessionGroupControl, epoch
 	}
-	return codexFastSessionRendezvous(originalID, p.members), CodexFastSessionGroupFast
+	return codexFastSessionRendezvous(originalID, p.members), CodexFastSessionGroupFast, epoch
 }
 
 // Snapshot returns the pool configuration, members, per-group stats over the last
@@ -298,14 +331,15 @@ func (p *CodexFastSessionPool) Snapshot(windowMinutes int) CodexFastSessionSnaps
 	}
 	p.mu.RLock()
 	out := CodexFastSessionSnapshot{
-		Enable:        p.enabled,
-		Percent:       p.percent,
-		Seed:          slices.Clone(p.seed),
-		Members:       slices.Clone(p.members),
-		Groups:        make(map[string]CodexFastSessionGroupSnapshot, len(p.stats)),
-		Rollback:      p.rollback,
-		RollbackCheck: p.lastRollback,
-		Events:        slices.Clone(p.events),
+		Enable:           p.enabled,
+		Percent:          p.percent,
+		EffectivePercent: p.effectivePercentLocked(),
+		Seed:             slices.Clone(p.seed),
+		Members:          slices.Clone(p.members),
+		Groups:           make(map[string]CodexFastSessionGroupSnapshot, len(p.stats)),
+		Rollback:         p.rollback,
+		RollbackCheck:    p.lastRollback,
+		Events:           slices.Clone(p.events),
 	}
 	p.mu.RUnlock()
 	if out.Seed == nil {
@@ -333,11 +367,23 @@ func (p *CodexFastSessionPool) Observe(group string, failed bool, ttft time.Dura
 	if p == nil {
 		return
 	}
+	p.observeGeneration(group, failed, ttft, inputTokens, p.epoch.Load())
+}
+
+func (p *CodexFastSessionPool) observeGeneration(group string, failed bool, ttft time.Duration, inputTokens int64, epoch uint64) {
 	now := p.now()
 	p.statsMu.Lock()
 	defer p.statsMu.Unlock()
 	stats, ok := p.stats[group]
 	if !ok {
+		return
+	}
+	stats.requests++
+	if failed {
+		stats.failures++
+	}
+	// Requests already in flight at a configuration change must not refill the new window.
+	if epoch != p.epoch.Load() {
 		return
 	}
 	minute := now.Truncate(time.Minute)
@@ -349,10 +395,8 @@ func (p *CodexFastSessionPool) Observe(group string, failed bool, ttft time.Dura
 	if !b.minute.Equal(minute) {
 		*b = codexFastSessionBucket{minute: minute}
 	}
-	stats.requests++
 	b.requests++
 	if failed {
-		stats.failures++
 		b.failures++
 		return
 	}
@@ -403,12 +447,12 @@ func (p *CodexFastSessionPool) EvaluateRollback(cfg config.CodexFastSessionRollb
 	if p == nil {
 		return
 	}
-	outcome := p.rollbackOutcome(cfg)
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	outcome := p.rollbackOutcome(cfg)
 	p.lastRollback = CodexFastSessionRollbackCheck{Time: p.now(), Outcome: outcome.message}
-	p.mu.Unlock()
 	if outcome.trigger {
-		p.Disable(outcome.message)
+		p.disableLocked(outcome.message)
 	}
 }
 
@@ -417,13 +461,12 @@ type codexFastSessionRollbackOutcome struct {
 	message string
 }
 
+// rollbackOutcome requires p.mu to be held so configuration changes cannot race evaluation.
 func (p *CodexFastSessionPool) rollbackOutcome(cfg config.CodexFastSessionRollbackConfig) codexFastSessionRollbackOutcome {
 	if !cfg.Enable {
 		return codexFastSessionRollbackOutcome{message: "rollback disabled"}
 	}
-	p.mu.RLock()
 	active := p.enabled && !p.disabled
-	p.mu.RUnlock()
 	if !active {
 		return codexFastSessionRollbackOutcome{message: "mapping not active"}
 	}
@@ -446,22 +489,27 @@ func (p *CodexFastSessionPool) rollbackOutcome(cfg config.CodexFastSessionRollba
 }
 
 // SelectCodexFastSession syncs the process-wide pool with cfg and maps originalID.
-func SelectCodexFastSession(cfg *config.Config, originalID string) (string, string) {
+func SelectCodexFastSession(cfg *config.Config, originalID string) (string, string, uint64) {
 	if cfg == nil {
-		return originalID, CodexFastSessionGroupOff
+		return originalID, CodexFastSessionGroupOff, 0
 	}
 	pool := CodexFastSessions()
 	pool.ApplyConfig(cfg.Codex.FastSessionIDs)
-	return pool.Select(originalID)
+	return pool.selectTracked(originalID)
 }
 
 // observeCodexFastSessionRecord feeds a published usage record into the group stats, using the
 // same filters as the codex pool dashboard.
-func observeCodexFastSessionRecord(group string, record usage.Record) {
+func observeCodexFastSessionRecord(group string, record usage.Record, generations ...uint64) {
 	if record.AdditionalModel || !usage.GenerateEnabled(record.Generate) {
 		return
 	}
-	CodexFastSessions().Observe(group, record.Failed, record.TTFT, record.Detail.InputTokens)
+	pool := CodexFastSessions()
+	epoch := pool.epoch.Load()
+	if len(generations) > 0 {
+		epoch = generations[0]
+	}
+	pool.observeGeneration(group, record.Failed, record.TTFT, record.Detail.InputTokens, epoch)
 }
 
 func codexFastSessionRendezvous(originalID string, members []string) string {

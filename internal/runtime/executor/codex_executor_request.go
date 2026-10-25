@@ -218,17 +218,22 @@ type codexFastSessionState struct {
 // Only the header changes: the body prompt_cache_key and all internal session identities
 // keep the original value. Only the HTTP/SSE /responses path calls this; the websocket
 // transport is intentionally excluded pending isolation tests, and compact and image
-// requests are left untouched.
-func applyCodexFastSessionHeader(cfg *config.Config, headers http.Header, reporter *helps.UsageReporter) codexFastSessionState {
+// requests are left untouched. Selection uses the identity before account-specific confusion;
+// echo restoration uses the effective outgoing identity before fast-pool mapping.
+func applyCodexFastSessionHeader(cfg *config.Config, headers http.Header, reporter *helps.UsageReporter, identity codexIdentityConfuseState) codexFastSessionState {
 	if cfg == nil || headers == nil {
 		return codexFastSessionState{}
 	}
 	original := codexSessionHeaderValue(headers)
-	value, group := helps.SelectCodexFastSession(cfg, original)
+	selectionID := original
+	if identity.originalPromptCacheKey != "" {
+		selectionID = identity.originalPromptCacheKey
+	}
+	value, group, generation := helps.SelectCodexFastSession(cfg, selectionID)
 	if group == helps.CodexFastSessionGroupOff {
 		return codexFastSessionState{}
 	}
-	reporter.SetCodexFastSessionGroup(group)
+	reporter.SetCodexFastSessionGroup(group, generation)
 	if group != helps.CodexFastSessionGroupFast || value == original {
 		return codexFastSessionState{}
 	}

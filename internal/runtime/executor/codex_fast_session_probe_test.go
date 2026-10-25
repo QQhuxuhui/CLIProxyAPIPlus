@@ -2,16 +2,54 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
+
+func TestCodexProbeFastSessionPreservesCooldownErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		quota  bool
+	}{
+		{"http rate limit", 429, `{"error":{"message":"rate limited"}}`, true},
+		{"stream quota", 200, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"quota exhausted\",\"resets_in_seconds\":120}}}\n\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", "120")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			auth := &cliproxyauth.Auth{Provider: "codex", Attributes: map[string]string{"base_url": server.URL, "api_key": "test"}}
+			before := time.Now()
+			_, err := NewCodexExecutor(nil).ProbeFastSession(context.Background(), auth, "gpt-6-luna", "candidate")
+			var status statusErr
+			if !errors.As(err, &status) || status.StatusCode() != 429 || !status.IsCredentialScoped() {
+				t.Fatalf("expected structured credential cooldown, got %T: %v", err, err)
+			}
+			if tc.quota {
+				quota, ok := status.QuotaDetail()
+				if !ok || quota.ReasonCode != "RATE_LIMIT_EXCEEDED" || quota.ResetAt.Before(before.Add(120*time.Second)) || quota.ResetAt.After(time.Now().Add(120*time.Second)) {
+					t.Fatalf("lost rate window: %+v, %v", quota, ok)
+				}
+			} else if retry := status.RetryAfter(); retry == nil || *retry != 120*time.Second {
+				t.Fatalf("lost quota retry delay: %v", retry)
+			}
+		})
+	}
+}
 
 func TestCodexProbeFastSessionBypassesMappingAndStats(t *testing.T) {
 	type captured struct {

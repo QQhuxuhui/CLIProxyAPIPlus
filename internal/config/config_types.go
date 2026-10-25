@@ -248,7 +248,8 @@ type CodexFastSessionIDsConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Percent is the canary share (0-100) of original session identities that are remapped.
 	// The share is chosen by a stable hash of the original identity, so a conversation stays
-	// in the same group across requests.
+	// in the same group across requests. With automatic rollback enabled, the effective
+	// share is capped at 99 to retain a control cohort.
 	Percent int `yaml:"percent" json:"percent"`
 	// Seed lists known fast Session-Id values.
 	Seed []string `yaml:"seed" json:"seed"`
@@ -261,7 +262,7 @@ type CodexFastSessionIDsConfig struct {
 	// ProbeBaselines is the number of fresh random values probed per round as the baseline
 	// (median). Default 5, minimum 3.
 	ProbeBaselines int `yaml:"probe-baselines" json:"probe-baselines"`
-	// PoolSize is the maximum number of members; discovery stops when full. Default 12.
+	// PoolSize bounds both members and pending candidates; discovery stops when full. Default 12.
 	PoolSize int `yaml:"pool-size" json:"pool-size"`
 	// BaselineThresholdMs gates judging: a round is only judged when the baseline median of
 	// the server-side wait (first output delta minus response.created) is at least this value.

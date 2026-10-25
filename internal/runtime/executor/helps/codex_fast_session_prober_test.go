@@ -235,8 +235,8 @@ func TestCodexFastSessionProberRespectsPoolSize(t *testing.T) {
 	if got := pool.Members(); len(got) != 2 || got[0] != "m1" {
 		t.Fatalf("members = %v, want m1 plus one admitted candidate", got)
 	}
-	// The other passing candidate stays pending while the pool is full.
-	if status := prober.Status(); len(status.Pending) != 1 || status.Pending[0].Passes != 2 {
+	// Discard surplus candidates once the pool is full.
+	if status := prober.Status(); len(status.Pending) != 0 {
 		t.Fatalf("pending = %+v", status.Pending)
 	}
 }
@@ -397,5 +397,43 @@ func TestCodexFastSessionRollbackNeedsMinSamplesAndMargin(t *testing.T) {
 	pool.EvaluateRollback(cfg.Rollback)
 	if snap := pool.Snapshot(10); snap.Rollback.Disabled {
 		t.Fatal("rollback triggered while disabled in config")
+	}
+}
+
+func TestCodexFastSessionProberBoundsPendingWhenFull(t *testing.T) {
+	cfg := codexFastSessionProberConfig("member")
+	cfg.PoolSize = 1
+	upstream := newFakeCodexFastSessionUpstream()
+	upstream.fast["member"] = true
+	for i := 1; i <= 125; i += 5 {
+		upstream.fast[fmt.Sprintf("id-%d", i)] = true
+	}
+	_, prober := newTestCodexFastSessionProber(cfg, upstream)
+	for i := 0; i < 25; i++ {
+		prober.RunRound(context.Background(), *cfg)
+	}
+	status := prober.Status()
+	if len(status.Pending) > cfg.PoolSize || len(status.LastRound.Results) > cfg.ProbeBaselines+cfg.PoolSize*2+cfg.ProbeCandidates {
+		t.Fatalf("full pool pending=%d probes=%d", len(status.Pending), len(status.LastRound.Results))
+	}
+}
+
+func TestCodexFastSessionProberReplacesFailedPendingCandidate(t *testing.T) {
+	cfg := codexFastSessionProberConfig()
+	cfg.PoolSize = 1
+	cfg.ProbeCandidates = 1
+	upstream := newFakeCodexFastSessionUpstream()
+	upstream.fast["id-6"] = true
+	upstream.fast["id-12"] = true
+	pool, prober := newTestCodexFastSessionProber(cfg, upstream)
+	prober.RunRound(context.Background(), *cfg)
+	upstream.fail["id-6"] = true
+	prober.RunRound(context.Background(), *cfg)
+	prober.RunRound(context.Background(), *cfg)
+	if got := pool.Members(); !slices.Equal(got, []string{"id-12"}) {
+		t.Fatalf("failed pending candidate blocked healthy replacement: members=%v pending=%v", got, prober.Status().Pending)
+	}
+	if prober.Status().ProbeFailures != 1 {
+		t.Fatal("failed candidate must still be recorded as a probe failure")
 	}
 }

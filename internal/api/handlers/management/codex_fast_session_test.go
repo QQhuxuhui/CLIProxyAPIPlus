@@ -41,3 +41,20 @@ func TestGetCodexFastSessionReportsConfigAndGroups(t *testing.T) {
 		t.Fatalf("status fields = %+v", got)
 	}
 }
+
+func TestGetCodexFastSessionReportsEffectiveCanaryShare(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Codex.FastSessionIDs = config.CodexFastSessionIDsConfig{Enable: true, Percent: 100, Seed: []string{"fast"}, Rollback: config.CodexFastSessionRollbackConfig{Enable: true}}
+	h := &Handler{cfg: cfg}
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/codex-fast-session", nil)
+	h.GetCodexFastSession(ctx)
+	var got helps.CodexFastSessionSnapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Percent != 100 || got.EffectivePercent != 99 {
+		t.Fatalf("configured/effective shares=%d/%d", got.Percent, got.EffectivePercent)
+	}
+}

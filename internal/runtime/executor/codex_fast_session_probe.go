@@ -57,7 +57,7 @@ func (e *CodexExecutor) ProbeFastSession(ctx context.Context, auth *cliproxyauth
 	}()
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(httpResp.Body, 2048))
-		return timing, fmt.Errorf("status %d: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+		return timing, fmt.Errorf("status %d: %w", httpResp.StatusCode, newCodexStatusErrWithHeaders(httpResp.StatusCode, data, httpResp.Header, e.modelLevelCooling()))
 	}
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(nil, 52_428_800)
@@ -66,7 +66,8 @@ func (e *CodexExecutor) ProbeFastSession(ctx context.Context, auth *cliproxyauth
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
 		}
-		switch eventType := gjson.GetBytes(bytes.TrimSpace(line[len(dataTag):]), "type").String(); eventType {
+		eventData := bytes.TrimSpace(line[len(dataTag):])
+		switch eventType := gjson.GetBytes(eventData, "type").String(); eventType {
 		case "response.created":
 			if timing.Created == 0 {
 				timing.Created = time.Since(start)
@@ -75,6 +76,9 @@ func (e *CodexExecutor) ProbeFastSession(ctx context.Context, auth *cliproxyauth
 			timing.First = time.Since(start)
 			return timing, nil
 		case "response.failed", "response.incomplete", "error":
+			if streamErr, _, ok := codexTerminalFailureErrWithCooling(eventData, e.modelLevelCooling()); ok {
+				return timing, streamErr
+			}
 			return timing, fmt.Errorf("upstream %s", eventType)
 		}
 	}
