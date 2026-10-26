@@ -35,6 +35,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.Pprof.Addr) != strings.TrimSpace(newCfg.Pprof.Addr) {
 		changes = append(changes, fmt.Sprintf("pprof.addr: %s -> %s", strings.TrimSpace(oldCfg.Pprof.Addr), strings.TrimSpace(newCfg.Pprof.Addr)))
 	}
+	if oldCfg.Pprof.MutexProfileFraction != newCfg.Pprof.MutexProfileFraction {
+		changes = append(changes, fmt.Sprintf("pprof.mutex-profile-fraction: %d -> %d", oldCfg.Pprof.MutexProfileFraction, newCfg.Pprof.MutexProfileFraction))
+	}
 	if oldCfg.LoggingToFile != newCfg.LoggingToFile {
 		changes = append(changes, fmt.Sprintf("logging-to-file: %t -> %t", oldCfg.LoggingToFile, newCfg.LoggingToFile))
 	}

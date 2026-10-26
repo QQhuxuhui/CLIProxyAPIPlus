@@ -424,6 +424,9 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+	// MutexProfileFraction samples 1/N mutex contention events for /debug/pprof/mutex while
+	// pprof is enabled. 0 (default) leaves mutex profiling off.
+	MutexProfileFraction int `yaml:"mutex-profile-fraction,omitempty" json:"mutex-profile-fraction,omitempty"`
 }
 
 // DiscoveryInterfacesConfig specifies interface inclusion and exclusion rules.

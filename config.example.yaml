@@ -48,6 +48,8 @@ debug: false
 pprof:
   enable: false
   addr: "127.0.0.1:8316"
+  # Sample 1/N mutex contention events for /debug/pprof/mutex while pprof is enabled (0 = off).
+  # mutex-profile-fraction: 0
 
 # Enable local network mDNS / DNS-SD service discovery (RFC 6762 / RFC 6763).
 # When enabled, broadcasts _ai-gateway._tcp with API protocol subtypes on the local network.

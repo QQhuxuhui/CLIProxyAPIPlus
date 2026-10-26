@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"net/http"
+	"runtime"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -70,5 +71,23 @@ func TestPprofServerServeFailureClearsTransferredOwner(t *testing.T) {
 	pprof.mu.Unlock()
 	if current != nil {
 		t.Fatal("serve failure retained a server after ownership transferred")
+	}
+}
+
+func TestPprofServerAppliesMutexProfileFraction(t *testing.T) {
+	t.Cleanup(func() { runtime.SetMutexProfileFraction(0) })
+	pprof := newPprofServer()
+	t.Cleanup(func() { _ = pprof.Shutdown(context.Background()) })
+	cfg := &config.Config{}
+	cfg.Pprof = config.PprofConfig{Enable: true, Addr: "127.0.0.1:0", MutexProfileFraction: 7}
+	pprof.ApplyContext(context.Background(), cfg)
+	if got := runtime.SetMutexProfileFraction(-1); got != 7 {
+		t.Fatalf("mutex profile fraction = %d, want 7", got)
+	}
+	// Disabling pprof turns sampling back off even if a fraction is configured.
+	cfg.Pprof.Enable = false
+	pprof.ApplyContext(context.Background(), cfg)
+	if got := runtime.SetMutexProfileFraction(-1); got != 0 {
+		t.Fatalf("mutex profile fraction after disable = %d, want 0", got)
 	}
 }

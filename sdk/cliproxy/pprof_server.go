@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/pprof"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,13 @@ func (p *pprofServer) ApplyContext(ctx context.Context, cfg *config.Config) bool
 		addr = config.DefaultPprofAddr
 	}
 	enabled := cfg.Pprof.Enable
+	mutexFraction := 0
+	if enabled && cfg.Pprof.MutexProfileFraction > 0 {
+		mutexFraction = cfg.Pprof.MutexProfileFraction
+	}
+	if previous := runtime.SetMutexProfileFraction(mutexFraction); previous != mutexFraction {
+		log.Infof("pprof mutex profile fraction updated: %d -> %d", previous, mutexFraction)
+	}
 
 	p.mu.Lock()
 	p.owner++
