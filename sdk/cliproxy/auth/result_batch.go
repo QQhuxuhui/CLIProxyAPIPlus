@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 const (
@@ -16,6 +17,11 @@ const (
 type queuedResult struct {
 	ctx    context.Context
 	result Result
+	// completedAt is when the request finished; a failure applied after it wins.
+	completedAt time.Time
+	// registrationEpoch identifies the credential that executed the request, so a result
+	// never lands on a credential re-registered under the same ID. Zero skips the check.
+	registrationEpoch uint64
 	// done, when set, marks a flush request and is closed once its batch is applied.
 	done chan struct{}
 }
@@ -28,8 +34,9 @@ type queuedResult struct {
 type successResultBatcher struct {
 	mu      sync.Mutex
 	enabled bool
+	stopped bool
 	queue   chan queuedResult
-	once    sync.Once
+	done    chan struct{}
 }
 
 // SetAsyncSuccessResults enables batched, asynchronous recording of successful execution
@@ -43,48 +50,89 @@ func (m *Manager) SetAsyncSuccessResults(enabled bool) {
 	m.successResults.mu.Unlock()
 }
 
-// enqueueSuccessResult queues a successful result and reports whether it was accepted.
-func (m *Manager) enqueueSuccessResult(ctx context.Context, result Result) bool {
-	if m == nil || result.AuthID == "" {
-		return false
+// StopSuccessResults stops accepting queued results, applies everything already queued,
+// and stops the applier. Later successes are recorded synchronously. Call it after the
+// HTTP server stopped accepting requests.
+func (m *Manager) StopSuccessResults(ctx context.Context) error {
+	if m == nil {
+		return nil
 	}
 	b := &m.successResults
 	b.mu.Lock()
-	enabled := b.enabled
-	b.mu.Unlock()
-	if !enabled {
-		return false
-	}
-	b.once.Do(func() {
-		queue := make(chan queuedResult, successResultQueueSize)
-		b.mu.Lock()
-		b.queue = queue
+	b.enabled = false
+	if b.stopped {
 		b.mu.Unlock()
-		go m.runSuccessResultApplier(queue)
-	})
-	b.mu.Lock()
-	queue := b.queue
+		return nil
+	}
+	b.stopped = true
+	queue, done := b.queue, b.done
+	if queue != nil {
+		// Producers send while holding b.mu and check stopped first, so no send can race this close.
+		close(queue)
+	}
 	b.mu.Unlock()
+	if queue == nil {
+		return nil
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// The request may finish before the result is applied; keep its values, drop its cancel.
 	select {
-	case queue <- queuedResult{ctx: context.WithoutCancel(ctx), result: result}:
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enqueueSuccessResult queues a successful result and reports whether it was accepted.
+func (m *Manager) enqueueSuccessResult(ctx context.Context, result Result, auth *Auth) bool {
+	if m == nil || result.AuthID == "" {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	item := queuedResult{
+		// The request may finish before the result is applied; keep its values, drop its cancel.
+		ctx:         context.WithoutCancel(ctx),
+		result:      result,
+		completedAt: time.Now(),
+	}
+	if auth != nil && auth.ID == result.AuthID {
+		item.registrationEpoch = auth.RegistrationEpoch
+	}
+	b := &m.successResults
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.enabled || b.stopped {
+		return false
+	}
+	if b.queue == nil {
+		b.queue = make(chan queuedResult, successResultQueueSize)
+		b.done = make(chan struct{})
+		go m.runSuccessResultApplier(b.queue, b.done)
+	}
+	select {
+	case b.queue <- item:
 		return true
 	default:
 		return false
 	}
 }
 
-func (m *Manager) runSuccessResultApplier(queue <-chan queuedResult) {
+func (m *Manager) runSuccessResultApplier(queue <-chan queuedResult, done chan<- struct{}) {
+	defer close(done)
 	batch := make([]queuedResult, 0, successResultBatchMax)
 	for first := range queue {
 		batch = append(batch[:0], first)
 	drain:
 		for len(batch) < successResultBatchMax {
 			select {
-			case next := <-queue:
+			case next, ok := <-queue:
+				if !ok {
+					break drain
+				}
 				batch = append(batch, next)
 			default:
 				break drain
@@ -103,22 +151,24 @@ func (m *Manager) runSuccessResultApplier(queue <-chan queuedResult) {
 func (m *Manager) flushSuccessResults() {
 	b := &m.successResults
 	b.mu.Lock()
-	queue := b.queue
-	b.mu.Unlock()
-	if queue == nil {
+	if b.queue == nil || b.stopped {
+		b.mu.Unlock()
 		return
 	}
 	done := make(chan struct{})
-	queue <- queuedResult{done: done}
+	b.queue <- queuedResult{done: done}
+	b.mu.Unlock()
 	<-done
 }
 
 // applyResultBatch records results with one manager write lock for the whole batch.
 func (m *Manager) applyResultBatch(batch []queuedResult) {
 	type prepared struct {
+		item   queuedResult
 		ctx    context.Context
 		result Result
 		update markResultUpdate
+		apply  bool
 	}
 	ready := make([]prepared, 0, len(batch))
 	for _, item := range batch {
@@ -127,7 +177,7 @@ func (m *Manager) applyResultBatch(batch []queuedResult) {
 		}
 		ctx, result, ok := m.prepareMarkResult(item.ctx, item.result, false)
 		if ok {
-			ready = append(ready, prepared{ctx: ctx, result: result})
+			ready = append(ready, prepared{item: item, ctx: ctx, result: result})
 		}
 	}
 	if len(ready) == 0 {
@@ -135,10 +185,33 @@ func (m *Manager) applyResultBatch(batch []queuedResult) {
 	}
 	m.mu.Lock()
 	for i := range ready {
-		ready[i].update = m.markResultLocked(ready[i].ctx, ready[i].result, canonicalModelKey(ready[i].result.Model), false)
+		p := &ready[i]
+		current := m.auths[p.result.AuthID]
+		if current == nil || (p.item.registrationEpoch != 0 && current.RegistrationEpoch != p.item.registrationEpoch) {
+			continue
+		}
+		p.apply = true
+		if current.lastFailureAt.After(p.item.completedAt) {
+			p.update = m.markStaleSuccessLocked(current, p.result)
+			continue
+		}
+		p.update = m.markResultLocked(p.ctx, p.result, canonicalModelKey(p.result.Model), false)
 	}
 	m.mu.Unlock()
-	for _, item := range ready {
-		m.finishMarkResult(item.ctx, item.result, false, item.update)
+	for _, p := range ready {
+		if p.apply {
+			m.finishMarkResult(p.ctx, p.result, false, p.update)
+		}
 	}
+}
+
+// markStaleSuccessLocked counts a success that completed before the credential's latest
+// failure without clearing that failure's status or cooldown. The caller holds m.mu.
+func (m *Manager) markStaleSuccessLocked(auth *Auth, result Result) markResultUpdate {
+	now := time.Now()
+	auth.recordRecentRequest(now, true)
+	auth.Success++
+	auth.Generation++
+	auth.UpdatedAt = now
+	return markResultUpdate{authSnapshot: auth.Clone(), modelKey: canonicalModelKey(result.Model), now: now}
 }

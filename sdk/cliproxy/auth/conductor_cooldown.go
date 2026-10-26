@@ -966,6 +966,9 @@ func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey 
 				auth.Failed++
 			}
 		}
+		if !result.Success {
+			auth.lastFailureAt = now
+		}
 		if result.Success {
 			auth.AuthFailures = 0
 		} else {
@@ -1262,7 +1265,7 @@ func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth
 	if !ephemeral {
 		// Successes only refresh counters and clear recovered state, so they may be applied
 		// a moment later in a batch; failures update cooldowns that the next pick must see.
-		if result.Success && m.enqueueSuccessResult(ctx, result) {
+		if result.Success && m.enqueueSuccessResult(ctx, result, auth) {
 			return
 		}
 		m.MarkResult(ctx, result)

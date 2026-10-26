@@ -345,6 +345,12 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
+		// No new requests arrive now: apply queued successes while hooks and stores are still up.
+		if s.coreManager != nil {
+			if errDrain := s.coreManager.StopSuccessResults(ctx); errDrain != nil {
+				log.Errorf("failed to drain queued request results: %v", errDrain)
+			}
+		}
 
 		if s.pluginHost != nil {
 			sdktranslator.SetPluginHooks(nil)

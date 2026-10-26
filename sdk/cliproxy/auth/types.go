@@ -107,6 +107,9 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+	// lastFailureAt is when a failed result was last applied. A batched success that completed
+	// earlier must not clear the newer failure state.
+	lastFailureAt time.Time
 	// codexProbeAttempt belongs only to the clone reserved for a background probe.
 	codexProbeAttempt *rateAttemptRef
 }

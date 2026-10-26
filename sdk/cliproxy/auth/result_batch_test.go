@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func newResultBatchTestManager(t *testing.T, ids ...string) *Manager {
@@ -60,7 +62,7 @@ func TestEnqueueSuccessResultFallsBackWhenQueueFull(t *testing.T) {
 	m.mu.Lock()
 	accepted := 0
 	for i := 0; i < successResultQueueSize+successResultBatchMax+10; i++ {
-		if m.enqueueSuccessResult(context.Background(), Result{AuthID: "a", Provider: "codex", Success: true}) {
+		if m.enqueueSuccessResult(context.Background(), Result{AuthID: "a", Provider: "codex", Success: true}, nil) {
 			accepted++
 		}
 	}
@@ -125,3 +127,99 @@ func TestSuccessResultBatcherConcurrentProducers(t *testing.T) {
 		}
 	}
 }
+
+func TestQueuedSuccessDoesNotClearNewerFailureCooldown(t *testing.T) {
+	m := newResultBatchTestManager(t, "a")
+	ctx := context.Background()
+	success := queuedResult{
+		ctx:               ctx,
+		result:            Result{AuthID: "a", Provider: "codex", Model: "gpt-6-luna", Success: true},
+		completedAt:       time.Now().Add(-time.Second),
+		registrationEpoch: m.auths["a"].RegistrationEpoch,
+	}
+	// A newer request fails with 429 while the earlier success is still queued.
+	m.MarkResult(ctx, Result{AuthID: "a", Provider: "codex", Model: "gpt-6-luna", Error: &Error{HTTPStatus: 429, Message: "rate limited"}})
+	if blocked, _, _ := isAuthBlockedForModel(m.auths["a"], "gpt-6-luna", time.Now()); !blocked {
+		t.Fatal("429 did not put the model into cooldown")
+	}
+	m.applyResultBatch([]queuedResult{success})
+	if blocked, _, _ := isAuthBlockedForModel(m.auths["a"], "gpt-6-luna", time.Now()); !blocked {
+		t.Fatal("an older queued success cleared the newer 429 cooldown")
+	}
+	if got := m.auths["a"].Success; got != 1 {
+		t.Fatalf("stale success not counted: success=%d", got)
+	}
+	// A success that completed after the failure still clears it.
+	m.applyResultBatch([]queuedResult{{ctx: ctx, result: success.result, completedAt: time.Now(), registrationEpoch: success.registrationEpoch}})
+	if blocked, _, _ := isAuthBlockedForModel(m.auths["a"], "gpt-6-luna", time.Now()); blocked {
+		t.Fatal("a newer success did not clear the cooldown")
+	}
+}
+
+func TestQueuedSuccessDroppedForReregisteredAuth(t *testing.T) {
+	m := newResultBatchTestManager(t)
+	ctx := context.Background()
+	if _, err := m.Register(ctx, &Auth{ID: "a", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t"}}); err != nil {
+		t.Fatal(err)
+	}
+	executed := m.auths["a"].Clone()
+	m.mu.Lock()
+	delete(m.auths, "a")
+	m.mu.Unlock()
+	if _, err := m.Register(ctx, &Auth{ID: "a", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if m.auths["a"].RegistrationEpoch == executed.RegistrationEpoch {
+		t.Fatal("test setup: re-registration kept the same epoch")
+	}
+	m.applyResultBatch([]queuedResult{{
+		ctx:               ctx,
+		result:            Result{AuthID: "a", Provider: "codex", Success: true},
+		completedAt:       time.Now(),
+		registrationEpoch: executed.RegistrationEpoch,
+	}})
+	if got := m.auths["a"].Success; got != 0 {
+		t.Fatalf("result of the old registration landed on the new one: success=%d", got)
+	}
+}
+
+func TestStopSuccessResultsDrainsQueueAndStopsApplier(t *testing.T) {
+	m := newResultBatchTestManager(t, "a")
+	m.SetAsyncSuccessResults(true)
+	var hookCalls atomic.Int32
+	m.hook = resultCountingHook{calls: &hookCalls}
+	m.mu.Lock()
+	for range 20 {
+		m.enqueueSuccessResult(context.Background(), Result{AuthID: "a", Provider: "codex", Success: true}, nil)
+	}
+	m.mu.Unlock()
+	if err := m.StopSuccessResults(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.auths["a"].Success; got != 20 {
+		t.Fatalf("queued successes not drained before stop: success=%d", got)
+	}
+	if got := hookCalls.Load(); got != 20 {
+		t.Fatalf("hook calls = %d, want 20 before stop returns", got)
+	}
+	select {
+	case <-m.successResults.done:
+	default:
+		t.Fatal("applier goroutine still running after stop")
+	}
+	// After stop, successes are recorded synchronously and the call is idempotent.
+	m.recordExecutionResult(context.Background(), Result{AuthID: "a", Provider: "codex", Success: true}, nil, false)
+	if got := m.auths["a"].Success; got != 21 {
+		t.Fatalf("success after stop = %d, want 21 (synchronous)", got)
+	}
+	if err := m.StopSuccessResults(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type resultCountingHook struct {
+	NoopHook
+	calls *atomic.Int32
+}
+
+func (h resultCountingHook) OnResult(context.Context, Result) { h.calls.Add(1) }
