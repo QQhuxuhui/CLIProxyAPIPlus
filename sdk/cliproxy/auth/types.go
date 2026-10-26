@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	baseauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth"
@@ -723,11 +724,42 @@ func expirationFromMap(meta map[string]any) (time.Time, bool) {
 }
 
 // parseJWTExp extracts the "exp" claim timestamp from a JWT token string without signature verification.
+// jwtExpCache memoizes parseJWTExp per token string. Selection checks every candidate's access
+// token expiry under the manager read lock, so re-decoding thousands of JWTs per request kept
+// that lock held long enough to starve writers. A refreshed token is a new key.
+var (
+	jwtExpCache     sync.Map // token -> jwtExpCacheEntry
+	jwtExpCacheSize atomic.Int64
+)
+
+const jwtExpCacheMaxEntries = 50000
+
+type jwtExpCacheEntry struct {
+	exp time.Time
+	ok  bool
+}
+
 func parseJWTExp(token string) (time.Time, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return time.Time{}, false
 	}
+	if cached, ok := jwtExpCache.Load(token); ok {
+		entry := cached.(jwtExpCacheEntry)
+		return entry.exp, entry.ok
+	}
+	exp, ok := parseJWTExpUncached(token)
+	if jwtExpCacheSize.Load() >= jwtExpCacheMaxEntries {
+		jwtExpCache.Clear()
+		jwtExpCacheSize.Store(0)
+	}
+	if _, loaded := jwtExpCache.LoadOrStore(token, jwtExpCacheEntry{exp: exp, ok: ok}); !loaded {
+		jwtExpCacheSize.Add(1)
+	}
+	return exp, ok
+}
+
+func parseJWTExpUncached(token string) (time.Time, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return time.Time{}, false
