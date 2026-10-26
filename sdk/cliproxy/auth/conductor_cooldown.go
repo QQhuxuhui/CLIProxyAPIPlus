@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -1228,6 +1229,9 @@ func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey 
 			auth.Unavailable = true
 			auth.NextRetryAfter = credentialParkUntil
 			auth.Status = StatusError
+		}
+		if isAntigravityTermsViolation(auth, statusCode, result.Error) {
+			disableTermsViolatedAuth(auth)
 		}
 
 		auth.Generation++
@@ -2713,4 +2717,34 @@ func isCanceledResultError(err *Error) bool {
 		strings.Contains(lower, "context cancelled") ||
 		strings.Contains(lower, "request canceled") ||
 		strings.Contains(lower, "operation was canceled")
+}
+
+// antigravityTermsViolationMessage is the upstream 403 text for an Antigravity account whose
+// service was disabled for a Terms of Service violation. Such a ban is permanent and covers
+// every model, unlike other 403s, which only cool the failing model down for a while.
+const antigravityTermsViolationMessage = "violation of terms of service"
+
+// isAntigravityTermsViolation reports whether a failed result means the Antigravity account
+// was banned. It never matches other providers.
+func isAntigravityTermsViolation(auth *Auth, statusCode int, err *Error) bool {
+	if auth == nil || err == nil || statusCode != http.StatusForbidden {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Message), antigravityTermsViolationMessage)
+}
+
+// disableTermsViolatedAuth disables a banned credential the same way the management API does,
+// so it leaves selection for every model and stays disabled after a restart.
+func disableTermsViolatedAuth(auth *Auth) {
+	auth.Disabled = true
+	auth.Status = StatusDisabled
+	auth.StatusMessage = "disabled: upstream terms of service violation"
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["disabled"] = true
+	log.WithField("auth_id", auth.ID).Warn("antigravity account banned for terms of service violation; disabled")
 }
