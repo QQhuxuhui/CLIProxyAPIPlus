@@ -1172,7 +1172,6 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -1180,6 +1179,11 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 		}
 	}
 	m.mu.Unlock()
+	// Persist the snapshot outside the manager lock: every finished request lands here, and
+	// file I/O under m.mu serializes all of them. persist orders writes by Generation.
+	if authSnapshot != nil {
+		_ = m.persist(ctx, authSnapshot)
+	}
 	if m.scheduler != nil && authSnapshot != nil {
 		var targetModels []string
 		if !result.CredentialScope && modelKey != "" {
@@ -1264,10 +1268,12 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		}
 		auth.Generation++
 		auth.UpdatedAt = now
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()
+	if authSnapshot != nil {
+		_ = m.persist(ctx, authSnapshot)
+	}
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
