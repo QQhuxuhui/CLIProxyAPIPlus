@@ -159,6 +159,9 @@ func NewCodexFastSessionProber(pool *CodexFastSessionPool, deps CodexFastSession
 // minute until ctx is done. Each tick also evaluates the rollback from in-memory stats.
 func StartCodexFastSessionProber(ctx context.Context, deps CodexFastSessionProbeDeps) *CodexFastSessionProber {
 	prober := NewCodexFastSessionProber(CodexFastSessions(), deps)
+	if deps.Config != nil {
+		CodexFastSessions().ApplyConfig(deps.Config())
+	}
 	CodexFastSessions().prober.Store(prober)
 	go func() {
 		ticker := time.NewTicker(time.Minute)

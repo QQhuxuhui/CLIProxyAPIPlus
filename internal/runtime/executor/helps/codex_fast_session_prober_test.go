@@ -456,3 +456,26 @@ func TestCodexFastSessionProberReplacesFailedPendingCandidate(t *testing.T) {
 		t.Fatal("failed candidate must still be recorded as a probe failure")
 	}
 }
+
+func TestCodexFastSessionPoolIgnoresStaleConfigOnceProberAttached(t *testing.T) {
+	current := codexFastSessionProberConfig("a", "b", "c")
+	stale := codexFastSessionProberConfig("a", "b")
+	upstream := newFakeCodexFastSessionUpstream()
+	pool, prober := newTestCodexFastSessionProber(current, upstream)
+	pool.Add("d")
+
+	// Without a prober, request-path configs are applied.
+	pool.ApplyUnmanagedConfig(*stale)
+	if got := pool.Members(); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("unmanaged members = %v", got)
+	}
+
+	pool.ApplyConfig(*current)
+	pool.Add("d")
+	pool.prober.Store(prober)
+	// An executor still holding the previous config must not reset the pool.
+	pool.ApplyUnmanagedConfig(*stale)
+	if got := pool.Members(); !slices.Equal(got, []string{"a", "b", "c", "d"}) {
+		t.Fatalf("managed members = %v, want runtime member kept", got)
+	}
+}

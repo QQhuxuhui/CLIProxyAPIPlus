@@ -488,14 +488,24 @@ func (p *CodexFastSessionPool) rollbackOutcome(cfg config.CodexFastSessionRollba
 	return codexFastSessionRollbackOutcome{message: "ok"}
 }
 
-// SelectCodexFastSession syncs the process-wide pool with cfg and maps originalID.
+// SelectCodexFastSession maps originalID with the process-wide pool. Once a prober is attached,
+// it alone syncs the pool with the service's current config: executors may hold an older
+// config during a background reload, and applying it per request would flip the seed back and
+// forth, resetting members and rollback windows each time. Without a prober, cfg is applied.
 func SelectCodexFastSession(cfg *config.Config, originalID string) (string, string, uint64) {
 	if cfg == nil {
 		return originalID, CodexFastSessionGroupOff, 0
 	}
 	pool := CodexFastSessions()
-	pool.ApplyConfig(cfg.Codex.FastSessionIDs)
+	pool.ApplyUnmanagedConfig(cfg.Codex.FastSessionIDs)
 	return pool.selectTracked(originalID)
+}
+
+// ApplyUnmanagedConfig applies cfg only while no prober owns the config sync.
+func (p *CodexFastSessionPool) ApplyUnmanagedConfig(cfg config.CodexFastSessionIDsConfig) {
+	if p != nil && p.prober.Load() == nil {
+		p.ApplyConfig(cfg)
+	}
 }
 
 // observeCodexFastSessionRecord feeds a published usage record into the group stats, using the
