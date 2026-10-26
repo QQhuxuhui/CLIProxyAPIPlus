@@ -30,6 +30,8 @@ const (
 
 // CodexFastSessionProbeTiming holds the probe timings measured from sending the request.
 type CodexFastSessionProbeTiming struct {
+	// Sent is the time until the request was fully written (0 when unknown).
+	Sent time.Duration
 	// Created is the time to the first response.created event (0 when none was seen).
 	Created time.Duration
 	// First is the time to the first response.output_text.delta.
@@ -43,6 +45,26 @@ func (t CodexFastSessionProbeTiming) Gap() time.Duration {
 		return t.First - t.Created
 	}
 	return t.First
+}
+
+// PreCreated returns the wait for response.created after the request was sent, or the time
+// to response.created when the send time is unknown (0 when no created event was seen).
+func (t CodexFastSessionProbeTiming) PreCreated() time.Duration {
+	if t.Created > 0 && t.Sent > 0 && t.Created >= t.Sent {
+		return t.Created - t.Sent
+	}
+	return t.Created
+}
+
+// codexFastSessionWait returns the judged wait of one probe: the created->first gap plus any
+// pre-created wait beyond the round's fastest one (floor, negative when unknown). Upstream sometimes queues before
+// response.created, which leaves the gap near zero even though the first token is slow.
+func codexFastSessionWait(t CodexFastSessionProbeTiming, floor time.Duration) time.Duration {
+	wait := t.Gap()
+	if pre := t.PreCreated(); t.Created > 0 && floor >= 0 && pre > floor {
+		wait += pre - floor
+	}
+	return wait
 }
 
 // CodexFastSessionProbeDeps wires the prober to the runtime. Now and NewID are optional.
@@ -63,13 +85,15 @@ type CodexFastSessionProbeDeps struct {
 	Now func() time.Time
 }
 
-// CodexFastSessionProbeResult is one probe of a round. Judging uses GapMs.
+// CodexFastSessionProbeResult is one probe of a round. Judging uses WaitMs.
 type CodexFastSessionProbeResult struct {
 	Kind      string `json:"kind"`
 	Value     string `json:"value"`
+	SentMs    int64  `json:"sent_ms,omitempty"`
 	CreatedMs int64  `json:"created_ms,omitempty"`
 	FirstMs   int64  `json:"first_ms,omitempty"`
 	GapMs     int64  `json:"gap_ms,omitempty"`
+	WaitMs    int64  `json:"wait_ms,omitempty"`
 	Error     string `json:"error,omitempty"`
 	Verdict   string `json:"verdict,omitempty"`
 }
@@ -82,10 +106,11 @@ type CodexFastSessionPending struct {
 
 // CodexFastSessionProbeRound is the outcome of one probe round.
 type CodexFastSessionProbeRound struct {
-	At            time.Time                     `json:"at,omitzero"`
-	DurationMs    int64                         `json:"duration_ms"`
-	Judged        bool                          `json:"judged"`
-	Reason        string                        `json:"reason,omitempty"`
+	At         time.Time `json:"at,omitzero"`
+	DurationMs int64     `json:"duration_ms"`
+	Judged     bool      `json:"judged"`
+	Reason     string    `json:"reason,omitempty"`
+	// BaselineGapMs is the baseline p50 of the judged wait (see codexFastSessionWait).
 	BaselineGapMs int64                         `json:"baseline_gap_p50_ms"`
 	Results       []CodexFastSessionProbeResult `json:"results"`
 }
@@ -255,7 +280,7 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 	}
 
 	results := make([]CodexFastSessionProbeResult, 0, len(targets))
-	gaps := make([]time.Duration, 0, len(targets))
+	timings := make([]CodexFastSessionProbeTiming, 0, len(targets))
 	for i, target := range targets {
 		if ctx.Err() != nil {
 			return
@@ -269,29 +294,29 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 			}
 			result.Error = "no codex credential available: " + reason
 			results = append(results, result)
-			gaps = append(gaps, 0)
+			timings = append(timings, CodexFastSessionProbeTiming{})
 			continue
 		}
 		timing, err := p.deps.Probe(ctx, auth, cfg.ProbeModel, target.value)
 		if ctx.Err() != nil {
 			return
 		}
-		gap := timing.Gap()
 		if err == nil && timing.First <= 0 {
 			err = fmt.Errorf("no first token")
 		}
 		if err != nil {
 			result.Error = err.Error()
-			gap = 0
+			timing = CodexFastSessionProbeTiming{}
 		} else {
+			result.SentMs = timing.Sent.Milliseconds()
 			result.CreatedMs = timing.Created.Milliseconds()
 			result.FirstMs = timing.First.Milliseconds()
-			result.GapMs = gap.Milliseconds()
+			result.GapMs = timing.Gap().Milliseconds()
 		}
 		results = append(results, result)
-		gaps = append(gaps, gap)
+		timings = append(timings, timing)
 	}
-	p.judgeRound(cfg, start, results, gaps)
+	p.judgeRound(cfg, start, results, timings)
 }
 
 func (p *CodexFastSessionProber) finishSkippedRound(start time.Time, reason string) {
@@ -307,7 +332,7 @@ func (p *CodexFastSessionProber) finishSkippedRound(start time.Time, reason stri
 	log.WithField("reason", reason).Info("codex fast session probe round skipped")
 }
 
-func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig, start time.Time, results []CodexFastSessionProbeResult, gaps []time.Duration) {
+func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig, start time.Time, results []CodexFastSessionProbeResult, timings []CodexFastSessionProbeTiming) {
 	var baselineIdx []int
 	failures := int64(0)
 	for i, result := range results {
@@ -317,6 +342,20 @@ func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig
 		}
 		if result.Kind == codexFastSessionProbeBaseline {
 			baselineIdx = append(baselineIdx, i)
+		}
+	}
+	// The fastest pre-created wait of the round is the normal, unqueued one.
+	createdFloor := time.Duration(-1)
+	for i, result := range results {
+		if pre := timings[i].PreCreated(); result.Error == "" && timings[i].Created > 0 && (createdFloor < 0 || pre < createdFloor) {
+			createdFloor = pre
+		}
+	}
+	gaps := make([]time.Duration, len(results))
+	for i, result := range results {
+		if result.Error == "" {
+			gaps[i] = codexFastSessionWait(timings[i], createdFloor)
+			results[i].WaitMs = gaps[i].Milliseconds()
 		}
 	}
 	baseline := make([]time.Duration, 0, len(baselineIdx))

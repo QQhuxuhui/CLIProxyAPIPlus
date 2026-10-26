@@ -64,7 +64,7 @@ func (f *fakeCodexFastSessionUpstream) deps(cfg *config.CodexFastSessionIDsConfi
 			case f.fast[sessionID]:
 				gap = 500 * time.Millisecond
 			}
-			return CodexFastSessionProbeTiming{Created: f.connect, First: f.connect + gap}, nil
+			return CodexFastSessionProbeTiming{Sent: f.connect, Created: f.connect, First: f.connect + gap}, nil
 		},
 		NewID: func() string {
 			f.mu.Lock()
@@ -130,7 +130,7 @@ func TestCodexFastSessionProberJudgesServerSideGap(t *testing.T) {
 	upstream.connect = 100 * time.Millisecond
 	// id-6 pays a slow 3s connect but the server answers quickly: by wall time it is
 	// 3.5s vs 5.1s (miss), by server-side gap it is 0.5s vs 5s (pass).
-	upstream.timing["id-6"] = CodexFastSessionProbeTiming{Created: 3 * time.Second, First: 3500 * time.Millisecond}
+	upstream.timing["id-6"] = CodexFastSessionProbeTiming{Sent: 3 * time.Second, Created: 3 * time.Second, First: 3500 * time.Millisecond}
 	// id-7 has no response.created event: the gap falls back to the first-delta time.
 	upstream.timing["id-7"] = CodexFastSessionProbeTiming{First: 4 * time.Second}
 	_, prober := newTestCodexFastSessionProber(cfg, upstream)
@@ -144,11 +144,30 @@ func TestCodexFastSessionProberJudgesServerSideGap(t *testing.T) {
 	}
 }
 
+func TestCodexFastSessionProberCountsQueueingBeforeCreated(t *testing.T) {
+	cfg := codexFastSessionProberConfig()
+	upstream := newFakeCodexFastSessionUpstream()
+	upstream.fast["id-6"] = true
+	upstream.fast["id-7"] = true
+	// id-7 is sent at once but upstream holds response.created for 6s and then streams the
+	// first delta immediately: the created->first gap is ~0, the real wait is ~6s.
+	upstream.timing["id-7"] = CodexFastSessionProbeTiming{Sent: 1500 * time.Millisecond, Created: 7500 * time.Millisecond, First: 7500 * time.Millisecond}
+	_, prober := newTestCodexFastSessionProber(cfg, upstream)
+	prober.RunRound(context.Background(), *cfg)
+	status := prober.Status()
+	if len(status.Pending) != 1 || status.Pending[0].Value != "id-6" {
+		t.Fatalf("pending = %+v", status.Pending)
+	}
+	if r := status.LastRound.Results[6]; r.Value != "id-7" || r.GapMs != 0 || r.WaitMs != 6000 || r.Verdict != codexFastSessionVerdictMiss {
+		t.Fatalf("queued result = %+v", r)
+	}
+}
+
 func TestCodexFastSessionProberFastBaselineBecomesCandidate(t *testing.T) {
 	cfg := codexFastSessionProberConfig()
 	upstream := newFakeCodexFastSessionUpstream()
 	upstream.fast["id-2"] = true // a random baseline value that happens to be fast
-	upstream.timing["id-4"] = CodexFastSessionProbeTiming{Created: time.Second, First: 29 * time.Second}
+	upstream.timing["id-4"] = CodexFastSessionProbeTiming{Sent: time.Second, Created: time.Second, First: 29 * time.Second}
 	_, prober := newTestCodexFastSessionProber(cfg, upstream)
 	prober.RunRound(context.Background(), *cfg)
 	status := prober.Status()

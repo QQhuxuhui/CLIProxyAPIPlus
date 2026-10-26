@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -36,8 +38,17 @@ func (e *CodexExecutor) ProbeFastSession(ctx context.Context, auth *cliproxyauth
 
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	httpReq, err := http.NewRequestWithContext(probeCtx, http.MethodPost, strings.TrimSuffix(baseURL, "/")+"/responses", bytes.NewReader(body))
+	var start time.Time
 	var timing helps.CodexFastSessionProbeTiming
+	// Sent separates connect/TLS time from upstream queueing before response.created. The
+	// trace hook may run on a transport goroutine, so it is stored atomically.
+	var sent atomic.Int64
+	probeCtx = httptrace.WithClientTrace(probeCtx, &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			sent.CompareAndSwap(0, int64(time.Since(start)))
+		},
+	})
+	httpReq, err := http.NewRequestWithContext(probeCtx, http.MethodPost, strings.TrimSuffix(baseURL, "/")+"/responses", bytes.NewReader(body))
 	if err != nil {
 		return timing, err
 	}
@@ -45,7 +56,7 @@ func (e *CodexExecutor) ProbeFastSession(ctx context.Context, auth *cliproxyauth
 	applyModelHeaderOverrides(httpReq.Header, model, e.cfg)
 	setCodexSessionHeaderCasePreserved(httpReq.Header, "Session-Id", sessionID)
 
-	start := time.Now()
+	start = time.Now()
 	httpResp, err := helps.NewUtlsHTTPClient(probeCtx, e.cfg, auth, 0).Do(httpReq)
 	if err != nil {
 		return timing, err
@@ -55,6 +66,7 @@ func (e *CodexExecutor) ProbeFastSession(ctx context.Context, auth *cliproxyauth
 			log.Debugf("codex fast session probe: close response body error: %v", errClose)
 		}
 	}()
+	timing.Sent = time.Duration(sent.Load())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(httpResp.Body, 2048))
 		return timing, fmt.Errorf("status %d: %w", httpResp.StatusCode, newCodexStatusErrWithHeaders(httpResp.StatusCode, data, httpResp.Header, e.modelLevelCooling()))
