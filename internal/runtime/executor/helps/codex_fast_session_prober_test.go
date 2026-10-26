@@ -479,3 +479,50 @@ func TestCodexFastSessionPoolIgnoresStaleConfigOnceProberAttached(t *testing.T) 
 		t.Fatalf("managed members = %v, want runtime member kept", got)
 	}
 }
+
+func TestCodexFastSessionProberDiscardsRoundWhenSeedChanges(t *testing.T) {
+	cfg := codexFastSessionProberConfig("member")
+	cfg.Consecutive = 1
+	upstream := newFakeCodexFastSessionUpstream()
+	upstream.fast["id-6"] = true // a passing candidate; "member" is slow and would be missed
+	pool, prober := newTestCodexFastSessionProber(cfg, upstream)
+	next := codexFastSessionProberConfig("member", "new-seed")
+	probe := prober.deps.Probe
+	swapped := false
+	prober.deps.Probe = func(ctx context.Context, auth *cliproxyauth.Auth, model, sessionID string) (CodexFastSessionProbeTiming, error) {
+		if !swapped {
+			swapped = true
+			pool.ApplyConfig(*next) // hot reload while the round is running
+		}
+		return probe(ctx, auth, model, sessionID)
+	}
+	prober.RunRound(context.Background(), *cfg)
+	if got := pool.Members(); !slices.Equal(got, []string{"member", "new-seed"}) {
+		t.Fatalf("members = %v, want the new seed untouched", got)
+	}
+	status := prober.Status()
+	if status.LastRound.Judged || status.LastRound.Reason != "pool seed changed during the round" || len(status.Pending) != 0 {
+		t.Fatalf("round = %+v pending = %+v", status.LastRound, status.Pending)
+	}
+}
+
+func TestCodexFastSessionProberResetsMissesOnSeedChange(t *testing.T) {
+	cfg := codexFastSessionProberConfig("slow")
+	cfg.PoolSize = 1
+	upstream := newFakeCodexFastSessionUpstream()
+	pool, prober := newTestCodexFastSessionProber(cfg, upstream)
+	prober.RunRound(context.Background(), *cfg) // first miss for "slow"
+
+	next := codexFastSessionProberConfig("slow", "other")
+	next.PoolSize = 2
+	pool.ApplyConfig(*next)
+	upstream.fast["other"] = true
+	prober.RunRound(context.Background(), *next) // a miss under the new seed is the first one
+	if got := pool.Members(); !slices.Equal(got, []string{"slow", "other"}) {
+		t.Fatalf("members = %v, old-seed miss must not count", got)
+	}
+	prober.RunRound(context.Background(), *next)
+	if got := pool.Members(); !slices.Equal(got, []string{"other"}) {
+		t.Fatalf("members = %v, want slow removed after two misses under the new seed", got)
+	}
+}

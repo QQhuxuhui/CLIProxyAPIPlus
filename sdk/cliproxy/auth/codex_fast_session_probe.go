@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
-// AcquireCodexProbeAuth picks a schedulable codex OAuth credential with spare capacity in its
+// AcquireCodexProbeAuth picks a schedulable codex OAuth credential that supports model (same
+// registry check as normal scheduling) with spare capacity in its
 // per-account rate window (the v70 codex pool window) and counts one attempt against that
 // window, so probing never pushes an account past its learned limit. The attempt is not added
 // to the codex pool dashboard metrics. It returns a clone of the credential, or nil and the
@@ -18,6 +21,7 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 	if m.HomeEnabled() {
 		return nil, "home mode"
 	}
+	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	r := m.rateCap
@@ -39,6 +43,9 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 			continue
 		}
 		if expiry, ok := a.AccessTokenExpirationTime(); ok && !expiry.After(now) {
+			continue
+		}
+		if model != "" && !m.authSupportsRouteModel(registryRef, a, model) {
 			continue
 		}
 		if blocked, _, _ := isAuthBlockedForModel(a, model, now); blocked {

@@ -139,6 +139,7 @@ type CodexFastSessionProber struct {
 
 	mu             sync.Mutex
 	lastRoundStart time.Time
+	seedGen        uint64
 	pending        map[string]int
 	misses         map[string]int
 	status         CodexFastSessionProbeStatus
@@ -244,8 +245,10 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 	}
 	cfg.Normalize()
 	start := p.deps.Now()
+	gen := p.pool.SeedGeneration()
 	members := p.pool.Members()
 	p.mu.Lock()
+	p.resetForSeedLocked(gen)
 	if len(members) >= cfg.PoolSize {
 		clear(p.pending)
 	}
@@ -319,7 +322,16 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 		results = append(results, result)
 		timings = append(timings, timing)
 	}
-	p.judgeRound(cfg, start, results, timings)
+	p.judgeRound(cfg, start, gen, results, timings)
+}
+
+// resetForSeedLocked drops pending passes and miss counts gathered for an older seed.
+func (p *CodexFastSessionProber) resetForSeedLocked(gen uint64) {
+	if p.seedGen != gen {
+		p.seedGen = gen
+		clear(p.pending)
+		clear(p.misses)
+	}
 }
 
 func (p *CodexFastSessionProber) finishSkippedRound(start time.Time, reason string) {
@@ -335,7 +347,7 @@ func (p *CodexFastSessionProber) finishSkippedRound(start time.Time, reason stri
 	log.WithField("reason", reason).Info("codex fast session probe round skipped")
 }
 
-func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig, start time.Time, results []CodexFastSessionProbeResult, timings []CodexFastSessionProbeTiming) {
+func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig, start time.Time, gen uint64, results []CodexFastSessionProbeResult, timings []CodexFastSessionProbeTiming) {
 	var baselineIdx []int
 	failures := int64(0)
 	for i, result := range results {
@@ -380,6 +392,12 @@ func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// A seed change during the round invalidates its verdicts: they describe the old pool.
+	if current := p.pool.SeedGeneration(); current != gen {
+		p.resetForSeedLocked(current)
+		judged = false
+		reason = "pool seed changed during the round"
+	}
 	if judged {
 		limit := time.Duration(float64(baselineP50) * cfg.AdmitRatio)
 		// A random baseline value that turns out fast is a free candidate.
@@ -392,7 +410,7 @@ func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig
 			}
 			if len(others) >= 2 && gaps[i] < time.Duration(float64(codexFastSessionMedian(others))*cfg.AdmitRatio) {
 				results[i].Verdict = codexFastSessionVerdictPass
-				p.judgeCandidateLocked(cfg, results[i].Value, true, gaps[i], baselineP50)
+				p.judgeCandidateLocked(cfg, gen, results[i].Value, true, gaps[i], baselineP50)
 			}
 		}
 		for i := range results {
@@ -417,9 +435,9 @@ func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig
 			}
 			switch result.Kind {
 			case codexFastSessionProbeMember:
-				p.judgeMemberLocked(cfg, result.Value, pass, gaps[i], baselineP50)
+				p.judgeMemberLocked(cfg, gen, result.Value, pass, gaps[i], baselineP50)
 			case codexFastSessionProbeCandidate:
-				p.judgeCandidateLocked(cfg, result.Value, pass, gaps[i], baselineP50)
+				p.judgeCandidateLocked(cfg, gen, result.Value, pass, gaps[i], baselineP50)
 			}
 		}
 		members := p.pool.Members()
@@ -447,7 +465,7 @@ func (p *CodexFastSessionProber) judgeRound(cfg config.CodexFastSessionIDsConfig
 	log.WithFields(log.Fields{"judged": judged, "reason": reason, "probes": len(results), "failures": failures}).Info("codex fast session probe round finished")
 }
 
-func (p *CodexFastSessionProber) judgeMemberLocked(cfg config.CodexFastSessionIDsConfig, value string, pass bool, gap, baseline time.Duration) {
+func (p *CodexFastSessionProber) judgeMemberLocked(cfg config.CodexFastSessionIDsConfig, gen uint64, value string, pass bool, gap, baseline time.Duration) {
 	if pass {
 		delete(p.misses, value)
 		return
@@ -457,13 +475,13 @@ func (p *CodexFastSessionProber) judgeMemberLocked(cfg config.CodexFastSessionID
 		return
 	}
 	detail := fmt.Sprintf("missed %d judged rounds (last gap %dms vs baseline %dms)", p.misses[value], gap.Milliseconds(), baseline.Milliseconds())
-	if p.pool.removeWithDetail(value, detail) {
+	if p.pool.removeWithDetail(value, detail, gen) {
 		log.WithFields(log.Fields{"session": shortCodexFastSessionID(value), "detail": detail}).Info("codex fast session member removed")
 	}
 	delete(p.misses, value)
 }
 
-func (p *CodexFastSessionProber) judgeCandidateLocked(cfg config.CodexFastSessionIDsConfig, value string, pass bool, gap, baseline time.Duration) {
+func (p *CodexFastSessionProber) judgeCandidateLocked(cfg config.CodexFastSessionIDsConfig, gen uint64, value string, pass bool, gap, baseline time.Duration) {
 	if !pass || len(p.pool.Members()) >= cfg.PoolSize {
 		delete(p.pending, value)
 		return
@@ -476,7 +494,7 @@ func (p *CodexFastSessionProber) judgeCandidateLocked(cfg config.CodexFastSessio
 		return
 	}
 	detail := fmt.Sprintf("passed %d judged rounds (last gap %dms vs baseline %dms)", p.pending[value], gap.Milliseconds(), baseline.Milliseconds())
-	if p.pool.addWithLimit(value, cfg.PoolSize, detail) {
+	if p.pool.addWithLimit(value, cfg.PoolSize, detail, gen) {
 		log.WithFields(log.Fields{"session": shortCodexFastSessionID(value), "detail": detail}).Info("codex fast session member admitted")
 		delete(p.pending, value)
 	}

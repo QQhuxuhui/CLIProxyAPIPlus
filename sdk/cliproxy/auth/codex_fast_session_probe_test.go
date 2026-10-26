@@ -6,6 +6,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
@@ -24,6 +25,7 @@ func TestCodexProbeFeedbackCoolsAccountWithoutBusinessMetrics(t *testing.T) {
 	now := time.Now()
 	m.rateCap.nowFunc = func() time.Time { return now }
 	m.auths["a"] = &Auth{ID: "a", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t"}}
+	registerCodexProbeTestClient(t, "a")
 	probe, reason := m.AcquireCodexProbeAuth("gpt-6-luna")
 	if probe == nil {
 		t.Fatalf("acquire: %s", reason)
@@ -72,6 +74,7 @@ func TestCodexProbeFeedbackIgnoresSuccessAndCancellation(t *testing.T) {
 	for _, probeErr := range []error{nil, context.Canceled} {
 		m := NewManager(nil, nil, nil)
 		m.auths["a"] = &Auth{ID: "a", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t"}}
+		registerCodexProbeTestClient(t, "a")
 		probe, _ := m.AcquireCodexProbeAuth("gpt-6-luna")
 		m.MarkCodexProbeResult(context.Background(), probe, "gpt-6-luna", probeErr)
 		if a := m.auths["a"]; a.Generation != 0 || a.Success != 0 || a.Failed != 0 || a.Status != StatusActive {
@@ -92,6 +95,7 @@ func TestAcquireCodexProbeAuthRespectsRateWindow(t *testing.T) {
 	m.auths["key"] = &Auth{ID: "key", Provider: "codex", Status: StatusActive, Attributes: map[string]string{"api_key": "sk"}}
 	m.auths["off"] = &Auth{ID: "off", Provider: "codex", Status: StatusActive, Disabled: true, Metadata: map[string]any{"access_token": "t"}}
 	m.auths["a"] = &Auth{ID: "a", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t"}}
+	registerCodexProbeTestClient(t, "a")
 
 	// Probes may use the account's whole learned per-minute limit, never more.
 	_, limit, _ := m.rateCap.account("a")
@@ -121,5 +125,33 @@ func TestAcquireCodexProbeAuthRespectsRateWindow(t *testing.T) {
 	m.runtimeConfig.Store(homeCfg)
 	if auth, reason := m.AcquireCodexProbeAuth("gpt-6-luna"); auth != nil || reason != "home mode" {
 		t.Fatalf("home mode: %v %q", auth, reason)
+	}
+}
+
+func registerCodexProbeTestClient(t *testing.T, id string) {
+	t.Helper()
+	registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: "gpt-6-luna"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+}
+
+func TestAcquireCodexProbeAuthRequiresModelSupport(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	now := time.Unix(1800000000, 0)
+	m.rateCap.nowFunc = func() time.Time { return now }
+	reg := registry.GetGlobalRegistry()
+	// "aa-old" sorts first and has the same spare capacity, so without the model check it
+	// would be picked although it does not serve the probe model.
+	m.auths["aa-old"] = &Auth{ID: "aa-old", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t"}}
+	m.auths["bb-luna"] = &Auth{ID: "bb-luna", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "t"}}
+	reg.RegisterClient("aa-old", "codex", []*registry.ModelInfo{{ID: "gpt-5-old"}})
+	registerCodexProbeTestClient(t, "bb-luna")
+	t.Cleanup(func() { reg.UnregisterClient("aa-old") })
+
+	auth, reason := m.AcquireCodexProbeAuth("gpt-6-luna")
+	if auth == nil || auth.ID != "bb-luna" {
+		t.Fatalf("acquire = %v %q, want bb-luna", auth, reason)
+	}
+	if auth, reason := m.AcquireCodexProbeAuth("gpt-7-unknown"); auth != nil || reason != "no schedulable codex oauth credential" {
+		t.Fatalf("unsupported model: %v %q", auth, reason)
 	}
 }

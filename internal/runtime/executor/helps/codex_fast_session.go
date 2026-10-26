@@ -47,6 +47,7 @@ type CodexFastSessionPool struct {
 	rollbackEnabled bool
 	epoch           atomic.Uint64
 	seed            []string
+	seedGen         uint64
 	members         []string
 	disabled        bool
 	rollback        CodexFastSessionRollbackStatus
@@ -126,7 +127,8 @@ var defaultCodexFastSessionPool = NewCodexFastSessionPool()
 
 // NewCodexFastSessionPool returns an empty, disabled pool.
 func NewCodexFastSessionPool() *CodexFastSessionPool {
-	return &CodexFastSessionPool{nowFunc: time.Now, stats: map[string]*codexFastSessionGroupStats{
+	// seedGen starts at 1 so that 0 can mean "no generation check".
+	return &CodexFastSessionPool{nowFunc: time.Now, seedGen: 1, stats: map[string]*codexFastSessionGroupStats{
 		CodexFastSessionGroupFast:    {},
 		CodexFastSessionGroupControl: {},
 	}}
@@ -175,6 +177,7 @@ func (p *CodexFastSessionPool) ApplyConfig(cfg config.CodexFastSessionIDsConfig)
 	p.lastRollback = CodexFastSessionRollbackCheck{}
 	if !slices.Equal(p.seed, cfg.Seed) {
 		p.seed = slices.Clone(cfg.Seed)
+		p.seedGen++
 		p.members = slices.Clone(cfg.Seed)
 		log.WithFields(log.Fields{"members": len(p.members)}).Info("codex fast session pool reloaded from seed")
 	}
@@ -220,14 +223,25 @@ func (p *CodexFastSessionPool) Replace(members []string) {
 	p.mu.Unlock()
 }
 
+// SeedGeneration increases each time the pool members are reset from a new seed.
+func (p *CodexFastSessionPool) SeedGeneration() uint64 {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.seedGen
+}
+
 // Add inserts a member and reports whether the pool changed.
 func (p *CodexFastSessionPool) Add(member string) bool {
-	return p.addWithLimit(member, 0, "")
+	return p.addWithLimit(member, 0, "", 0)
 }
 
 // addWithLimit inserts a member when the pool has fewer than limit members (0 = unlimited)
-// and records an admission event when detail is not empty.
-func (p *CodexFastSessionPool) addWithLimit(member string, limit int, detail string) bool {
+// and records an admission event when detail is not empty. A non-zero gen must match the
+// current seed generation, so results gathered for an older pool are not applied.
+func (p *CodexFastSessionPool) addWithLimit(member string, limit int, detail string, gen uint64) bool {
 	if p == nil {
 		return false
 	}
@@ -237,7 +251,7 @@ func (p *CodexFastSessionPool) addWithLimit(member string, limit int, detail str
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if slices.Contains(p.members, normalized[0]) || (limit > 0 && len(p.members) >= limit) {
+	if (gen != 0 && gen != p.seedGen) || slices.Contains(p.members, normalized[0]) || (limit > 0 && len(p.members) >= limit) {
 		return false
 	}
 	p.members = append(slices.Clone(p.members), normalized[0])
@@ -249,10 +263,11 @@ func (p *CodexFastSessionPool) addWithLimit(member string, limit int, detail str
 
 // Remove deletes a member and reports whether the pool changed.
 func (p *CodexFastSessionPool) Remove(member string) bool {
-	return p.removeWithDetail(member, "")
+	return p.removeWithDetail(member, "", 0)
 }
 
-func (p *CodexFastSessionPool) removeWithDetail(member string, detail string) bool {
+// removeWithDetail deletes a member; a non-zero gen must match the current seed generation.
+func (p *CodexFastSessionPool) removeWithDetail(member string, detail string, gen uint64) bool {
 	if p == nil {
 		return false
 	}
@@ -262,6 +277,9 @@ func (p *CodexFastSessionPool) removeWithDetail(member string, detail string) bo
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if gen != 0 && gen != p.seedGen {
+		return false
+	}
 	idx := slices.Index(p.members, normalized[0])
 	if idx < 0 {
 		return false
