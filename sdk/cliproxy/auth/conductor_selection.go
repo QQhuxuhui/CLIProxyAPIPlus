@@ -623,7 +623,7 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 		if err != nil {
 			return nil, nil, err
 		}
-		priorityAuths = cloneAuthSlice(priorityAuths)
+		priorityAuths = snapshotAuthsForSelection(selector, priorityAuths)
 		return priorityAuths, priorityAuths, nil
 	}
 
@@ -633,7 +633,7 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 	if errAcross != nil {
 		return nil, nil, errAcross
 	}
-	allAuths = cloneAuthSlice(allAuths)
+	allAuths = snapshotAuthsForSelection(selector, allAuths)
 
 	if schedulerAcross {
 		priorityAuths = allAuths
@@ -1749,6 +1749,16 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	if supportsSelectionSnapshots(selector) {
+		authCopy, executor, errResolve := m.resolveSelectionSnapshot(ctx, selected, model, opts)
+		if retryCtx, retryTried, ok := staleSelectionRetry(ctx, errResolve, tried, selected.ID); ok {
+			// A failed re-pick keeps the retryable stale-selection error for the caller.
+			if retried, retriedExecutor, errRetry := m.pickNextLegacy(retryCtx, provider, model, opts, retryTried); errRetry == nil {
+				return retried, retriedExecutor, nil
+			}
+		}
+		return authCopy, executor, errResolve
+	}
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2082,6 +2092,19 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	if supportsSelectionSnapshots(selector) {
+		authCopy, executor, errResolve := m.resolveSelectionSnapshot(ctx, selected, model, opts)
+		if retryCtx, retryTried, ok := staleSelectionRetry(ctx, errResolve, tried, selected.ID); ok {
+			// A failed re-pick keeps the retryable stale-selection error for the caller.
+			if retried, retriedExecutor, retriedProvider, errRetry := m.pickNextMixedLegacy(retryCtx, providers, model, opts, retryTried); errRetry == nil {
+				return retried, retriedExecutor, retriedProvider, nil
+			}
+		}
+		if errResolve != nil {
+			return nil, nil, "", errResolve
+		}
+		return authCopy, executor, executorKeyFromAuth(authCopy), nil
 	}
 	providerKey := executorKeyFromAuth(selected)
 	executor, okExecutor := m.Executor(providerKey)
