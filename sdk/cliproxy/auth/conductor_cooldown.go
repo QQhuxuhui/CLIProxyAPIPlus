@@ -848,9 +848,22 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 // markResult shares availability updates with background probes while keeping
 // probe outcomes out of business counters, hooks, and session affinity.
 func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
+	ctx, result, ok := m.prepareMarkResult(ctx, result, probe)
+	if !ok {
+		return
+	}
+	m.mu.Lock()
+	update := m.markResultLocked(ctx, result, canonicalModelKey(result.Model), probe)
+	m.mu.Unlock()
+	m.finishMarkResult(ctx, result, probe, update)
+}
+
+// prepareMarkResult runs the lock-free steps before a result is applied. It reports false
+// when the result must be dropped.
+func (m *Manager) prepareMarkResult(ctx context.Context, result Result, probe bool) (context.Context, Result, bool) {
 	m.observeRateResult(ctx, result)
 	if result.AuthID == "" {
-		return
+		return ctx, result, false
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -859,19 +872,71 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
 			if result.AuthID == "" {
-				return
+				return ctx, result, false
 			}
 		}
 	}
-	modelKey := canonicalModelKey(result.Model)
+	return ctx, result, true
+}
 
+// finishMarkResult runs the steps after the in-memory update: persistence, scheduler and
+// registry projections, hooks and session affinity.
+func (m *Manager) finishMarkResult(ctx context.Context, result Result, probe bool, update markResultUpdate) {
+	authSnapshot, cooldownStateChanged, modelKey, now := update.authSnapshot, update.cooldownStateChanged, update.modelKey, update.now
+	// Persist the snapshot outside the manager lock: every finished request lands here, and
+	// file I/O under m.mu serializes all of them. persist orders writes by Generation.
+	if authSnapshot != nil {
+		_ = m.persist(ctx, authSnapshot)
+	}
+	if m.scheduler != nil && authSnapshot != nil {
+		var targetModels []string
+		if !result.CredentialScope && modelKey != "" {
+			targetModels = append(targetModels, modelKey)
+			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
+				targetModels = append(targetModels, routeKey)
+			}
+		}
+		m.scheduler.upsertAuthResult(authSnapshot, targetModels, result.CredentialScope)
+	}
+	if authSnapshot != nil && cooldownStateChanged {
+		m.persistCooldownStates(context.Background())
+	}
+
+	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
+	reg := registry.GetGlobalRegistry()
+	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+	for _, sm := range supportedModels {
+		if sm == nil || strings.TrimSpace(sm.ID) == "" {
+			continue
+		}
+		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
+	}
+	if authSnapshot != nil && len(projections) > 0 {
+		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+	}
+
+	if !probe {
+		m.hook.OnResult(ctx, result)
+		m.publishErrorEvent(result, authSnapshot)
+		m.updateSessionAffinity(result)
+	}
+}
+
+// markResultUpdate carries what the post-lock part of markResult needs.
+type markResultUpdate struct {
+	authSnapshot         *Auth
+	cooldownStateChanged bool
+	modelKey             string
+	now                  time.Time
+}
+
+// markResultLocked applies one result to the in-memory auth state. The caller holds m.mu.
+func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey string, probe bool) markResultUpdate {
 	var authSnapshot *Auth
 	cooldownStateChanged := false
 	now := time.Now()
 	var credentialParkUntil time.Time
 	explicitQuotaReset := false
-
-	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
 			if m != nil {
@@ -1178,44 +1243,7 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 		}
 	}
-	m.mu.Unlock()
-	// Persist the snapshot outside the manager lock: every finished request lands here, and
-	// file I/O under m.mu serializes all of them. persist orders writes by Generation.
-	if authSnapshot != nil {
-		_ = m.persist(ctx, authSnapshot)
-	}
-	if m.scheduler != nil && authSnapshot != nil {
-		var targetModels []string
-		if !result.CredentialScope && modelKey != "" {
-			targetModels = append(targetModels, modelKey)
-			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
-				targetModels = append(targetModels, routeKey)
-			}
-		}
-		m.scheduler.upsertAuthResult(authSnapshot, targetModels, result.CredentialScope)
-	}
-	if authSnapshot != nil && cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
-	}
-
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
-	reg := registry.GetGlobalRegistry()
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
-		}
-		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
-	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
-	}
-
-	if !probe {
-		m.hook.OnResult(ctx, result)
-		m.publishErrorEvent(result, authSnapshot)
-		m.updateSessionAffinity(result)
-	}
+	return markResultUpdate{authSnapshot: authSnapshot, cooldownStateChanged: cooldownStateChanged, modelKey: modelKey, now: now}
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {
@@ -1232,6 +1260,11 @@ func (m *Manager) updateSessionAffinity(result Result) {
 
 func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
 	if !ephemeral {
+		// Successes only refresh counters and clear recovered state, so they may be applied
+		// a moment later in a batch; failures update cooldowns that the next pick must see.
+		if result.Success && m.enqueueSuccessResult(ctx, result) {
+			return
+		}
 		m.MarkResult(ctx, result)
 		return
 	}

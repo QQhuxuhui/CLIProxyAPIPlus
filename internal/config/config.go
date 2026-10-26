@@ -110,6 +110,10 @@ type Config struct {
 	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
+	// DisableAsyncSuccessResults records every successful request result synchronously under
+	// the auth manager lock instead of in batches (the pre-v80 behavior).
+	DisableAsyncSuccessResults bool `yaml:"disable-async-success-results,omitempty" json:"disable-async-success-results,omitempty"`
+
 	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
 	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
 

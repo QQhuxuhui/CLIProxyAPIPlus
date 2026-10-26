@@ -148,6 +148,7 @@ type Manager struct {
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
 	mu                        sync.RWMutex
+	successResults            successResultBatcher
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
 	auths                     map[string]*Auth

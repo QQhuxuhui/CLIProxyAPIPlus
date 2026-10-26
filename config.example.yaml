@@ -234,6 +234,10 @@ concurrent-request-wait-timeout: 60s
 # is still served when nothing else is in flight. Set to 0 (default) to disable.
 max-concurrent-request-body-mb: 0
 
+# When true, record every successful request result synchronously under the auth manager lock
+# instead of in batches. Batching keeps finished streams from waiting on that lock under load.
+# disable-async-success-results: false
+
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 # A credential/provider disable-cooling value, when present, overrides this global value.
 disable-cooling: false
