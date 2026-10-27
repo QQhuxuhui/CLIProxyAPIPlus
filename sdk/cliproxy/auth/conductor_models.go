@@ -571,6 +571,24 @@ func finishForceMappedStreamChunks(rewriter *StreamRewriter) []byte {
 }
 
 func (m *Manager) rebuildAPIKeyModelAliasFromRuntimeConfig() {
+	if m != nil && m.codexPools.Load() != nil {
+		m.aliasPublication.Lock()
+		defer m.aliasPublication.Unlock()
+		m.mu.RLock()
+		auths := make([]*Auth, 0, len(m.auths))
+		for _, a := range m.auths {
+			auths = append(auths, a.Clone())
+		}
+		m.mu.RUnlock()
+		side := m.codexPools.Load().side
+		side.mu.Lock()
+		for _, a := range side.auths {
+			auths = append(auths, a.Clone())
+		}
+		side.mu.Unlock()
+		m.compileAPIKeyModelAliases(m.runtimeConfigSnapshot(), auths)
+		return
+	}
 	if m == nil {
 		return
 	}
@@ -589,6 +607,13 @@ func (m *Manager) RefreshAPIKeyModelAlias() {
 }
 
 func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
+	auths := make([]*Auth, 0, len(m.auths))
+	for _, a := range m.auths {
+		auths = append(auths, a)
+	}
+	m.compileAPIKeyModelAliases(cfg, auths)
+}
+func (m *Manager) compileAPIKeyModelAliases(cfg *internalconfig.Config, auths []*Auth) {
 	if m == nil {
 		return
 	}
@@ -598,7 +623,7 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 
 	out := make(apiKeyModelAliasTable)
 	capabilities := make(apiKeyModelCapabilityTable)
-	for _, auth := range m.auths {
+	for _, auth := range auths {
 		if auth == nil {
 			continue
 		}

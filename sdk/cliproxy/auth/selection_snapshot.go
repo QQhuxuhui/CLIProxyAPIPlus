@@ -75,6 +75,87 @@ func snapshotAuthsForSelection(selector Selector, auths []*Auth) []*Auth {
 // re-registered or blocked in the meantime. Never execute a projection or a stale
 // registration, and obtain the matching executor in the same critical section.
 func (m *Manager) resolveSelectionSnapshot(ctx context.Context, selected *Auth, model string, opts cliproxyexecutor.Options) (*Auth, ProviderExecutor, error) {
+	if m.codexPools.Load() == nil {
+		return m.resolveLegacySelectionSnapshot(ctx, selected, model, opts)
+	}
+	guard, errLock := m.lockAuthRead(ctx, selected.ID)
+	if errLock != nil {
+		return nil, nil, &Error{Code: "auth_unavailable", Message: staleSelectionMessage, Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
+	}
+	current := guard.auths[selected.ID]
+	if current != nil && !current.indexAssigned && guard.pool == nil {
+		guard.unlock()
+		guard, errLock = m.lockAuth(ctx, selected.ID)
+		if errLock != nil {
+			return nil, nil, &Error{Code: "auth_unavailable", Message: staleSelectionMessage, Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
+		}
+		current = guard.auths[selected.ID]
+	}
+	defer guard.unlock()
+	if current != nil && !current.indexAssigned {
+		current.EnsureIndex()
+	}
+	staleSelection := func() (*Auth, ProviderExecutor, error) {
+		return nil, nil, &Error{
+			Code: "auth_unavailable", Message: staleSelectionMessage,
+			Retryable: true, HTTPStatus: http.StatusServiceUnavailable,
+		}
+	}
+	if current == nil || current.RegistrationEpoch != selected.RegistrationEpoch ||
+		executorKeyFromAuth(current) != executorKeyFromAuth(selected) ||
+		!authSelectionEligibilityForRequest(ctx, opts).allows(current) {
+		return staleSelection()
+	}
+	if pinned := pinnedAuthIDFromMetadata(opts.Metadata); pinned != "" && current.ID != pinned {
+		return staleSelection()
+	}
+	if blocked, _, _ := isAuthBlockedForModel(current, m.selectionModelForAuth(current, model), time.Now()); blocked {
+		return staleSelection()
+	}
+	if strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(registry.GetGlobalRegistry(), current, model) {
+		return staleSelection()
+	}
+	var executor ProviderExecutor
+	if guard.pool != nil {
+		executor = m.shared.Load().executors[executorKeyFromAuth(current)]
+	} else {
+		executor = m.executors[executorKeyFromAuth(current)]
+	}
+	if executor == nil {
+		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
+	}
+	return current.Clone(), executor, nil
+}
+
+const (
+	staleSelectionMessage = "selected auth changed; retry selection"
+	// maxStaleSelectionRetries bounds re-picks when the selected credential changed between
+	// the lock-free selection and resolving it, e.g. it entered cooldown meanwhile.
+	maxStaleSelectionRetries = 3
+)
+
+type staleSelectionRetriesKey struct{}
+
+// staleSelectionRetry reports whether a stale selection should be retried and returns the
+// context and tried set for the next pick. The caller's tried map is never modified.
+func staleSelectionRetry(ctx context.Context, err error, tried map[string]struct{}, authID string) (context.Context, map[string]struct{}, bool) {
+	var authErr *Error
+	if err == nil || !errors.As(err, &authErr) || authErr == nil || authErr.Message != staleSelectionMessage {
+		return ctx, tried, false
+	}
+	retries, _ := ctx.Value(staleSelectionRetriesKey{}).(int)
+	if retries >= maxStaleSelectionRetries {
+		return ctx, tried, false
+	}
+	next := make(map[string]struct{}, len(tried)+1)
+	for id := range tried {
+		next[id] = struct{}{}
+	}
+	next[authID] = struct{}{}
+	return context.WithValue(ctx, staleSelectionRetriesKey{}, retries+1), next, true
+}
+
+func (m *Manager) resolveLegacySelectionSnapshot(ctx context.Context, selected *Auth, model string, opts cliproxyexecutor.Options) (*Auth, ProviderExecutor, error) {
 	m.mu.RLock()
 	current := m.auths[selected.ID]
 	if current != nil && !current.indexAssigned {
@@ -113,32 +194,4 @@ func (m *Manager) resolveSelectionSnapshot(ctx context.Context, selected *Auth, 
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	return current.Clone(), executor, nil
-}
-
-const (
-	staleSelectionMessage = "selected auth changed; retry selection"
-	// maxStaleSelectionRetries bounds re-picks when the selected credential changed between
-	// the lock-free selection and resolving it, e.g. it entered cooldown meanwhile.
-	maxStaleSelectionRetries = 3
-)
-
-type staleSelectionRetriesKey struct{}
-
-// staleSelectionRetry reports whether a stale selection should be retried and returns the
-// context and tried set for the next pick. The caller's tried map is never modified.
-func staleSelectionRetry(ctx context.Context, err error, tried map[string]struct{}, authID string) (context.Context, map[string]struct{}, bool) {
-	var authErr *Error
-	if err == nil || !errors.As(err, &authErr) || authErr == nil || authErr.Message != staleSelectionMessage {
-		return ctx, tried, false
-	}
-	retries, _ := ctx.Value(staleSelectionRetriesKey{}).(int)
-	if retries >= maxStaleSelectionRetries {
-		return ctx, tried, false
-	}
-	next := make(map[string]struct{}, len(tried)+1)
-	for id := range tried {
-		next[id] = struct{}{}
-	}
-	next[authID] = struct{}{}
-	return context.WithValue(ctx, staleSelectionRetriesKey{}, retries+1), next, true
 }

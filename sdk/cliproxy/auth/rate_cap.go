@@ -26,6 +26,7 @@ type rateAccount struct {
 	probeAt  time.Time
 }
 type requestRateCap struct {
+	pooled   bool
 	mu       sync.Mutex
 	nowFunc  func() time.Time
 	config   internalconfig.RequestRateCapConfig
@@ -121,7 +122,11 @@ func (r *requestRateCap) start(id string) uint64 {
 }
 func (r *requestRateCap) startLocked(id string, now time.Time) uint64 {
 	a := r.getLocked(id, now)
-	r.sequence++
+	if r.pooled {
+		r.sequence = codexPoolRateSequence.Add(1)
+	} else {
+		r.sequence++
+	}
 	a.attempts = append(a.attempts, rateAttempt{id: r.sequence, at: now})
 	r.metrics.bucket(now).Attempts++
 	return r.sequence
@@ -129,6 +134,9 @@ func (r *requestRateCap) startLocked(id string, now time.Time) uint64 {
 func (r *requestRateCap) reject(id string, token uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.rejectLocked(id, token)
+}
+func (r *requestRateCap) rejectLocked(id string, token uint64) {
 	now := r.nowFunc()
 	a := r.getLocked(id, now)
 	found := false
@@ -150,6 +158,7 @@ func (r *requestRateCap) reject(id string, token uint64) {
 type rateAttemptContextKey struct{}
 type rateBypassContextKey struct{}
 type rateAttemptRef struct {
+	epoch  uint64
 	authID string
 	token  atomic.Uint64
 }
@@ -162,6 +171,9 @@ func rateBypassed(ctx context.Context) bool {
 func (m *Manager) beginRateAttempt(ctx context.Context, a *Auth) (context.Context, error) {
 	if a == nil || a.Provider != "codex" || m.HomeEnabled() || rateBypassed(ctx) {
 		return ctx, nil
+	}
+	if m.codexPools.Load() != nil {
+		return m.beginPooledRateAttempt(ctx, a)
 	}
 	r := m.rateCap
 	r.mu.Lock()
@@ -180,6 +192,10 @@ func (m *Manager) beginRateAttempt(ctx context.Context, a *Auth) (context.Contex
 }
 func (m *Manager) observeRateResult(ctx context.Context, result Result) {
 	if m.rateCap == nil || ctx == nil || result.Provider != "codex" || result.QuotaDetail == nil || result.QuotaDetail.ReasonCode != "RATE_LIMIT_EXCEEDED" || statusCodeFromResult(result.Error) != 429 {
+		return
+	}
+	if m.codexPools.Load() != nil {
+		m.observePooledRateResult(ctx, result)
 		return
 	}
 	if ref, ok := ctx.Value(rateAttemptContextKey{}).(*rateAttemptRef); ok && ref.authID == result.AuthID {
@@ -308,15 +324,22 @@ func (m *Manager) finishRateDispatch(ctx context.Context) {
 	if !ok {
 		return
 	}
+	if m.codexPools.Load() != nil {
+		m.finishPooledRateDispatch(ctx, ref)
+		return
+	}
 	r := m.rateCap
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	a := r.accounts[ref.authID]
+	r.refundLocked(ref.authID, ref.token.Load())
+}
+func (r *requestRateCap) refundLocked(id string, token uint64) {
+	a := r.accounts[id]
 	if a == nil {
 		return
 	}
 	for i, p := range a.attempts {
-		if p.id != ref.token.Load() {
+		if p.id != token {
 			continue
 		}
 		a.attempts = append(a.attempts[:i], a.attempts[i+1:]...)
@@ -335,6 +358,10 @@ func (m *Manager) recordPoolFailure(err error) {
 	if !isPoolCapacityError(err) {
 		return
 	}
+	if pools := m.codexPools.Load(); pools != nil {
+		pools.fastFailures.Add(1)
+		return
+	}
 	r := m.rateCap
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -344,6 +371,9 @@ func (m *Manager) recordPoolFailure(err error) {
 // poolCapacityAfterPickFailure also considers accounts already attempted by this request.
 // They may now be cooling and explain an otherwise generic auth_not_found result.
 func (m *Manager) poolCapacityAfterPickFailure(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, err error) error {
+	if m.codexPools.Load() != nil {
+		return m.pooledCapacityAfterPickFailure(ctx, providers, model, opts, err)
+	}
 	if err == nil || isPoolCapacityError(err) || rateBypassed(ctx) || !m.rateCap.enabled() {
 		return err
 	}

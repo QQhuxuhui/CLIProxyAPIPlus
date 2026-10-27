@@ -104,15 +104,14 @@ func (l *authAutoRefreshLoop) rebuild(now time.Time) {
 
 	entries := make([]entry, 0)
 
-	l.manager.mu.RLock()
-	for id, auth := range l.manager.auths {
+	for _, auth := range l.manager.snapshotAuths() {
+		id := auth.ID
 		next, ok := nextRefreshCheckAt(now, auth, l.interval)
 		if !ok {
 			continue
 		}
 		entries = append(entries, entry{id: id, next: next})
 	}
-	l.manager.mu.RUnlock()
 
 	l.mu.Lock()
 	l.queue = l.queue[:0]
@@ -243,16 +242,13 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 
 	manager := l.manager
 
-	manager.mu.RLock()
-	auth := manager.auths[authID]
+	auth, _ := manager.GetByID(authID)
 	if auth == nil {
-		manager.mu.RUnlock()
 		return
 	}
 	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval)
 	shouldRefresh := manager.shouldRefresh(auth, now)
-	exec := manager.executors[executorKeyFromAuth(auth)]
-	manager.mu.RUnlock()
+	exec := manager.executorFor(executorKeyFromAuth(auth))
 
 	if !shouldSchedule {
 		l.remove(authID)
@@ -270,10 +266,8 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	}
 
 	if !manager.markRefreshPending(authID, now) {
-		manager.mu.RLock()
-		auth = manager.auths[authID]
+		auth, _ = manager.GetByID(authID)
 		next, shouldSchedule = nextRefreshCheckAt(now, auth, l.interval)
-		manager.mu.RUnlock()
 		if shouldSchedule {
 			l.upsert(authID, next)
 		} else {
@@ -296,10 +290,8 @@ func (l *authAutoRefreshLoop) applyDirty(now time.Time) {
 	}
 
 	for _, authID := range dirty {
-		l.manager.mu.RLock()
-		auth := l.manager.auths[authID]
+		auth, _ := l.manager.GetByID(authID)
 		next, ok := nextRefreshCheckAt(now, auth, l.interval)
-		l.manager.mu.RUnlock()
 
 		if !ok {
 			l.remove(authID)

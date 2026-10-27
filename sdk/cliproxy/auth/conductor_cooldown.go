@@ -237,6 +237,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 		m.homeSessionAliases.clear()
 	}
 	m.runtimeConfig.Store(cfg)
+	m.configureCodexPools(cfg)
 	m.rateCap.configure(cfg.ProviderRequestRateCap["codex"])
 	m.rateCap.mu.Lock()
 	m.rateCap.home = cfg.Home.Enabled
@@ -291,11 +292,18 @@ func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *in
 		m.pendingCooldownStateStore = nil
 	}
 	m.cooldownStore = store
+	m.publishSharedLocked()
 	return true
 }
 
 // PersistCooldownStates writes the current cooldown snapshot using ctx.
 func (m *Manager) PersistCooldownStates(ctx context.Context) {
+	if m.codexPools.Load() != nil {
+		m.configCooldownMu.Lock()
+		defer m.configCooldownMu.Unlock()
+		m.persistCooldownStatesLocked(ctx)
+		return
+	}
 	m.persistCooldownStates(ctx)
 }
 
@@ -336,6 +344,7 @@ func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStat
 		m.pendingCooldownStateStore = nil
 	}
 	m.cooldownStore = store
+	m.publishSharedLocked()
 	return true
 }
 
@@ -353,12 +362,18 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 	}
 	now := time.Now()
 	snapshots := make([]*Auth, 0)
-	m.mu.Lock()
-	for _, auth := range m.auths {
+	for _, snapshot := range m.snapshotAuths() {
+		guard, err := m.lockAuth(context.Background(), snapshot.ID)
+		if err != nil {
+			continue
+		}
+		auth := guard.auths[snapshot.ID]
 		if auth == nil {
+			guard.unlock()
 			continue
 		}
 		if !quotaCooldownDisabledForAuthWithConfig(auth, cfg) && !auth.Disabled && auth.Status != StatusDisabled {
+			guard.unlock()
 			continue
 		}
 		credentialParkUntil := auth.NextRetryAfter
@@ -370,12 +385,17 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 			}
 			snapshots = append(snapshots, auth.Clone())
 		}
+		if guard.pool != nil {
+			guard.pool.markDirtyLocked(auth.ID)
+		}
+		guard.unlock()
 	}
-	m.mu.Unlock()
 
 	if m.scheduler != nil {
 		for _, snapshot := range snapshots {
-			m.scheduler.upsertAuth(snapshot)
+			if !m.poolOwnsAuth(snapshot.ID) {
+				m.scheduler.upsertAuth(snapshot)
+			}
 		}
 	}
 	return len(snapshots) > 0
@@ -407,30 +427,36 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 	authLevelRecords := make([]CooldownStateRecord, 0)
 	snapshotsByID := make(map[string]*Auth)
 
-	m.mu.Lock()
+	apply := func(record CooldownStateRecord) {
+		guard, err := m.lockAuth(ctx, strings.TrimSpace(record.AuthID))
+		if err != nil {
+			return
+		}
+		auth := guard.auths[strings.TrimSpace(record.AuthID)]
+		if m.restoreAuthCooldownRecordLocked(auth, record, now) {
+			snapshotsByID[auth.ID] = auth.Clone()
+			if guard.pool != nil {
+				guard.pool.markDirtyLocked(auth.ID)
+			}
+		}
+		guard.unlock()
+	}
 	for _, record := range records {
 		if strings.TrimSpace(record.Model) == "" {
 			authLevelRecords = append(authLevelRecords, record)
-			continue
-		}
-		if m.restoreCooldownRecordLocked(record, now) {
-			if auth := m.auths[strings.TrimSpace(record.AuthID)]; auth != nil {
-				snapshotsByID[auth.ID] = auth.Clone()
-			}
+		} else {
+			apply(record)
 		}
 	}
 	for _, record := range authLevelRecords {
-		if m.restoreCooldownRecordLocked(record, now) {
-			if auth := m.auths[strings.TrimSpace(record.AuthID)]; auth != nil {
-				snapshotsByID[auth.ID] = auth.Clone()
-			}
-		}
+		apply(record)
 	}
-	m.mu.Unlock()
 
 	if m.scheduler != nil {
 		for _, snapshot := range snapshotsByID {
-			m.scheduler.upsertAuth(snapshot)
+			if !m.poolOwnsAuth(snapshot.ID) {
+				m.scheduler.upsertAuth(snapshot)
+			}
 		}
 	}
 	m.persistCooldownStates(context.Background())
@@ -438,11 +464,13 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 }
 
 func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now time.Time) bool {
+	return m.restoreAuthCooldownRecordLocked(m.auths[strings.TrimSpace(record.AuthID)], record, now)
+}
+func (m *Manager) restoreAuthCooldownRecordLocked(auth *Auth, record CooldownStateRecord, now time.Time) bool {
 	authID := strings.TrimSpace(record.AuthID)
 	if authID == "" || record.NextRetryAfter.IsZero() || !record.NextRetryAfter.After(now) {
 		return false
 	}
-	auth := m.auths[authID]
 	mandatoryCodexInvalidation := strings.TrimSpace(record.Model) == "" &&
 		record.AuthFailures >= codexAuthFailureThreshold &&
 		auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex")
@@ -562,15 +590,21 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	registeredModels := modelsForRegisteredAuth(authID)
 	cooldownStateChanged := false
 
-	m.mu.Lock()
-	auth, ok := m.auths[authID]
+	guard, errLock := m.lockAuth(ctx, authID)
+	if errLock != nil {
+		if errors.Is(errLock, errCodexOwnerMissing) {
+			return nil, nil, nil
+		}
+		return nil, nil, errLock
+	}
+	auth, ok := guard.auths[authID]
 	if !ok || auth == nil {
-		m.mu.Unlock()
+		guard.unlock()
 		return nil, nil, nil
 	}
 
 	var cooldownRecordsBefore []CooldownStateRecord
-	trackCooldownState := m.cooldownStore != nil
+	trackCooldownState := m.cooldownStoreSnapshot() != nil
 	if trackCooldownState {
 		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 	}
@@ -609,8 +643,11 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 	}
-	errPersist := m.persist(ctx, auth)
-	m.mu.Unlock()
+	if guard.pool != nil {
+		guard.pool.markDirtyLocked(authID)
+	}
+	guard.unlock()
+	errPersist := m.persist(ctx, snapshot)
 
 	defer func() {
 		if cooldownStateChanged {
@@ -618,6 +655,12 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		}
 	}()
 
+	if guard.pool != nil {
+		if errPersist != nil {
+			return nil, nil, errPersist
+		}
+		return snapshot, models, nil
+	}
 	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(authID)
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
 	for _, sm := range supportedModels {
@@ -627,7 +670,7 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		projections = append(projections, m.clientModelProjectionForAuth(snapshot, sm.ID, now))
 	}
 	if snapshot != nil {
-		registry.GetGlobalRegistry().ApplyClientModelProjections(authID, regEpoch, snapshot.Generation, projections)
+		m.applyRegistryProjection(snapshot, regEpoch, projections)
 	}
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
@@ -651,6 +694,13 @@ func modelsForRegisteredAuth(authID string) []string {
 }
 
 func (m *Manager) persistCooldownStates(ctx context.Context) {
+	if m != nil && m.codexPools.Load() != nil {
+		if cfg := m.runtimeConfigSnapshot(); cfg != nil && !cfg.SaveCooldownStatus {
+			return
+		}
+		m.codexPools.Load().cooldownDirty.Store(true)
+		return
+	}
 	if m == nil {
 		return
 	}
@@ -682,7 +732,10 @@ func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store Coold
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	records := m.cooldownStateRecordsSnapshot()
+	records, errSnapshot := m.cooldownStateRecordsSnapshotContext(ctx)
+	if errSnapshot != nil {
+		return false
+	}
 	if errSave := store.Save(ctx, records); errSave != nil {
 		logEntryWithRequestID(ctx).Warnf("failed to persist cooldown state: %v", errSave)
 		return false
@@ -691,14 +744,20 @@ func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store Coold
 }
 
 func (m *Manager) cooldownStateRecordsSnapshot() []CooldownStateRecord {
+	records, _ := m.cooldownStateRecordsSnapshotContext(context.Background())
+	return records
+}
+func (m *Manager) cooldownStateRecordsSnapshotContext(ctx context.Context) ([]CooldownStateRecord, error) {
 	now := time.Now()
 	records := make([]CooldownStateRecord, 0)
 
-	m.mu.RLock()
-	for _, auth := range m.auths {
+	auths, err := m.persistenceAuthSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, auth := range auths {
 		records = append(records, m.cooldownStateRecordsForAuthLocked(auth, now)...)
 	}
-	m.mu.RUnlock()
 
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].Provider != records[j].Provider {
@@ -709,7 +768,7 @@ func (m *Manager) cooldownStateRecordsSnapshot() []CooldownStateRecord {
 		}
 		return records[i].Model < records[j].Model
 	})
-	return records
+	return records, nil
 }
 
 func (m *Manager) cooldownStateRecordsForAuthLocked(auth *Auth, now time.Time) []CooldownStateRecord {
@@ -853,9 +912,22 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 	if !ok {
 		return
 	}
-	m.mu.Lock()
-	update := m.markResultLocked(ctx, result, canonicalModelKey(result.Model), probe)
-	m.mu.Unlock()
+	guard, err := m.lockAuth(ctx, result.AuthID)
+	if err != nil {
+		return
+	}
+	if expected, ok := ctx.Value(poolResultEpochKey{}).(uint64); ok && expected != 0 {
+		if current := guard.auths[result.AuthID]; current == nil || current.RegistrationEpoch != expected {
+			guard.unlock()
+			return
+		}
+	}
+	update := m.markAuthResultLocked(ctx, result, canonicalModelKey(result.Model), probe, guard.auths[result.AuthID])
+	update.pooled = guard.pool != nil
+	if guard.pool != nil {
+		guard.pool.markDirtyLocked(result.AuthID)
+	}
+	guard.unlock()
 	m.finishMarkResult(ctx, result, probe, update)
 }
 
@@ -889,7 +961,7 @@ func (m *Manager) finishMarkResult(ctx context.Context, result Result, probe boo
 	if authSnapshot != nil {
 		_ = m.persist(ctx, authSnapshot)
 	}
-	if m.scheduler != nil && authSnapshot != nil {
+	if m.scheduler != nil && authSnapshot != nil && !update.pooled {
 		var targetModels []string
 		if !result.CredentialScope && modelKey != "" {
 			targetModels = append(targetModels, modelKey)
@@ -903,28 +975,31 @@ func (m *Manager) finishMarkResult(ctx context.Context, result Result, probe boo
 		m.persistCooldownStates(context.Background())
 	}
 
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
-	reg := registry.GetGlobalRegistry()
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
+	if !update.pooled {
+		supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
+		projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+		for _, sm := range supportedModels {
+			if sm == nil || strings.TrimSpace(sm.ID) == "" {
+				continue
+			}
+			projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
 		}
-		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
-	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+		if authSnapshot != nil && len(projections) > 0 {
+			m.applyRegistryProjection(authSnapshot, regEpoch, projections)
+		}
+
 	}
 
 	if !probe {
 		m.hook.OnResult(ctx, result)
 		m.publishErrorEvent(result, authSnapshot)
-		m.updateSessionAffinity(result)
+		m.updateSessionAffinityWithEpoch(result, authSnapshot)
 	}
 }
 
 // markResultUpdate carries what the post-lock part of markResult needs.
 type markResultUpdate struct {
+	pooled               bool
 	authSnapshot         *Auth
 	cooldownStateChanged bool
 	modelKey             string
@@ -933,12 +1008,15 @@ type markResultUpdate struct {
 
 // markResultLocked applies one result to the in-memory auth state. The caller holds m.mu.
 func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey string, probe bool) markResultUpdate {
+	return m.markAuthResultLocked(ctx, result, modelKey, probe, m.auths[result.AuthID])
+}
+func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, modelKey string, probe bool, auth *Auth) markResultUpdate {
 	var authSnapshot *Auth
 	cooldownStateChanged := false
 	now := time.Now()
 	var credentialParkUntil time.Time
 	explicitQuotaReset := false
-	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+	if auth != nil {
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
 			if m != nil {
 				modelKey = m.selectionModelKeyForAuth(auth, result.RouteModel)
@@ -951,7 +1029,7 @@ func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey 
 		responseHeaders := internallogging.GetResponseHeaders(ctx)
 		modelState := existingModelState(auth, modelKey)
 		var cooldownRecordsBefore []CooldownStateRecord
-		trackCooldownState := m.cooldownStore != nil
+		trackCooldownState := m.cooldownStoreSnapshot() != nil
 		if trackCooldownState {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
@@ -1231,7 +1309,11 @@ func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey 
 			auth.Status = StatusError
 		}
 		if isAntigravityTermsViolation(auth, statusCode, result.Error) {
+			before := &Auth{Provider: auth.Provider, Disabled: auth.Disabled, Status: auth.Status}
 			disableTermsViolatedAuth(auth)
+			if m.codexPools.Load() != nil {
+				m.adjustProviderPresence(before, auth)
+			}
 		}
 
 		auth.Generation++
@@ -1253,7 +1335,22 @@ func (m *Manager) markResultLocked(ctx context.Context, result Result, modelKey 
 	return markResultUpdate{authSnapshot: authSnapshot, cooldownStateChanged: cooldownStateChanged, modelKey: modelKey, now: now}
 }
 
+func (m *Manager) updateSessionAffinityWithEpoch(result Result, snapshot *Auth) {
+	if m.codexPools.Load() != nil && result.Provider == "codex" {
+		var epoch uint64
+		if snapshot != nil {
+			epoch = snapshot.RegistrationEpoch
+		}
+		m.updatePoolAffinity(result, epoch)
+		return
+	}
+	m.updateSessionAffinity(result)
+}
 func (m *Manager) updateSessionAffinity(result Result) {
+	if m != nil && m.codexPools.Load() != nil && result.Provider == "codex" {
+		m.updatePoolAffinity(result, 0)
+		return
+	}
 	if m == nil {
 		return
 	}
@@ -1272,7 +1369,7 @@ func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth
 		if result.Success && m.enqueueSuccessResult(ctx, result, auth) {
 			return
 		}
-		m.MarkResult(ctx, result)
+		m.markExecutionResult(ctx, result, auth)
 		return
 	}
 	m.reportHomeResult(ctx, result, auth)
@@ -1297,8 +1394,17 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	}
 
 	var authSnapshot *Auth
-	m.mu.Lock()
-	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+	guard, err := m.lockAuth(ctx, result.AuthID)
+	if err != nil {
+		return
+	}
+	if expected, ok := ctx.Value(poolResultEpochKey{}).(uint64); ok && expected != 0 {
+		if current := guard.auths[result.AuthID]; current == nil || current.RegistrationEpoch != expected {
+			guard.unlock()
+			return
+		}
+	}
+	if auth, ok := guard.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
@@ -1310,7 +1416,7 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		auth.UpdatedAt = now
 		authSnapshot = auth.Clone()
 	}
-	m.mu.Unlock()
+	guard.unlock()
 	if authSnapshot != nil {
 		_ = m.persist(ctx, authSnapshot)
 	}
@@ -1473,9 +1579,7 @@ func (m *Manager) registryModelsForAuthAndModel(auth *Auth, authID, modelKey str
 		authID = auth.ID
 	}
 	if auth == nil && m != nil && authID != "" {
-		m.mu.RLock()
-		auth = m.auths[authID]
-		m.mu.RUnlock()
+		auth, _ = m.GetByID(authID)
 	}
 	if authID == "" || modelKey == "" {
 		return nil

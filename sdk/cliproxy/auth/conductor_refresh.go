@@ -49,6 +49,7 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	cancelPrev := m.refreshCancel
 	m.refreshCancel = nil
 	m.refreshLoop = nil
+	m.publishSharedLocked()
 	m.mu.Unlock()
 	if cancelPrev != nil {
 		cancelPrev()
@@ -61,10 +62,14 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	m.mu.Lock()
 	m.refreshCancel = cancelCtx
 	m.refreshLoop = loop
+	m.publishSharedLocked()
 	m.mu.Unlock()
 
 	loop.rebuild(time.Now())
 	go loop.run(ctx)
+	if pools := m.codexPools.Load(); pools != nil {
+		go pools.run(ctx)
+	}
 }
 
 // StopAutoRefresh cancels the background refresh loop, if running.
@@ -74,6 +79,7 @@ func (m *Manager) StopAutoRefresh() {
 	cancel := m.refreshCancel
 	m.refreshCancel = nil
 	m.refreshLoop = nil
+	m.publishSharedLocked()
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -89,9 +95,7 @@ func (m *Manager) queueRefreshReschedule(authID string) {
 	if m == nil || authID == "" {
 		return
 	}
-	m.mu.RLock()
-	loop := m.refreshLoop
-	m.mu.RUnlock()
+	loop := m.refreshLoopSnapshot()
 	if loop == nil {
 		return
 	}
@@ -102,9 +106,7 @@ func (m *Manager) queueRefreshUnschedule(authID string) {
 	if m == nil || authID == "" {
 		return
 	}
-	m.mu.RLock()
-	loop := m.refreshLoop
-	m.mu.RUnlock()
+	loop := m.refreshLoopSnapshot()
 	if loop == nil {
 		return
 	}
@@ -320,21 +322,24 @@ func lookupMetadataTime(meta map[string]any, keys ...string) (time.Time, bool) {
 }
 
 func (m *Manager) markRefreshPending(id string, now time.Time) bool {
-	m.mu.Lock()
-	auth, ok := m.auths[id]
+	guard, err := m.lockAuth(context.Background(), id)
+	if err != nil {
+		return false
+	}
+	auth, ok := guard.auths[id]
 	if !ok || auth == nil {
-		m.mu.Unlock()
+		guard.unlock()
 		return false
 	}
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
-		m.mu.Unlock()
+		guard.unlock()
 		return false
 	}
 	auth.NextRefreshAfter = now.Add(refreshPendingBackoff)
 	auth.Generation++
 	auth.UpdatedAt = now
-	m.auths[id] = auth
-	m.mu.Unlock()
+	guard.auths[id] = auth
+	guard.unlock()
 
 	m.queueRefreshReschedule(id)
 	return true
@@ -519,15 +524,11 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 
-	m.mu.RLock()
-	auth := m.auths[id]
+	auth, exists := m.GetByID(id)
 	var exec ProviderExecutor
-	if auth != nil {
-		// Use the same effective provider key as request execution so OpenAI-compat
-		// auths registered under namespaced keys still resolve for refresh.
-		exec = m.executors[executorKeyFromAuth(auth)]
+	if exists {
+		exec = m.executorFor(executorKeyFromAuth(auth))
 	}
-	m.mu.RUnlock()
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
 	}
@@ -550,10 +551,14 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if err != nil {
 		unauthorized := isUnauthorizedError(err)
 		shouldReschedule := false
-		m.mu.Lock()
-		if current := m.auths[id]; current != nil {
+		guard, errLock := m.lockAuth(ctx, id)
+		if errLock != nil {
+			return nil, errLock
+		}
+		var schedulerSnapshot *Auth
+		if current := guard.auths[id]; current != nil {
 			if base != nil && current.RegistrationEpoch != base.RegistrationEpoch {
-				m.mu.Unlock()
+				guard.unlock()
 				return nil, err
 			}
 			current.Generation++
@@ -583,13 +588,19 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 					log.Warnf("credential refresh failed for %s (%s): %s; retaining active credential as access token is unexpired", current.Provider, current.ID, safeErrorDiagnosticForLog(err))
 				}
 			}
-			m.auths[id] = current
+			guard.auths[id] = current
 			shouldReschedule = true
 			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
+				schedulerSnapshot = current.Clone()
 			}
 		}
-		m.mu.Unlock()
+		if guard.pool != nil {
+			guard.pool.markDirtyLocked(id)
+		}
+		guard.unlock()
+		if schedulerSnapshot != nil && guard.pool == nil && m.scheduler != nil {
+			m.scheduler.upsertAuth(schedulerSnapshot)
+		}
 		if shouldReschedule {
 			m.queueRefreshReschedule(id)
 		}
@@ -625,17 +636,20 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		return nil, fmt.Errorf("auth %s not found", id)
 	}
 	targetAuth := saved
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(id)
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
+	if !m.poolOwnsAuth(id) {
+		supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(id)
+		projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+		for _, sm := range supportedModels {
+			if sm == nil || strings.TrimSpace(sm.ID) == "" {
+				continue
+			}
+			projections = append(projections, m.clientModelProjectionForAuth(targetAuth, sm.ID, now))
 		}
-		projections = append(projections, m.clientModelProjectionForAuth(targetAuth, sm.ID, now))
+		if targetAuth != nil && len(projections) > 0 {
+			m.applyRegistryProjection(targetAuth, regEpoch, projections)
+		}
 	}
-	if targetAuth != nil && len(projections) > 0 {
-		registry.GetGlobalRegistry().ApplyClientModelProjections(id, regEpoch, targetAuth.Generation, projections)
-	}
+
 	return saved.Clone(), nil
 }
 
@@ -676,14 +690,14 @@ func (m *Manager) ForceRefreshAll(ctx context.Context) []ForceRefreshResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	m.mu.RLock()
-	ids := make([]string, 0, len(m.auths))
-	for id, auth := range m.auths {
+	auths := m.snapshotAuths()
+	ids := make([]string, 0, len(auths))
+	for _, auth := range auths {
+		id := auth.ID
 		if auth != nil && !auth.Disabled && (authHasRefreshCredential(auth) || auth.Runtime != nil) {
 			ids = append(ids, id)
 		}
 	}
-	m.mu.RUnlock()
 
 	results := make([]ForceRefreshResult, len(ids))
 	if len(ids) == 0 {

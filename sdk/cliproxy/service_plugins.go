@@ -189,6 +189,8 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 }
 
 func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRegistrationTask) {
+	finishBatch := registry.GetGlobalRegistry().BeginPoolRegistrationBatch()
+	defer finishBatch()
 	if len(tasks) == 0 {
 		return
 	}

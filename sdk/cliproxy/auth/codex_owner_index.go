@@ -22,8 +22,9 @@ const (
 var errCodexOwnerMissing = errors.New("credential ownership is not registered")
 
 type codexOwnerLease struct {
-	kind    codexOwnerKind
-	version uint64
+	authEpoch uint64
+	kind      codexOwnerKind
+	version   uint64
 }
 type codexOwnerEntry struct {
 	lease  codexOwnerLease
@@ -98,8 +99,8 @@ func (index *codexOwnerIndex) begin(ctx context.Context, id string) (*codexOwner
 	}
 	previous := index.entry(id)
 	done := make(chan struct{})
-	tx := &codexOwnerTransition{index: index, id: id, previous: previous.lease, version: previous.lease.version + 1, done: done, gate: gate}
-	index.publish(id, codexOwnerEntry{lease: codexOwnerLease{kind: previous.lease.kind, version: tx.version}, moving: true, done: done})
+	tx := &codexOwnerTransition{index: index, id: id, previous: previous.lease, authEpoch: previous.lease.authEpoch, version: previous.lease.version + 1, done: done, gate: gate}
+	index.publish(id, codexOwnerEntry{lease: codexOwnerLease{kind: previous.lease.kind, version: tx.version, authEpoch: tx.authEpoch}, moving: true, done: done})
 	return tx, nil
 }
 
@@ -134,26 +135,39 @@ func (index *codexOwnerIndex) valid(id string, lease codexOwnerLease) bool {
 }
 
 type codexOwnerTransition struct {
-	index    *codexOwnerIndex
-	id       string
-	previous codexOwnerLease
-	version  uint64
-	done     chan struct{}
-	gate     chan struct{}
-	finished atomic.Bool
+	authEpoch uint64
+	released  atomic.Bool
+	index     *codexOwnerIndex
+	id        string
+	previous  codexOwnerLease
+	version   uint64
+	done      chan struct{}
+	gate      chan struct{}
+	finished  atomic.Bool
 }
 
 // commit publishes a stable destination before waking readers. A missing
 // destination is a versioned deletion tombstone, not removal of the index entry.
-func (tx *codexOwnerTransition) commit(kind codexOwnerKind) bool {
+func (tx *codexOwnerTransition) publish(kind codexOwnerKind) bool {
 	if !tx.finished.CompareAndSwap(false, true) {
 		return false
 	}
-	tx.index.publish(tx.id, codexOwnerEntry{lease: codexOwnerLease{kind: kind, version: tx.version + 1}})
+	tx.index.publish(tx.id, codexOwnerEntry{lease: codexOwnerLease{kind: kind, version: tx.version + 1, authEpoch: tx.authEpoch}})
 	close(tx.done)
-	tx.gate <- struct{}{}
 	return true
 }
+func (tx *codexOwnerTransition) release() {
+	<-tx.done
+	if tx.released.CompareAndSwap(false, true) {
+		tx.gate <- struct{}{}
+	}
+}
+func (tx *codexOwnerTransition) commit(kind codexOwnerKind) bool {
+	ok := tx.publish(kind)
+	tx.release()
+	return ok
+}
 
-// abort is idempotent. Restore any moved container data before invoking it.
-func (tx *codexOwnerTransition) abort() { tx.commit(tx.previous.kind) }
+// abort restores the previous route only while unpublished. Stable publication
+// can retain the lifecycle gate through internal post-storage housekeeping.
+func (tx *codexOwnerTransition) abort() { tx.publish(tx.previous.kind); tx.release() }

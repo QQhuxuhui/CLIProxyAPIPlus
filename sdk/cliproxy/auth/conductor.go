@@ -139,6 +139,12 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	providerPresence          sync.Map
+	poolAsyncResults          atomic.Bool
+	poolResultsStopped        atomic.Bool
+	aliasPublication          sync.Mutex
+	shared                    atomic.Pointer[managerSharedSnapshot]
+	codexPools                atomic.Pointer[codexPoolSet]
 	rateCap                   *requestRateCap
 	store                     Store
 	cooldownStore             CooldownStateStore
@@ -237,6 +243,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	manager.scheduler = newAuthScheduler(selector)
 	manager.scheduler.rateCap = manager.rateCap
+	manager.publishSharedLocked()
 	return manager
 }
 

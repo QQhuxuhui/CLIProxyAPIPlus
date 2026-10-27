@@ -56,3 +56,12 @@ func (h *Handler) PutCodexPoolConfig(c *gin.Context) {
 	next.ProviderRequestRateCap["codex"] = value.WithDefaults()
 	h.persistConfigLocked(c, next)
 }
+
+// GetCodexPools exposes partition state without credential or token material.
+func (h *Handler) GetCodexPools(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager is not available"})
+		return
+	}
+	c.JSON(http.StatusOK, h.authManager.CodexPoolsSnapshot())
+}

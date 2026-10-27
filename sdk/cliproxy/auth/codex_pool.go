@@ -93,12 +93,18 @@ type CodexPoolSnapshot struct {
 }
 
 func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
+	if m.codexPools.Load() != nil {
+		return m.aggregateCodexPoolSnapshot()
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	auths := m.auths
 	r := m.rateCap
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return snapshotCodexPoolLocked(auths, r)
+}
+func snapshotCodexPoolLocked(auths map[string]*Auth, r *requestRateCap) CodexPoolSnapshot {
 	now := r.nowFunc()
 	out := CodexPoolSnapshot{Config: r.config, HomeMode: r.home, RPMAvailable: !r.home, AlgorithmActive: r.config.Enabled && !r.home, CoolingReasons: map[string]int{}, Limits: []PoolLimitBucket{}, Points: make([]PoolPoint, 0, 60)}
 	distribution := map[int]int{}
@@ -209,6 +215,12 @@ func (r *requestRateCap) HandleUsage(ctx context.Context, record usage.Record) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.handleUsageLocked(ctx, record)
+}
+func (r *requestRateCap) handleUsageLocked(ctx context.Context, record usage.Record) {
+	if record.Provider != "codex" || record.AdditionalModel || !usage.GenerateEnabled(record.Generate) {
+		return
+	}
 	b := r.metrics.bucket(r.nowFunc())
 	if !record.Failed {
 		b.Success++
@@ -235,13 +247,18 @@ func (r *requestRateCap) HandleUsage(ctx context.Context, record usage.Record) {
 }
 
 type codexPoolUsagePlugin struct {
-	ctx context.Context
-	cap *requestRateCap
+	manager *Manager
+	ctx     context.Context
+	cap     *requestRateCap
 }
 
 func (p codexPoolUsagePlugin) HandleUsage(ctx context.Context, r usage.Record) {
 	if p.ctx.Err() == nil {
-		p.cap.HandleUsage(ctx, r)
+		if p.manager != nil && p.manager.codexPools.Load() != nil {
+			p.manager.pooledUsage(ctx, r)
+		} else {
+			p.cap.HandleUsage(ctx, r)
+		}
 	}
 }
 
@@ -250,7 +267,7 @@ func (m *Manager) StartCodexPoolMetrics(ctx context.Context) {
 	if m == nil {
 		return
 	}
-	usage.RegisterNamedPlugin("codex-pool", codexPoolUsagePlugin{ctx, m.rateCap})
+	usage.RegisterNamedPlugin("codex-pool", codexPoolUsagePlugin{manager: m, ctx: ctx, cap: m.rateCap})
 	m.CodexPoolSnapshot()
 	go func() {
 		ticker := time.NewTicker(time.Minute)

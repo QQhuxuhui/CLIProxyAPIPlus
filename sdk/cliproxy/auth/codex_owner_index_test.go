@@ -200,3 +200,37 @@ func TestCodexOwnerIndexCancellationDuringWait(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexOwnerIndexPublishedRouteKeepsLifecycleGate(t *testing.T) {
+	index := newCodexOwnerIndex()
+	tx, err := index.begin(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.abort()
+	tx.publish(codexOwnerPooled)
+	if _, err := index.resolve(context.Background(), "a"); err != nil {
+		t.Fatal("stable owner not visible before housekeeping")
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := &codexOwnerWaitContext{Context: parent, entered: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		next, err := index.begin(ctx, "a")
+		if next != nil {
+			next.abort()
+		}
+		done <- err
+	}()
+	<-ctx.entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("lifecycle gate was released too early: %v", err)
+	}
+	tx.release()
+	next, err := index.begin(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.abort()
+}

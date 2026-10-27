@@ -123,7 +123,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
-	defer func() { m.recordPoolFailure(resultErr) }()
+	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -240,7 +240,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response *cliproxyexecutor.StreamResult, resultErr error) {
-	defer func() { m.recordPoolFailure(resultErr) }()
+	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -467,6 +467,9 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
+	if m.codexPools.Load() != nil {
+		ctx = context.WithValue(nonNilContext(ctx), poolRetryRoundKey{}, poolRetryRound{retryRound, defaultRequestRetry})
+	}
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -548,7 +551,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
-			m.MarkResult(execCtx, result)
+			m.markExecutionResult(execCtx, result, auth)
 			lastErr = errPrepare
 			continue
 		}
@@ -673,9 +676,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
 				applyRequestScopedActionToResult(action, okAction, &result)
 				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
-					m.recordAvailabilityNeutralResult(execCtx, result)
+					m.recordNeutralExecutionResult(execCtx, result, auth)
 				} else {
-					m.MarkResult(execCtx, result)
+					m.markExecutionResult(execCtx, result, auth)
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -696,7 +699,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				continue
 			}
-			m.MarkResult(execCtx, result)
+			m.markExecutionResult(execCtx, result, auth)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
@@ -732,6 +735,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 }
 
 func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
+	if m.codexPools.Load() != nil {
+		ctx = context.WithValue(nonNilContext(ctx), poolRetryRoundKey{}, poolRetryRound{retryRound, defaultRequestRetry})
+	}
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -801,7 +807,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
-			m.MarkResult(execCtx, result)
+			m.markExecutionResult(execCtx, result, auth)
 			lastErr = errPrepare
 			continue
 		}
@@ -893,12 +899,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				// the failure for hooks and metrics without suspending a model
 				// that remains usable through the messages endpoint.
 				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
-					m.recordAvailabilityNeutralResult(execCtx, result)
+					m.recordNeutralExecutionResult(execCtx, result, auth)
 				} else {
 					if isCredentialScopedError(errExec) {
 						result.CredentialScope = true
 					}
-					m.MarkResult(execCtx, result)
+					m.markExecutionResult(execCtx, result, auth)
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -919,7 +925,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				continue
 			}
-			m.MarkResult(execCtx, result)
+			m.markExecutionResult(execCtx, result, auth)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
@@ -949,6 +955,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 }
 
 func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int) (*cliproxyexecutor.StreamResult, error) {
+	if m.codexPools.Load() != nil {
+		ctx = context.WithValue(nonNilContext(ctx), poolRetryRoundKey{}, poolRetryRound{retryRound, defaultRequestRetry})
+	}
 	if len(providers) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -1151,7 +1160,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				m.reportHomeResult(execCtx, result, auth)
 				releaseAttempt()
 			} else {
-				m.MarkResult(execCtx, result)
+				m.markExecutionResult(execCtx, result, auth)
 			}
 			lastErr = errPrepare
 			if homeMode {
@@ -1601,12 +1610,10 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	defer prepareMu.Unlock()
 
 	target := auth.Clone()
-	m.mu.RLock()
-	current := m.auths[id]
+	current, _ := m.GetByID(id)
 	if current != nil {
-		target = current.Clone()
+		target = current
 	}
-	m.mu.RUnlock()
 	if current == nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
 		return nil, fmt.Errorf("prepare meta auth: credential no longer registered")
 	}
@@ -1858,6 +1865,9 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {
+	if m.codexPools.Load() != nil {
+		return m.shared.Load().executors[provider]
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.executors[provider]
@@ -1868,6 +1878,13 @@ type roundTripperContextKey struct{}
 
 // roundTripperFor retrieves an HTTP RoundTripper for the given auth if a provider is registered.
 func (m *Manager) roundTripperFor(auth *Auth) http.RoundTripper {
+	if m.codexPools.Load() != nil {
+		p := m.shared.Load().rtProvider
+		if p == nil || auth == nil {
+			return nil
+		}
+		return p.RoundTripperFor(auth)
+	}
 	m.mu.RLock()
 	p := m.rtProvider
 	m.mu.RUnlock()
@@ -2073,13 +2090,12 @@ func (m *Manager) InjectCredentials(req *http.Request, authID string) error {
 	if req == nil || authID == "" {
 		return nil
 	}
-	m.mu.RLock()
-	a := m.auths[authID]
+	a, _ := m.GetByID(authID)
 	var exec ProviderExecutor
 	if a != nil {
-		exec = m.executors[executorKeyFromAuth(a)]
+		exec = m.executorFor(executorKeyFromAuth(a))
 	}
-	m.mu.RUnlock()
+
 	if a == nil || exec == nil {
 		return nil
 	}
