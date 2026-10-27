@@ -70,6 +70,8 @@ type PoolLimitBucket struct {
 
 // CodexPoolSnapshot contains aggregate metrics only, without credential identifiers.
 type CodexPoolSnapshot struct {
+	UpstreamOverloads []CodexOverloadPoint                `json:"upstream_overloads"`
+	BootstrapReleases map[string]uint64                   `json:"bootstrap_releases"`
 	Config            internalconfig.RequestRateCapConfig `json:"config"`
 	HomeMode          bool                                `json:"home_mode"`
 	RPMAvailable      bool                                `json:"rpm_available"`
@@ -100,7 +102,7 @@ func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.nowFunc()
-	out := CodexPoolSnapshot{Config: r.config, HomeMode: r.home, RPMAvailable: !r.home, AlgorithmActive: r.config.Enabled && !r.home, CoolingReasons: map[string]int{}, Limits: []PoolLimitBucket{}, Points: make([]PoolPoint, 0, 60)}
+	out := CodexPoolSnapshot{UpstreamOverloads: m.codexOverloadSnapshot(), BootstrapReleases: cliproxyexecutor.CodexBootstrapMetrics(), Config: r.config, HomeMode: r.home, RPMAvailable: !r.home, AlgorithmActive: r.config.Enabled && !r.home, CoolingReasons: map[string]int{}, Limits: []PoolLimitBucket{}, Points: make([]PoolPoint, 0, 60)}
 	distribution := map[int]int{}
 	live := map[string]bool{}
 	for _, a := range auths {

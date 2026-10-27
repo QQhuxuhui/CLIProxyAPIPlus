@@ -168,6 +168,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	bufferedFrames := 0
 	bufferedBytes := 0
 	var initialChunks [][]byte
+	bootstrapReleaseReason := "event"
 	streamStarted := false
 	immediateTerminal := false
 	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
@@ -217,7 +218,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 							// transparently retry on another credential, and report the status the
 							// upstream refused to put on the wire.
 							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
-							return nil, newCodexBootstrapOverloadErr(terminalBody)
+							cliproxyexecutor.ObserveCodexBootstrapRelease("overload")
+							bootstrapErr := newCodexBootstrapOverloadErr(terminalBody)
+							bootstrapErr.credentialScoped = streamErr.IsCredentialScoped()
+							return nil, bootstrapErr
 						}
 						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d lines / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
 					}
@@ -226,6 +230,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				if helps.HasMeaningfulCodexOutputDelta(data) {
 					sawOutputDelta = true
+					bootstrapReleaseReason = "content"
 				}
 				if helps.IsCodexTerminalEmptyIncomplete(data, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 					closeBootstrapBody()
@@ -291,11 +296,16 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				} else if bufferedFrames < codexBootstrapMaxBufferedFrames {
 					exhausted = "byte budget"
 				}
+				bootstrapReleaseReason = exhausted
 				helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap %s exhausted after %d lines / %d bytes / %v, releasing stream without overload probing", exhausted, bufferedFrames, bufferedBytes, timeSinceStart)
 			}
 
 			initialChunks = chunks
 			streamStarted = true
+			if terminalSuccess {
+				bootstrapReleaseReason = "terminal"
+			}
+			cliproxyexecutor.ObserveCodexBootstrapRelease(bootstrapReleaseReason)
 			if terminalSuccess {
 				immediateTerminal = true
 			}

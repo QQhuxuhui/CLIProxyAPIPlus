@@ -139,6 +139,7 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	codexOverloads            sync.Map
 	rateCap                   *requestRateCap
 	store                     Store
 	cooldownStore             CooldownStateStore

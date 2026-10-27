@@ -1376,6 +1376,9 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
+	if wait, retry, handled := m.codexRetryOverride(ctx, opts, model, maxWait); handled {
+		return wait, retry
+	}
 	if m.HomeEnabled() {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
@@ -1528,7 +1531,16 @@ func waitForCooldown(ctx context.Context, wait, maxWait time.Duration) error {
 	if wait <= 0 {
 		return nil
 	}
-	timer := time.NewTimer(jitteredCooldownWait(wait, maxWait))
+	delay := jitteredCooldownWait(wait, maxWait)
+	if b := codexBudget(ctx); b != nil {
+		b.mu.Lock()
+		codexLast := b.lastProvider == "codex"
+		b.mu.Unlock()
+		if codexLast {
+			delay = min(wait, max(0, b.remaining()))
+		}
+	}
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():

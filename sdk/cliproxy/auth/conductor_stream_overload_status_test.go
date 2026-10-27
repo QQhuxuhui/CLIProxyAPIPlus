@@ -9,7 +9,7 @@ import (
 )
 
 // When every credential is exhausted by overload rejections the caller must receive a real
-// error carrying 503, not a committed 200 stream. This is what lets the downstream client and
+// error carrying 529, not a committed 200 stream. This is what lets the downstream client and
 // any upstream proxy see the true capacity signal.
 func TestExecuteStream_AllCredentialsOverloaded_ReturnsStatusError(t *testing.T) {
 	previous := quotaCooldownDisabled.Load()
@@ -39,8 +39,8 @@ func TestExecuteStream_AllCredentialsOverloaded_ReturnsStatusError(t *testing.T)
 	if !ok {
 		t.Fatalf("error %T does not expose StatusCode(): %v", err, err)
 	}
-	if got := statusErr.StatusCode(); got != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	if got := statusErr.StatusCode(); got != 529 {
+		t.Fatalf("status code = %d, want %d", got, 529)
 	}
 }
 

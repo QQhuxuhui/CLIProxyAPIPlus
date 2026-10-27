@@ -862,6 +862,24 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 // prepareMarkResult runs the lock-free steps before a result is applied. It reports false
 // when the result must be dropped.
 func (m *Manager) prepareMarkResult(ctx context.Context, result Result, probe bool) (context.Context, Result, bool) {
+	if result.Provider == "codex" && !result.Success && result.Error != nil {
+
+		switch codexFailureClass(result.Error) {
+		case "overload":
+			if !probe {
+				m.recordCodexOverload(result)
+			}
+			// Capacity rejections say nothing about the credential's health.
+			// Preserve observability without touching counters, cooldown or affinity.
+			if !probe {
+				m.hook.OnResult(ctx, result)
+			}
+			return ctx, result, false
+		case "quota":
+			result.Error = cloneError(result.Error)
+			result.Error.HTTPStatus = http.StatusTooManyRequests
+		}
+	}
 	m.observeRateResult(ctx, result)
 	if result.AuthID == "" {
 		return ctx, result, false

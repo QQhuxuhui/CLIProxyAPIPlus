@@ -1015,11 +1015,19 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
 }
 
 type statusErr struct {
-	code             int
-	msg              string
-	retryAfter       *time.Duration
-	quota            *cliproxyexecutor.QuotaDetail
-	credentialScoped bool
+	codexFailureStatus int
+	codexFailureBody   string
+	codexFailureSource string
+	code               int
+	msg                string
+	retryAfter         *time.Duration
+	quota              *cliproxyexecutor.QuotaDetail
+	credentialScoped   bool
+}
+
+// CodexFailureInfo preserves the upstream failure before protocol normalization.
+func (e statusErr) CodexFailureInfo() (int, string, string) {
+	return e.codexFailureStatus, e.codexFailureBody, e.codexFailureSource
 }
 
 func (e statusErr) Error() string {

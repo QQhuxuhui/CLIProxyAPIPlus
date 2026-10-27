@@ -136,7 +136,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				failed = true
 				entry := logEntryWithRequestID(ctx)
 				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				rerr := resultErrorFromError(chunk.Err)
+				rerr := m.executionResultError(ctx, provider, chunk.Err)
 				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts}
 				fillQuotaHints(&result, chunk.Err)
@@ -307,7 +307,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		streamResult, errStream = validateStreamResult(streamResult, errStream)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if errStream != nil {
-			rerr := resultErrorFromError(errStream)
+			rerr := m.executionResultError(ctx, provider, errStream)
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 			fillQuotaHints(&result, errStream)
@@ -403,7 +403,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if bootstrapErr != nil {
 			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.runtimeConfigSnapshot())
 			if okAction {
-				rerr := resultErrorFromError(bootstrapErr)
+				rerr := m.executionResultError(ctx, provider, bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 				fillQuotaHints(&result, bootstrapErr)
 				if isCredentialScopedError(bootstrapErr) {
@@ -423,7 +423,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				continue
 			}
 			if isRequestInvalidError(bootstrapErr) {
-				rerr := resultErrorFromError(bootstrapErr)
+				rerr := m.executionResultError(ctx, provider, bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 				fillQuotaHints(&result, bootstrapErr)
 				if isCredentialScopedError(bootstrapErr) {
@@ -434,7 +434,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, bootstrapErr
 			}
 			if idx < len(execModels)-1 {
-				rerr := resultErrorFromError(bootstrapErr)
+				rerr := m.executionResultError(ctx, provider, bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 				fillQuotaHints(&result, bootstrapErr)
 				if isCredentialScopedError(bootstrapErr) {
@@ -449,7 +449,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				continue
 			}
-			rerr := resultErrorFromError(bootstrapErr)
+			rerr := m.executionResultError(ctx, provider, bootstrapErr)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 			fillQuotaHints(&result, bootstrapErr)
 			if isCredentialScopedError(bootstrapErr) {
@@ -468,7 +468,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				upstreamErr = currentErr
 			}
 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: m.executionResultError(ctx, provider, emptyErr), Options: execOpts}
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 			if idx < len(execModels)-1 {
 				lastErr = emptyErr

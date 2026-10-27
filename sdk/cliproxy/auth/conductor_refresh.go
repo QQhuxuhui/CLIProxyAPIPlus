@@ -482,11 +482,19 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 	if !isUnauthorizedError(execErr) || !authHasRefreshCredential(auth) {
 		return auth, false
 	}
+	if auth.Provider == "codex" {
+		if CheckCodexRetryAdmission(ctx) != nil {
+			return auth, false
+		}
+	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
 	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, authAccessToken(auth))
 	if errRefresh != nil || refreshed == nil {
 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
 		return auth, false
+	}
+	if auth.Provider == "codex" && CheckCodexRetryAdmission(ctx) != nil {
+		return refreshed, false
 	}
 	return refreshed, true
 }

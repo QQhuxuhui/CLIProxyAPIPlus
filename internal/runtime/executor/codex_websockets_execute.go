@@ -152,6 +152,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
 			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
+				if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+					return resp, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+				}
+				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
+
 				return e.CodexExecutor.Execute(ctx, auth, req, opts)
 			}
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
@@ -242,6 +247,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				})
 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 				reporter.StartResponseTTFT()
+				if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+					return resp, errSend
+				}
 				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
 				if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry == nil {
