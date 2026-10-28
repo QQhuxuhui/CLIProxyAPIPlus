@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -879,6 +879,9 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError(t *testing.T) {
 	executor := &failOnceStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
+	retryConfig := &sdkconfig.Config{}
+	retryConfig.Codex.RetryBudget.Enable = true
+	manager.SetConfig(retryConfig)
 	manager.RegisterExecutor(executor)
 
 	auth1 := &coreauth.Auth{
@@ -923,22 +926,8 @@ func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError
 	if gotErr == nil {
 		t.Fatalf("expected terminal error")
 	}
-	if gotErr.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", gotErr.StatusCode, http.StatusServiceUnavailable)
-	}
-
-	var authErr *coreauth.Error
-	if !errors.As(gotErr.Error, &authErr) || authErr == nil {
-		t.Fatalf("expected coreauth.Error, got %T", gotErr.Error)
-	}
-	if authErr.Code != "auth_unavailable" {
-		t.Fatalf("code = %q, want %q", authErr.Code, "auth_unavailable")
-	}
-	if !strings.Contains(authErr.Message, "providers=codex") {
-		t.Fatalf("message missing provider context: %q", authErr.Message)
-	}
-	if !strings.Contains(authErr.Message, "model=test-model") {
-		t.Fatalf("message missing model context: %q", authErr.Message)
+	if gotErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401", gotErr.StatusCode)
 	}
 
 	if executor.Calls() != 1 {
@@ -984,6 +973,9 @@ func (e *overloadStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *h
 func TestExecuteStreamWithAuthManager_ForwardsOverloadErrorWhenAllAuthsOverloaded(t *testing.T) {
 	executor := &overloadStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
+	retryConfig := &sdkconfig.Config{}
+	retryConfig.Codex.RetryBudget.Enable = true
+	manager.SetConfig(retryConfig)
 	manager.RegisterExecutor(executor)
 
 	auth1 := &coreauth.Auth{
@@ -1014,7 +1006,7 @@ func TestExecuteStreamWithAuthManager_ForwardsOverloadErrorWhenAllAuthsOverloade
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 
-	// First request tries all accounts, fails with overload, cooling both credentials down.
+	// Overload rotates credentials without cooling them and returns a terminal 529.
 	_, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`), "")
 	var gotErr *interfaces.ErrorMessage
 	for msg := range errChan {
@@ -1025,11 +1017,11 @@ func TestExecuteStreamWithAuthManager_ForwardsOverloadErrorWhenAllAuthsOverloade
 	if gotErr == nil {
 		t.Fatalf("expected terminal error")
 	}
-	if !strings.Contains(gotErr.Error.Error(), "Our servers are currently overloaded. Please try again later.") && !strings.Contains(gotErr.Error.Error(), "server_is_overloaded") {
+	if gotErr.StatusCode != 529 || !strings.Contains(gotErr.Error.Error(), "upstream_pool_busy") {
 		t.Fatalf("expected error message to contain overload details, got: %q", gotErr.Error.Error())
 	}
 
-	// Subsequent request (e.g. client reconnect) while credentials are in cooldown should still report the upstream error reason.
+	// A new logical request gets a new budget and can use the same healthy credentials.
 	_, _, errChan2 := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`), "")
 	var gotErr2 *interfaces.ErrorMessage
 	for msg := range errChan2 {
@@ -1040,7 +1032,7 @@ func TestExecuteStreamWithAuthManager_ForwardsOverloadErrorWhenAllAuthsOverloade
 	if gotErr2 == nil {
 		t.Fatalf("expected terminal error on reconnect request")
 	}
-	if !strings.Contains(gotErr2.Error.Error(), "Our servers are currently overloaded. Please try again later.") && !strings.Contains(gotErr2.Error.Error(), "server_is_overloaded") {
+	if gotErr2.StatusCode != 529 || !strings.Contains(gotErr2.Error.Error(), "upstream_pool_busy") {
 		t.Fatalf("expected reconnect error message to contain overload details, got: %q", gotErr2.Error.Error())
 	}
 }
@@ -1283,5 +1275,55 @@ func TestExecuteStreamWithAuthManager_AllowsSplitOpenAIResponsesSSEEventLines(t 
 	expectedData := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}"
 	if got[1] != expectedData {
 		t.Fatalf("unexpected second chunk.\nGot:  %q\nWant: %q", got[1], expectedData)
+	}
+}
+
+type codexBudgetBootstrapExecutor struct{ bootstrapStreamExecutor }
+
+func (*codexBudgetBootstrapExecutor) Identifier() string { return "codex" }
+func TestCodexRetryBudgetSurvivesHandlerBootstrapRetries(t *testing.T) {
+	e := &codexBudgetBootstrapExecutor{bootstrapStreamExecutor{stream: func(context.Context, int) (*coreexecutor.StreamResult, error) {
+		ch := make(chan coreexecutor.StreamChunk, 2)
+		ch <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+		ch <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: 503, Message: "overloaded"}}
+		close(ch)
+		return &coreexecutor.StreamResult{Chunks: ch}, nil
+	}}}
+	m := coreauth.NewManager(nil, nil, nil)
+	retryConfig := &sdkconfig.Config{}
+	retryConfig.Codex.RetryBudget.Enable = true
+	m.SetConfig(retryConfig)
+	m.RegisterExecutor(e)
+	model := "codex-budget-bootstrap"
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("codex-budget-%d", i)
+		_, err := m.Register(context.Background(), &coreauth.Auth{ID: id, Provider: "codex"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+	}
+	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 10}}, m)
+	h.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: true}
+	}})
+	data, _, errs := h.ExecuteStreamWithAuthManager(context.Background(), "openai", model, []byte(`{"model":"codex-budget-bootstrap"}`), "")
+	if data != nil {
+		for range data {
+			t.Error("bootstrap data leaked")
+		}
+	}
+	var terminal *interfaces.ErrorMessage
+	for msg := range errs {
+		if msg != nil {
+			terminal = msg
+		}
+	}
+	if terminal == nil || terminal.StatusCode != 529 {
+		t.Fatalf("terminal=%+v want 529", terminal)
+	}
+	if got := e.Calls(); got != 6 {
+		t.Fatalf("upstream calls=%d want 6 across all handler retries", got)
 	}
 }

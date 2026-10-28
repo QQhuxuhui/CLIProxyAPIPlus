@@ -479,6 +479,12 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	provider := strings.TrimSpace(existing.Provider)
 	delete(m.auths, id)
+	m.codexOverloads.Range(func(key, value any) bool {
+		if key.(codexOverloadMetricKey).authID == id {
+			m.codexOverloads.Delete(key)
+		}
+		return true
+	})
 	m.schedulerCandidateMu.Lock()
 	delete(m.schedulerCandidates, id)
 	m.schedulerCandidateMu.Unlock()

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -141,6 +142,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+	engine.Use(codexRetryIngressMiddleware())
 
 	// Concurrency gate: registered before every body-reading middleware (request
 	// logging included) so that a burst of large requests cannot be buffered in memory
@@ -428,4 +430,15 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Debug("API server stopped")
 	return nil
+}
+
+func codexRetryIngressMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// HTTP admission starts at ingress, including queue and body-read time.
+		// Websocket connections create a separate budget for each response turn.
+		if !websocket.IsWebSocketUpgrade(c.Request) {
+			c.Request = c.Request.WithContext(auth.WithCodexRetryBudget(c.Request.Context()))
+		}
+		c.Next()
+	}
 }

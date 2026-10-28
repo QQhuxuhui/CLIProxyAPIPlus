@@ -173,7 +173,9 @@ func codexTerminalFailureErrWithCooling(eventData []byte, modelLevelCooling bool
 	if !ok {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling), body, true
+	err := newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling)
+	err.codexFailureSource = "stream"
+	return err, body, true
 }
 
 func codexTerminalFailureStatus(body []byte) int {
@@ -316,6 +318,7 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 }
 
 func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling bool) statusErr {
+	originalBody := body
 	errCode := statusCode
 	isUsageLimit := isCodexUsageLimitError(body)
 	credentialScoped := isUsageLimit && !modelLevelCooling
@@ -323,9 +326,13 @@ func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling
 		errCode = http.StatusTooManyRequests
 	}
 	body = classifyCodexStatusError(errCode, body)
-	err := statusErr{code: errCode, msg: string(body), credentialScoped: credentialScoped}
+	err := statusErr{code: errCode, msg: string(body), credentialScoped: credentialScoped, codexFailureStatus: statusCode, codexFailureBody: string(originalBody), codexFailureSource: "http"}
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
+	}
+	if !isUsageLimit && (strings.EqualFold(gjson.GetBytes(originalBody, "error.type").String(), "rate_limit_error") || strings.EqualFold(gjson.GetBytes(originalBody, "error.code").String(), "rate_limit_exceeded")) {
+		err.code = http.StatusTooManyRequests
+		err.quota = &cliproxyexecutor.QuotaDetail{ReasonCode: "RATE_LIMIT_EXCEEDED"}
 	}
 	return err
 }
@@ -627,7 +634,13 @@ func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
 // change would alter cooldown classification and retry-after parsing for everyone. Keeping 503
 // scoped to this path means disabling the feature restores the previous behaviour exactly.
 func newCodexBootstrapOverloadErr(body []byte) statusErr {
-	return newCodexStatusErr(http.StatusServiceUnavailable, body)
+	status := http.StatusServiceUnavailable
+	if codexTerminalFailureStatus(body) == http.StatusTooManyRequests {
+		status = http.StatusTooManyRequests
+	}
+	err := newCodexStatusErr(status, body)
+	err.codexFailureSource = "stream"
+	return err
 }
 
 // isCodexOverloadBootstrapFailure reports whether a terminal failure delivered inside an HTTP 200
@@ -635,7 +648,7 @@ func newCodexBootstrapOverloadErr(body []byte) statusErr {
 // Only these failures justify replacing the whole attempt during bootstrap; every other terminal
 // failure keeps the original in-stream delivery semantics so downstream behaviour is unchanged.
 func isCodexOverloadBootstrapFailure(body []byte) bool {
-	if isCodexModelCapacityError(body) {
+	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) {
 		return true
 	}
 	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))

@@ -145,6 +145,7 @@ type Manager struct {
 	aliasPublication          sync.Mutex
 	shared                    atomic.Pointer[managerSharedSnapshot]
 	codexPools                atomic.Pointer[codexPoolSet]
+	codexOverloads            sync.Map
 	rateCap                   *requestRateCap
 	store                     Store
 	cooldownStore             CooldownStateStore

@@ -124,6 +124,10 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
 	opts.EnsureMetadata()
+	ctx = m.codexRequestContext(ctx, providers)
+	defer func() {
+		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
+	}()
 	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
@@ -135,6 +139,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	if codexOnly(normalized) && codexBudget(ctx) != nil {
+		return runCodexRetry(m, ctx, authSelectionModelFromOptions(opts, req.Model), opts, func(attemptCtx context.Context) (cliproxyexecutor.Response, error) {
+			return m.executeMixedOnce(attemptCtx, normalized, req, opts, 1, 0, 0)
+		})
+	}
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -184,7 +193,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 }
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
-func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
+	ctx = m.codexRequestContext(ctx, providers)
+	defer func() {
+		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -199,6 +212,11 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
+	if codexOnly(normalized) && codexBudget(ctx) != nil {
+		return runCodexRetry(m, ctx, authSelectionModelFromOptions(opts, req.Model), opts, func(attemptCtx context.Context) (cliproxyexecutor.Response, error) {
+			return m.executeCountMixedOnce(attemptCtx, normalized, req, opts, 1, 0, 0)
+		})
+	}
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -242,6 +260,10 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response *cliproxyexecutor.StreamResult, resultErr error) {
 	opts.EnsureMetadata()
+	ctx = m.codexRequestContext(ctx, providers)
+	defer func() {
+		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
+	}()
 	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
@@ -254,6 +276,17 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
+	if codexOnly(normalized) && codexBudget(ctx) != nil {
+		result, err := runCodexRetry(m, ctx, authSelectionModelFromOptions(opts, req.Model), opts, func(attemptCtx context.Context) (*cliproxyexecutor.StreamResult, error) {
+			homeRetryLimit := -1
+			return m.executeStreamMixedOnce(attemptCtx, normalized, req, opts, 1, &homeRetryLimit, 0, 0)
+		})
+		var bootstrapErr *streamBootstrapError
+		if err != nil && statusCodeFromError(err) != 529 && errors.As(err, &bootstrapErr) {
+			return streamErrorResult(codexFinalHeaders(err, bootstrapErr.Headers()), err), nil
+		}
+		return result, err
+	}
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
@@ -320,9 +353,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 				return result, nil
 			}
 		}
+		lastErr = m.finalizeMixedCodexRetry(ctx, normalized, retryModel, lastErr)
+		if statusCodeFromError(lastErr) == 529 {
+			return nil, lastErr
+		}
 		var bootstrapErr *streamBootstrapError
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
+			return streamErrorResult(codexFinalHeaders(lastErr, bootstrapErr.Headers()), lastErr), nil
 		}
 		return nil, lastErr
 	}
@@ -480,9 +517,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
-	tried := make(map[string]struct{})
+	tried := codexBudget(ctx).exclusions()
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+			if m.codexUsesRequestBudget(ctx, authID) {
+				continue
+			}
 			tried[authID] = struct{}{}
 		}
 	}
@@ -508,7 +548,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
+		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		if errPick != nil {
 			if isPoolCapacityError(busyErr) {
 				return cliproxyexecutor.Response{}, busyErr
@@ -541,6 +581,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if len(models) == 0 {
 			continue
 		}
+		if errBudget := m.claimLocalCodexRetry(ctx, provider, auth.ID); errBudget != nil {
+			if !codexOnly(providers) {
+				continue
+			}
+			return cliproxyexecutor.Response{}, errBudget
+		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -552,7 +598,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: m.executionResultError(execCtx, provider, errPrepare), Options: pickOpts}
 			m.markExecutionResult(execCtx, result, auth)
 			lastErr = errPrepare
 			continue
@@ -670,7 +716,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts}
 			if errExec != nil {
-				result.Error = resultErrorFromError(errExec)
+				result.Error = m.executionResultError(execCtx, provider, errExec)
 				fillQuotaHints(&result, errExec)
 				if isCredentialScopedError(errExec) {
 					result.CredentialScope = true
@@ -748,9 +794,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
-	tried := make(map[string]struct{})
+	tried := codexBudget(ctx).exclusions()
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+			if m.codexUsesRequestBudget(ctx, authID) {
+				continue
+			}
 			tried[authID] = struct{}{}
 		}
 	}
@@ -772,7 +821,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
+		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -797,6 +846,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if len(models) == 0 {
 			continue
 		}
+		if errBudget := m.claimLocalCodexRetry(ctx, provider, auth.ID); errBudget != nil {
+			if !codexOnly(providers) {
+				continue
+			}
+			return cliproxyexecutor.Response{}, errBudget
+		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -808,7 +863,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: m.executionResultError(execCtx, provider, errPrepare), Options: pickOpts, SkipQuotaObservation: true}
 			m.markExecutionResult(execCtx, result, auth)
 			lastErr = errPrepare
 			continue
@@ -854,6 +909,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			startExec := time.Now()
+			if provider == "codex" {
+				if errBudget := admitCodexDispatch(execCtx); errBudget != nil {
+					return cliproxyexecutor.Response{}, errBudget
+				}
+			}
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
@@ -871,6 +931,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
+					if provider == "codex" {
+						if errBudget := CheckCodexRetryAdmission(execCtx); errBudget != nil {
+							return cliproxyexecutor.Response{}, errBudget
+						}
+					}
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
@@ -892,7 +957,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, SkipQuotaObservation: true}
 			if errExec != nil {
-				result.Error = resultErrorFromError(errExec)
+				result.Error = m.executionResultError(execCtx, provider, errExec)
 				fillQuotaHints(&result, errExec)
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
 				applyRequestScopedActionToResult(action, okAction, &result)
@@ -969,9 +1034,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
-	tried := make(map[string]struct{})
+	tried := codexBudget(ctx).exclusions()
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+			if m.codexUsesRequestBudget(ctx, authID) {
+				continue
+			}
 			tried[authID] = struct{}{}
 		}
 	}
@@ -1017,7 +1085,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
+			auth, executor, provider, errPick = m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		}
 		if errPick != nil {
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -1129,6 +1197,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
+		if errBudget := m.claimLocalCodexRetry(ctx, provider, auth.ID); errBudget != nil {
+			if !codexOnly(providers) {
+				continue
+			}
+			return nil, errBudget
+		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		if selection != nil {
@@ -1157,7 +1231,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: m.executionResultError(execCtx, provider, errPrepare), Options: pickOpts}
 			if selection != nil {
 				m.reportHomeResult(execCtx, result, auth)
 				releaseAttempt()

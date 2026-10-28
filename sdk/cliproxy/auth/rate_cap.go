@@ -188,6 +188,9 @@ func (m *Manager) beginRateAttempt(ctx context.Context, a *Auth) (context.Contex
 	if a == nil || a.Provider != "codex" || m.HomeEnabled() || rateBypassed(ctx) {
 		return ctx, nil
 	}
+	if err := admitCodexDispatch(ctx); err != nil {
+		return ctx, err
+	}
 	if m.codexPools.Load() != nil {
 		return m.beginPooledRateAttempt(ctx, a)
 	}

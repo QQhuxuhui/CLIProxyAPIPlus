@@ -200,6 +200,9 @@ passthrough-headers: false
 # Additional rounds apply to HTTP 403, 408, 429, 500, 502, 503, and 504 failures.
 # Individual credential/provider overrides take precedence; 0 disables additional
 # rounds, while an omitted or negative override inherits this global setting.
+# Local Codex dispatch instead uses six distinct credentials and a shared 20-second soft
+# retry admission budget. In-flight requests are never interrupted by this budget.
+# Home-managed dispatch retains the control plane retry policy.
 request-retry: 3
 
 # Maximum number of different credentials to try in each credential retry round
@@ -356,6 +359,9 @@ codex:
     min-accounts: 80
     rebalance-interval-seconds: 10
     migration-slots-per-tick: 64
+  # Optional retry policy; hot-reloadable. Disabled preserves legacy retry behavior.
+  retry-budget:
+    enable: false
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,
   # remap Codex prompt_cache_key and installation identity per selected auth.
   # Some superstitious users believe request tracking identifiers can be used

@@ -1437,6 +1437,32 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
+	if b := codexBudget(ctx); b != nil {
+		if codexOnly(providers) {
+			if wait, retry, handled := m.codexRetryOverride(ctx, opts, model, maxWait); handled {
+				return wait, retry
+			}
+		} else {
+			others := make([]string, 0, len(providers))
+			for _, p := range providers {
+				if p != "codex" {
+					others = append(others, p)
+				}
+			}
+			if len(others) < len(providers) {
+				cw, cr := time.Duration(0), false
+				if b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0) {
+					cw, cr = m.codexRetryWait(ctx, model, opts, maxWait)
+				}
+				legacyCtx := context.WithValue(ctx, codexRetryKey{}, (*codexRetryBudget)(nil))
+				lw, lr := m.shouldRetryAfterErrorWithAttempted(legacyCtx, opts, err, attempt, others, model, maxWait, homeRetryLimit, defaultRequestRetry, attempted)
+				if cr && (!lr || cw < lw) {
+					return cw, true
+				}
+				return lw, lr
+			}
+		}
+	}
 	if m.HomeEnabled() {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
@@ -1589,7 +1615,16 @@ func waitForCooldown(ctx context.Context, wait, maxWait time.Duration) error {
 	if wait <= 0 {
 		return nil
 	}
-	timer := time.NewTimer(jitteredCooldownWait(wait, maxWait))
+	delay := jitteredCooldownWait(wait, maxWait)
+	if b := codexBudget(ctx); b != nil {
+		b.mu.Lock()
+		codexLast := b.lastProvider == "codex"
+		b.mu.Unlock()
+		if codexLast {
+			delay = min(wait, max(0, b.remaining()))
+		}
+	}
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():

@@ -140,6 +140,13 @@ func TestExecuteRetriesPreHTTPTransportFailureWithoutCooling(t *testing.T) {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 
+	secondID := authID + "-fallback"
+	registry.GetGlobalRegistry().RegisterClient(secondID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(secondID) })
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: secondID, Provider: "codex"}); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+
 	resp, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v, want success after transport retry", errExecute)

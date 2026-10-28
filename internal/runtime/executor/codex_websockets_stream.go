@@ -155,6 +155,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
 			unlockStreamSession()
 			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
+				if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+					return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+				}
+				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
+
 				return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
 			}
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
@@ -192,6 +197,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	cliproxyexecutor.ObserveCodexGeneration(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
@@ -213,6 +219,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			// Retry once with a new websocket connection for the same execution session.
+			if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+				sess.clearActive(conn, readCh)
+				sess.reqMu.Unlock()
+				return nil, errSend
+			}
 			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 			if errDialRetry != nil || connRetry == nil {
 				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
@@ -246,8 +257,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			})
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			reporter.StartResponseTTFT()
+			if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+				sess.clearActive(conn, readCh)
+				sess.reqMu.Unlock()
+				return nil, errSend
+			}
 			cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
+			cliproxyexecutor.ObserveCodexGeneration(ctx)
 			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
 				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
@@ -279,6 +296,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
+	bootstrapReleaseReason := "unknown"
 	var bootstrapTimeout time.Duration
 	var bootstrapStart time.Time
 	var exhaustionLogged bool
@@ -354,6 +372,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if timeoutReached {
 					exhausted = "time budget"
 				}
+				bootstrapReleaseReason = exhausted
 				helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap %s exhausted after %d messages read / %v; this message will be released", exhausted, bufferedFrames, timeSinceStart)
 			}
 			if msgType != websocket.TextMessage {
@@ -454,7 +473,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					// conductor can transparently retry on another credential, and report the
 					// status the upstream refused to put on the wire.
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
-					return nil, newCodexBootstrapOverloadErr(terminalBody)
+					cliproxyexecutor.ObserveCodexBootstrapRelease("overload")
+					bootstrapErr := newCodexBootstrapOverloadErr(terminalBody)
+					bootstrapErr.credentialScoped = streamErr.IsCredentialScoped()
+					return nil, bootstrapErr
 				}
 				bootstrapTerminalErr = streamErr
 				break
@@ -529,9 +551,17 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					bufferedChunks = append(bufferedChunks, currentChunks...)
 					continue
 				}
+				bootstrapReleaseReason = "byte budget"
 				helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap byte limit reached after %d messages / %d bytes, releasing stream without overload probing", bufferedFrames, bufferedBytes)
 			}
 
+			if bootstrapReleaseReason == "unknown" {
+				bootstrapReleaseReason = helps.CodexBootstrapReleaseReason(payload)
+			}
+			if isTerminalEvent && bootstrapReleaseReason == "unknown" {
+				bootstrapReleaseReason = "terminal"
+			}
+			cliproxyexecutor.ObserveCodexBootstrapRelease(bootstrapReleaseReason)
 			initialChunks = currentChunks
 			if isTerminalEvent {
 				immediateTerminal = true

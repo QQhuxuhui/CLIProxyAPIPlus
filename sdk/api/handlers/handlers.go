@@ -498,7 +498,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
 	}
-	newCtx, cancel := context.WithCancel(parentCtx)
+	newCtx, cancel := context.WithCancel(coreauth.WithCodexRetryBudget(parentCtx, requestCtx))
 
 	endpoint := ""
 	if c != nil && c.Request != nil {

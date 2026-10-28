@@ -65,3 +65,6 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 func NormalizeCommentIndentation(data []byte) []byte {
 	return internalconfig.NormalizeCommentIndentation(data)
 }
+
+// CodexRetryBudgetConfig enables the optional local Codex retry policy.
+type CodexRetryBudgetConfig = internalconfig.CodexRetryBudgetConfig
