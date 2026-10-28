@@ -517,13 +517,29 @@ func setCodexBootstrapNowForTest(fn func() time.Time) func() {
 // upstream evade the bound.
 const codexBootstrapMaxBufferedFrames = 48
 
-// codexBootstrapMaxBufferedBytes caps what a single bootstrap retains, counted over the upstream
-// frames and the chunks they translate into. A frame budget alone would not bound that: on SSE
-// scanner.Buffer allows 50MB per line, and the websocket dialer sets no read limit at all. The check
-// runs before the frame is taken, so one oversized frame cannot be admitted on the strength of an
-// empty buffer - but it bounds what is retained, not the peak: the transport has already
-// materialised the frame by the time it is consulted.
-const codexBootstrapMaxBufferedBytes = 1 << 20
+// codexBootstrapMaxBufferedBytes caps what a single bootstrap retains. Each frame is charged the
+// larger of its upstream size and the size of the chunks it translates into (see
+// codexBootstrapFrameBytes). A frame budget alone would not bound that: on SSE scanner.Buffer allows
+// 50MB per line, and the websocket dialer sets no read limit at all. The check runs before the frame
+// is taken, so one oversized frame cannot be admitted on the strength of an empty buffer - but it
+// bounds what is retained, not the peak: the transport has already materialised the frame by the
+// time it is consulted.
+//
+// It is sized for real Codex clients: response.created and response.in_progress each echo the
+// request's instructions and tools, so a 1 MiB cap released large agent requests before the
+// upstream's overload rejection arrived, leaking it downstream instead of failing over.
+const codexBootstrapMaxBufferedBytes = 4 << 20
+
+// codexBootstrapFrameBytes is what holding one frame costs the byte budget. Only the translated
+// chunks are retained; the upstream size is the floor so the budget still advances for a downstream
+// format that renders a frame as zero chunks. Summing the two would charge a passthrough frame twice.
+func codexBootstrapFrameBytes(upstream int, chunks [][]byte) int {
+	translated := 0
+	for i := range chunks {
+		translated += len(chunks[i])
+	}
+	return max(upstream, translated)
+}
 
 // isCodexBootstrapBufferableEvent reports whether a frame may be held back before the downstream
 // response headers are committed, i.e. whether nothing observable has happened yet.

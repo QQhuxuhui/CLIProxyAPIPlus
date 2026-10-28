@@ -229,7 +229,7 @@ type CodexConfig struct {
 	StreamBootstrapBuffering bool `yaml:"stream-bootstrap-buffering" json:"stream-bootstrap-buffering"`
 	// StreamBootstrapTimeout specifies an optional maximum duration to hold back uncommitted response
 	// headers during bootstrap buffering before releasing the stream to the client.
-	// Defaults to "0" (unlimited time, relying purely on the 48-frame and 1MB byte bounds).
+	// Defaults to "0" (unlimited time, relying purely on the 48-frame and 4MB byte bounds).
 	// When set (e.g. "20s"), the stream is released once the time ceiling is reached, avoiding
 	// reverse-proxy timeouts (e.g. Nginx 60s proxy_read_timeout).
 	StreamBootstrapTimeout string `yaml:"stream-bootstrap-timeout,omitempty" json:"stream-bootstrap-timeout,omitempty"`
@@ -368,13 +368,13 @@ func NormalizeCodexFastSessionIDs(values []string) []string {
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.
-// By default, it is 0 (unlimited time, relying purely on the 48-frame and 1MB byte bounds).
+// By default, it is 0 (unlimited time, relying purely on the 48-frame and 4MB byte bounds).
 const DefaultCodexStreamBootstrapTimeout = 0
 
 const maxBootstrapTimeoutSeconds = int64(math.MaxInt64 / time.Second)
 
 // StreamBootstrapTimeoutDuration returns the maximum duration to buffer bootstrap events.
-// Defaults to 0 (unlimited time, relying purely on the 48-frame and 1MB byte bounds).
+// Defaults to 0 (unlimited time, relying purely on the 48-frame and 4MB byte bounds).
 // If explicitly set to a positive duration (e.g. "10s", "500ms", "15"), returns that duration.
 // If set to "0", "0s", "none", "unlimited", "disabled", "off", "never", or invalid strings, returns 0.
 func (c *CodexConfig) StreamBootstrapTimeoutDuration() time.Duration {

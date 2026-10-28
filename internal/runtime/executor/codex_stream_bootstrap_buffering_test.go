@@ -395,8 +395,8 @@ func TestCodexBootstrapBudgetsStaySmall(t *testing.T) {
 	if codexBootstrapMaxBufferedFrames != 48 {
 		t.Fatalf("frame budget = %d, want 48; changing it changes how long the headers are held, so update config.example.yaml too", codexBootstrapMaxBufferedFrames)
 	}
-	if codexBootstrapMaxBufferedBytes != 1<<20 {
-		t.Fatalf("byte budget = %d, want 1MiB", codexBootstrapMaxBufferedBytes)
+	if codexBootstrapMaxBufferedBytes != 4<<20 {
+		t.Fatalf("byte budget = %d, want 4MiB", codexBootstrapMaxBufferedBytes)
 	}
 }
 
@@ -856,42 +856,40 @@ func TestCodexExecutor_BootstrapBuffering_HeartbeatArithmeticPerFraming(t *testi
 	}
 }
 
-// The byte budget is charged for the upstream frame *and* for the chunks it translates into, because
-// what is retained is the chunks. Both padded frames fit the cap on their upstream bytes alone, so
-// only a budget that also counts the translated chunks releases the stream here.
-func TestCodexExecutor_BootstrapBuffering_ByteCapCountsTranslatedChunks(t *testing.T) {
-	padded := `{"type":"response.in_progress","response":{"id":"` + strings.Repeat("p", 300<<10) + `"}}`
+// A passthrough frame is charged once, not once for its upstream bytes and again for the identical
+// chunk it translates into. Real Codex clients send large instructions and tools, which
+// response.created and response.in_progress both echo; charging those echoes twice released the
+// stream early and leaked the overload that followed downstream instead of failing over. Two frames
+// of 0.4x the cap fit only when each is charged once.
+func TestCodexExecutor_BootstrapBuffering_ByteCapChargesPassthroughFrameOnce(t *testing.T) {
+	padded := `{"type":"response.in_progress","response":{"id":"` + strings.Repeat("p", codexBootstrapMaxBufferedBytes*2/5) + `"}}`
 	server := codexSSEServer(padded, padded, codexOverloadEvent)
 	defer server.Close()
 
 	req, opts := codexTestRequest()
 	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
-	if err != nil {
-		t.Fatalf("two frames whose upstream bytes fit the cap but whose chunks do not must release the stream: %v", err)
+	if result != nil {
+		drainChunks(result)
+		t.Fatal("expected nil result so no buffered handshake chunk can reach the client")
 	}
-	if result == nil {
-		t.Fatal("expected a stream result once the byte budget released the stream")
-	}
-	if _, streamErr := drainChunks(result); streamErr == nil {
-		t.Fatal("expected the overload to arrive in-stream after the byte budget released")
+	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
 	}
 }
 
-func TestCodexWebsocketsExecutor_BootstrapBuffering_ByteCapCountsTranslatedChunks(t *testing.T) {
-	padded := `{"type":"response.in_progress","response":{"id":"` + strings.Repeat("p", 300<<10) + `"}}`
+func TestCodexWebsocketsExecutor_BootstrapBuffering_ByteCapChargesPassthroughFrameOnce(t *testing.T) {
+	padded := `{"type":"response.in_progress","response":{"id":"` + strings.Repeat("p", codexBootstrapMaxBufferedBytes*2/5) + `"}}`
 	server := codexWebsocketRawServer(t, []string{padded, padded}, codexOverloadEvent)
 	defer server.Close()
 
 	req, opts := codexWebsocketRequest()
 	result, err := NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
-	if err != nil {
-		t.Fatalf("two frames whose upstream bytes fit the cap but whose chunks do not must release the stream: %v", err)
+	if result != nil {
+		drainChunks(result)
+		t.Fatal("expected nil result so no buffered handshake chunk can reach the client")
 	}
-	if result == nil {
-		t.Fatal("expected a stream result once the byte budget released the stream")
-	}
-	if _, streamErr := drainChunks(result); streamErr == nil {
-		t.Fatal("expected the overload to arrive in-stream after the byte budget released")
+	if err == nil {
+		t.Fatal("expected the overload behind two large handshake frames to fail the attempt over")
 	}
 }
 

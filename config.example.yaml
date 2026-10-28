@@ -378,7 +378,7 @@ codex:
   # generated event. Anything else, including a server-side tool item such as web_search_call and
   # any frame not on that list, releases the stream immediately. On the SSE transport the lines that
   # are not `data:` frames - comments, `event:` lines, blank separators - are held alongside them.
-  # The hold is bounded by a frame budget and a 1 MiB byte budget, not by wall-clock time: an
+  # The hold is bounded by a frame budget and a 4 MiB byte budget, not by wall-clock time: an
   # upstream that trickles frames holds the response headers for as long as the client will wait.
   # Why: the upstream smuggles `server_is_overloaded` rejections *inside* an HTTP 200 stream,
   # right after those handshake events, instead of returning 503 on the wire. Buffering them
@@ -432,7 +432,7 @@ codex:
   # formats like Chat Completions and Gemini that render nothing until the first text token, headers
   # commit when that first token arrives).
   # When unset or set to "0", "0s", "none", "unlimited", "disabled", "off", or "never", no time ceiling
-  # is applied, and buffering relies purely on the 48-frame and 1MB byte budget.
+  # is applied, and buffering relies purely on the 48-frame and 4MB byte budget.
   # Default: "0" (unlimited)
   stream-bootstrap-timeout: "0"
   # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.

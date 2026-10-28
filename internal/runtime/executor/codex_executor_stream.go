@@ -155,8 +155,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	var outputItemsFallback [][]byte
 
 	var bufferedChunks [][]byte
-	// bufferedFrames counts the scanned lines this loop holds and bufferedBytes sums each line
-	// together with the chunks it translates into. Every iteration either holds the line or leaves
+	// bufferedFrames counts the scanned lines this loop holds and bufferedBytes charges each line
+	// with codexBootstrapFrameBytes. Every iteration either holds the line or leaves
 	// the loop, so this is one unit per line read. Counting only the chunks would bound nothing for
 	// a downstream format that renders a frame as zero chunks, and counting only some line kinds
 	// would let the upstream's choice of framing decide whether the bound advances at all. The cost
@@ -282,10 +282,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			if isHandshake && !terminalSuccess {
-				frameBytes := len(line)
-				for i := range chunks {
-					frameBytes += len(chunks[i])
-				}
+				frameBytes := codexBootstrapFrameBytes(len(line), chunks)
 				timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 				timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
 				if !timeoutReached && bufferedFrames < codexBootstrapMaxBufferedFrames && bufferedBytes+frameBytes <= codexBootstrapMaxBufferedBytes {

@@ -542,10 +542,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			// type, and the empty-payload rule cannot fire on a payload already known non-empty. It
 			// stays as the guard a reader expects to find, and its SSE counterpart is !terminalSuccess.
 			if windowOpen && isCodexBootstrapBufferableEvent(eventType, payload) && !isTerminalEvent {
-				frameBytes := len(payload)
-				for i := range currentChunks {
-					frameBytes += len(currentChunks[i])
-				}
+				frameBytes := codexBootstrapFrameBytes(len(payload), currentChunks)
 				if bufferedBytes+frameBytes <= codexBootstrapMaxBufferedBytes {
 					bufferedBytes += frameBytes
 					bufferedChunks = append(bufferedChunks, currentChunks...)
