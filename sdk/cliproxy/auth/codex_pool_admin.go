@@ -107,6 +107,7 @@ func (m *Manager) aggregateCodexPoolSnapshot() CodexPoolSnapshot {
 		out.Full += snap.Full
 		out.Capacity += snap.Capacity
 		out.RPM += snap.RPM
+		out.Remaining += snap.Remaining
 		for reason, count := range snap.CoolingReasons {
 			out.CoolingReasons[reason] += count
 		}
@@ -155,8 +156,8 @@ func (m *Manager) aggregateCodexPoolSnapshot() CodexPoolSnapshot {
 		out.Capacity = 0
 		out.Schedulable = 0
 		out.Full = 0
+		out.Remaining = 0
 	}
-	out.Remaining = out.Capacity - out.RPM
 	out.EffectiveCapacity = float64(out.Capacity)
 	if total > 0 {
 		out.SuccessRate = float64(success) / float64(total)
