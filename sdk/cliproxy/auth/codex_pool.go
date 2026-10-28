@@ -111,9 +111,6 @@ func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
 		count, limit, _ := r.accountLocked(a.ID, now)
 		state := r.accounts[a.ID]
 		distribution[state.limit]++
-		if count >= limit {
-			out.Full++
-		}
 		if a.Disabled || a.Status == StatusDisabled {
 			out.Disabled++
 			continue
@@ -135,10 +132,23 @@ func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
 				}
 				out.CoolingReasons[key]++
 			}
+			// A per-minute rate-limit window still belongs to the pool's capacity: the
+			// account is full until its window resets, not removed from the pool.
+			if a.Quota.ReasonCode == "RATE_LIMIT_EXCEEDED" && next.After(now) {
+				out.Capacity += limit
+				out.Full++
+			}
 			continue
 		}
 		out.Schedulable++
 		out.Capacity += limit
+		if count >= limit {
+			out.Full++
+		} else {
+			// Remaining counts only free slots of schedulable accounts; attempts on
+			// cooling or quota-exhausted accounts do not consume pool capacity.
+			out.Remaining += limit - count
+		}
 	}
 	for id, a := range r.accounts {
 		r.getLocked(id, now)
@@ -152,8 +162,8 @@ func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
 		out.Capacity = 0
 		out.Schedulable = 0
 		out.Full = 0
+		out.Remaining = 0
 	}
-	out.Remaining = out.Capacity - out.RPM
 	r.metrics.bucket(now).Capacity = out.Capacity
 	var hist [len(poolTTFTBounds)]int
 	successes, total, overload := 0, 0, 0

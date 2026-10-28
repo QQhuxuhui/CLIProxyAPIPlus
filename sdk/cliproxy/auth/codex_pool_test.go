@@ -75,3 +75,29 @@ func TestRateCapMixedProviderAndHome(t *testing.T) {
 		t.Fatalf("Home must be explicit: %+v", snapshot)
 	}
 }
+
+func TestCodexPoolSnapshotCapacityScopes(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	now := time.Unix(1800000000, 0)
+	m.rateCap.nowFunc = func() time.Time { return now }
+	m.auths["busy"] = &Auth{ID: "busy", Provider: "codex", Status: StatusActive}
+	m.auths["limited"] = &Auth{ID: "limited", Provider: "codex", Status: StatusActive, Unavailable: true, NextRetryAfter: now.Add(30 * time.Second),
+		Quota: QuotaState{Exceeded: true, ReasonCode: "RATE_LIMIT_EXCEEDED", NextRecoverAt: now.Add(30 * time.Second)}}
+	m.auths["exhausted"] = &Auth{ID: "exhausted", Provider: "codex", Status: StatusActive, Unavailable: true, NextRetryAfter: now.Add(time.Hour),
+		Quota: QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: now.Add(time.Hour)}}
+	for i := 0; i < 5; i++ {
+		m.rateCap.start("busy")
+	}
+	for i := 0; i < 20; i++ {
+		m.rateCap.start("limited")
+	}
+	for i := 0; i < 3; i++ {
+		m.rateCap.start("exhausted")
+	}
+	s := m.CodexPoolSnapshot()
+	// The rate-limited account keeps its capacity but has no room; attempts on the
+	// quota-exhausted account count toward RPM only.
+	if s.Schedulable != 1 || s.Capacity != 40 || s.Full != 1 || s.Remaining != 15 || s.RPM != 28 {
+		t.Fatalf("snapshot: schedulable=%d capacity=%d full=%d remaining=%d rpm=%d", s.Schedulable, s.Capacity, s.Full, s.Remaining, s.RPM)
+	}
+}

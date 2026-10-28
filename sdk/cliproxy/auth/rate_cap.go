@@ -24,6 +24,8 @@ type rateAccount struct {
 	attempts []rateAttempt
 	limit    int
 	probeAt  time.Time
+	// peak is the highest accepted count seen since probeAt.
+	peak int
 }
 type requestRateCap struct {
 	mu       sync.Mutex
@@ -78,9 +80,15 @@ func (r *requestRateCap) getLocked(id string, now time.Time) *rateAccount {
 		copy(a.attempts, a.attempts[first:])
 		a.attempts = a.attempts[:len(a.attempts)-first]
 	}
-	// Raise the learned ceiling once after a quiet probe interval.
+	// Once per probe interval, recover toward the initial limit unconditionally, but probe
+	// above it only when the account actually reached its limit; otherwise idle accounts
+	// drift to the maximum and the pool capacity is overstated.
 	if now.Sub(a.probeAt) >= r.probeInterval {
-		a.limit = min(r.config.MaxPerMinute, a.limit+1)
+		effective := max(1, int(math.Floor(float64(a.limit)*r.config.Headroom)))
+		if a.limit < r.config.InitialPerMinute || a.peak >= effective {
+			a.limit = min(r.config.MaxPerMinute, a.limit+1)
+		}
+		a.peak = 0
 		a.probeAt = now
 	}
 	return a
@@ -123,6 +131,13 @@ func (r *requestRateCap) startLocked(id string, now time.Time) uint64 {
 	a := r.getLocked(id, now)
 	r.sequence++
 	a.attempts = append(a.attempts, rateAttempt{id: r.sequence, at: now})
+	accepted := 0
+	for _, p := range a.attempts {
+		if !p.rejected {
+			accepted++
+		}
+	}
+	a.peak = max(a.peak, accepted)
 	r.metrics.bucket(now).Attempts++
 	return r.sequence
 }
@@ -144,6 +159,7 @@ func (r *requestRateCap) reject(id string, token uint64) {
 	}
 	count, _, _ := r.accountLocked(id, now)
 	a.limit = max(r.config.MinPerMinute, min(r.config.MaxPerMinute, count-1))
+	a.peak = 0
 	a.probeAt = now
 }
 

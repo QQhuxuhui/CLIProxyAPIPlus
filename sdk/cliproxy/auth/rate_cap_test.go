@@ -361,3 +361,25 @@ func TestRateCapZeroWeightFollowsSelectionStrategy(t *testing.T) {
 		}
 	}
 }
+
+func TestRateCapProbeNeedsSaturationAboveInitial(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	r := newRequestRateCap()
+	r.nowFunc = func() time.Time { return now }
+	r.configure(internalconfig.RequestRateCapConfig{Enabled: true, InitialPerMinute: 3, MinPerMinute: 1, MaxPerMinute: 10, ProbeInterval: "5m", Headroom: 1})
+	r.start("idle")
+	r.start("busy")
+	for i := 0; i < 6; i++ {
+		now = now.Add(5 * time.Minute)
+		r.account("idle")
+		for j := 0; j < 3; j++ {
+			r.start("busy")
+		}
+	}
+	if _, limit, _ := r.account("idle"); limit != 3 {
+		t.Fatalf("idle limit drifted to %d", limit)
+	}
+	if _, limit, _ := r.account("busy"); limit <= 3 {
+		t.Fatalf("saturated limit did not probe: %d", limit)
+	}
+}
