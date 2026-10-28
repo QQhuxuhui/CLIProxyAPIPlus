@@ -180,6 +180,11 @@ func (m *Manager) applyResultBatch(batch []queuedResult) {
 		m.applyPoolResultBatch(nil, batch)
 		return
 	}
+	m.applyLegacyResultBatch(batch)
+}
+
+// applyLegacyResultBatch retains one manager write lock for non-pooled accounts.
+func (m *Manager) applyLegacyResultBatch(batch []queuedResult) {
 	type prepared struct {
 		item   queuedResult
 		ctx    context.Context

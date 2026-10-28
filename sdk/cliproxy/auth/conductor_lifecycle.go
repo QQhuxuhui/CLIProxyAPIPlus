@@ -114,12 +114,12 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	if m.codexPools.Load() != nil {
-		tx, err := m.codexPools.Load().owners.begin(ctx, auth.ID)
+		tx, err := m.codexPools.Load().owners.begin(context.WithoutCancel(nonNilContext(ctx)), auth.ID)
 		if err != nil {
 			return nil, err
 		}
 		defer tx.abort()
-		saved, err := m.registerPooledStorageTransition(ctx, auth, tx)
+		saved, err := m.registerPooledStorageTransition(context.WithoutCancel(nonNilContext(ctx)), auth, tx)
 		if err != nil {
 			return nil, err
 		}
@@ -208,7 +208,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if err := ValidateAuthWeight(auth); err != nil {
 		return nil, fmt.Errorf("update auth: %w", err)
 	}
-	guard, err := m.lockAuth(ctx, auth.ID)
+	guard, err := m.lockAuth(context.WithoutCancel(nonNilContext(ctx)), auth.ID)
 	if err != nil {
 		if errors.Is(err, errCodexOwnerMissing) {
 			return nil, nil
@@ -225,12 +225,12 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	pools := m.codexPools.Load()
 	if pools != nil && (codexAuthOwnerKind(existing) != codexAuthOwnerKind(auth) || auth.RegistrationEpoch > existing.RegistrationEpoch) {
 		guard.unlock()
-		tx, err = pools.owners.begin(ctx, auth.ID)
+		tx, err = pools.owners.begin(context.WithoutCancel(nonNilContext(ctx)), auth.ID)
 		if err != nil {
 			return nil, err
 		}
 		defer tx.abort()
-		guard, err = m.lockAuthCategory(ctx, auth.ID, tx.previous.kind)
+		guard, err = m.lockAuthCategory(context.WithoutCancel(nonNilContext(ctx)), auth.ID, tx.previous.kind)
 		if err != nil {
 			return nil, err
 		}
@@ -443,12 +443,12 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 		return
 	}
 	if m.codexPools.Load() != nil {
-		tx, err := m.codexPools.Load().owners.begin(ctx, id)
+		tx, err := m.codexPools.Load().owners.begin(context.WithoutCancel(nonNilContext(ctx)), id)
 		if err != nil {
 			return
 		}
 		defer tx.abort()
-		existing, epoch, err := m.removePooledStorage(ctx, id, tx)
+		existing, epoch, err := m.removePooledStorage(context.WithoutCancel(nonNilContext(ctx)), id, tx)
 		if err != nil || existing == nil {
 			return
 		}

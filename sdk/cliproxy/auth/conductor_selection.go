@@ -219,6 +219,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		regEpoch             uint64
 		now                  time.Time
 		cooldownStateChanged bool
+		persistChanged       bool
 	)
 
 	guard, errLock := m.lockAuth(ctx, authID)
@@ -350,6 +351,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if globalReg.ClientRegistrationEpoch(authID) == regEpoch {
 				auth.ModelStates = candidateAuth.ModelStates
 				if candidateChanged {
+					persistChanged = true
 					updateAggregatedAvailability(auth, now)
 					if !hasModelError(auth, now) {
 						auth.LastError = nil
@@ -379,7 +381,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		return
 	}
 
-	if snapshot != nil {
+	if persistChanged {
 		if errPersist := m.persist(ctx, snapshot); errPersist != nil {
 			logEntryWithRequestID(ctx).Warnf("persist reconciled auth: %v", errPersist)
 		}

@@ -172,7 +172,7 @@ func (pools *codexPoolSet) publishProjections(ctx context.Context) error {
 		}
 		for key, binding := range p.bindings {
 			if !now.Before(binding.expires) {
-				delete(p.bindings, key)
+				p.deleteBindingLocked(key)
 			}
 		}
 		p.mu.Unlock()

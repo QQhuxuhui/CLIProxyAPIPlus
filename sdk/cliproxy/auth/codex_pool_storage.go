@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"hash/fnv"
@@ -39,8 +40,8 @@ type codexAccountPool struct {
 	catalogDirty   atomic.Bool
 	selectorSource Selector
 	priorities     atomic.Pointer[map[string]int]
-	bindingOrder   []codexBindingKey
-	bindingCursor  int
+	bindingOrder   list.List
+	bindingEntries map[codexBindingKey]*list.Element
 	id             uint64
 	mu             sync.Mutex
 	owned          [codexSlotCount / 64]uint64
@@ -353,7 +354,7 @@ func (pools *codexPoolSet) moveSlotLocked(ctx context.Context, slot uint16, targ
 	for key, binding := range source.bindings {
 		if codexSlot(key.session) == slot {
 			target.putBindingLocked(key, binding)
-			delete(source.bindings, key)
+			source.deleteBindingLocked(key)
 		}
 	}
 	source.setOwned(slot, false)
@@ -405,6 +406,19 @@ func (m *Manager) removePooledStorage(ctx context.Context, id string, tx *codexO
 	tx.authEpoch = epoch
 	guard.epochs[id] = epoch
 	delete(guard.auths, id)
+	if guard.pool == nil {
+		m.schedulerCandidateMu.Lock()
+		delete(m.schedulerCandidates, id)
+		m.schedulerCandidateMu.Unlock()
+		delete(m.modelPoolOffsets, id)
+		for sessionID, auths := range m.homeRuntimeAuths {
+			delete(auths, id)
+			if len(auths) == 0 {
+				delete(m.homeRuntimeAuths, sessionID)
+			}
+		}
+	}
+
 	m.adjustProviderPresence(snapshot, nil)
 	if guard.pool != nil {
 		delete(guard.pool.rate.accounts, id)
@@ -488,13 +502,14 @@ func (pools *codexPoolSet) seedEmptyTopology(count int) {
 	pools.topology.Lock()
 	defer pools.topology.Unlock()
 	old := pools.table.Load()
-	for _, p := range old.pools {
-		p.lock()
-		empty := len(p.auths) == 0 && len(p.epochs) == 0 && len(p.bindings) == 0
-		p.mu.Unlock()
-		if !empty {
-			return
-		}
+	if len(old.pools) != 1 {
+		return
+	}
+	initial := old.pools[0]
+	initial.lock()
+	defer initial.mu.Unlock()
+	if len(initial.auths) != 0 || len(initial.epochs) != 0 || len(initial.bindings) != 0 {
+		return
 	}
 	next := &codexPoolTable{version: old.version + 1, pools: make([]*codexAccountPool, min(count, codexSlotCount))}
 	for i := range next.pools {
@@ -509,13 +524,9 @@ func (pools *codexPoolSet) seedEmptyTopology(count int) {
 		p.setOwned(uint16(slot), true)
 		next.owners[slot] = p
 	}
-	for _, p := range old.pools {
-		p.lock()
-		p.retired = true
-		p.retiredAt = time.Now()
-		p.owned = [codexSlotCount / 64]uint64{}
-		p.mu.Unlock()
-	}
+	initial.retired = true
+	initial.retiredAt = time.Now()
+	initial.owned = [codexSlotCount / 64]uint64{}
 	pools.table.Store(next)
 }
 
@@ -554,20 +565,29 @@ func (m *Manager) persistenceAuthSnapshot(ctx context.Context) ([]*Auth, error) 
 			return nil, err
 		}
 		topology := pools.table.Load()
-		owners := pools.owners.snapshot.Load()
+		owners := pools.owners.revision.Load()
+		if owners%2 != 0 {
+			continue
+		}
 		snapshots := m.snapshotAuths()
-		if pools.table.Load() != topology || pools.owners.snapshot.Load() != owners {
+		if pools.table.Load() != topology || pools.owners.revision.Load() != owners {
 			continue
 		}
 		moving := false
-		for id, entry := range owners.entries {
-			if entry.moving {
-				if _, err := pools.owners.resolve(ctx, id); err != nil && nonNilContext(ctx).Err() != nil {
-					return nil, ctx.Err()
-				}
+		pools.owners.entries.Range(func(key, value any) bool {
+			entry := value.(*atomic.Pointer[codexOwnerEntry]).Load()
+			if entry != nil && entry.moving {
+				_, _ = pools.owners.resolve(ctx, key.(string))
 				moving = true
-				break
+				return false
 			}
+			return true
+		})
+		if err := nonNilContext(ctx).Err(); err != nil {
+			return nil, err
+		}
+		if pools.owners.revision.Load() != owners {
+			continue
 		}
 		if moving {
 			continue

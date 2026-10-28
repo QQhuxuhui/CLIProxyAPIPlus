@@ -86,6 +86,8 @@ func (m *Manager) runPoolResultApplier(owner *codexAccountPool, queue <-chan que
 	}
 }
 func (m *Manager) applyPoolResultBatch(origin *codexAccountPool, batch []queuedResult) {
+	var legacy []queuedResult
+	defer func() { m.applyLegacyResultBatch(legacy) }()
 	for _, item := range batch {
 		if item.done != nil {
 			continue
@@ -95,6 +97,10 @@ func (m *Manager) applyPoolResultBatch(origin *codexAccountPool, batch []queuedR
 			continue
 		}
 		if owner != origin && m.queuePoolResult(item, owner) {
+			continue
+		}
+		if owner == nil {
+			legacy = append(legacy, item)
 			continue
 		}
 		ctx, result, ok := m.prepareMarkResult(item.ctx, item.result, false)

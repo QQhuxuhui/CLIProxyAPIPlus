@@ -176,6 +176,7 @@ type ModelRegistry struct {
 	poolAvailabilityBatch int
 	clientAuthEpochs      map[string]uint64
 	poolAvailability      sync.Map
+	poolAvailableCache    sync.Map
 	poolAvailabilityDirty map[string]struct{}
 	poolGeneration        atomic.Uint64
 	poolReads             atomic.Bool
@@ -183,6 +184,8 @@ type ModelRegistry struct {
 	poolDirectory         atomic.Pointer[poolRegistrySnapshot]
 	poolReadBatch         int
 	poolReadDirty         bool
+	poolDefinitionDirty   map[string]struct{}
+	poolRoutes            map[string]map[string]*poolRouteAggregate
 
 	// models maps model ID to registration information
 	models map[string]*ModelRegistration
@@ -399,14 +402,15 @@ const defaultModelRegistryHookTimeout = 5 * time.Second
 const modelQuotaExceededWindow = 5 * time.Minute
 
 func (r *ModelRegistry) triggerModelsRegistered(provider, clientID string, models []*ModelInfo) {
-	r.publishPoolClientLocked(clientID)
-	r.publishPoolDefinitionLocked()
 	hook := r.hook
 	if hook == nil {
 		return
 	}
 	modelsCopy := cloneModelInfosUnique(models)
 	go func() {
+		// Wait for the publishing writer before callbacks use lock-free read views.
+		r.mutex.RLock()
+		r.mutex.RUnlock()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Errorf("model registry hook OnModelsRegistered panic: %v", recovered)
@@ -419,13 +423,14 @@ func (r *ModelRegistry) triggerModelsRegistered(provider, clientID string, model
 }
 
 func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
-	r.publishPoolClientLocked(clientID)
-	r.publishPoolDefinitionLocked()
 	hook := r.hook
 	if hook == nil {
 		return
 	}
 	go func() {
+		// Wait for the publishing writer before callbacks use lock-free read views.
+		r.mutex.RLock()
+		r.mutex.RUnlock()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Errorf("model registry hook OnModelsUnregistered panic: %v", recovered)
@@ -445,9 +450,6 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	r.poolReadDirty = true
-	defer r.publishPoolDirectoryLocked()
-	defer r.publishPoolClientLocked(clientID)
 	r.ensureAvailableModelsCacheLocked()
 
 	if r.clientGenerations == nil {
@@ -474,6 +476,13 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		newModels[model.ID] = model
 		uniqueModelIDs = append(uniqueModelIDs, model.ID)
 	}
+
+	if r.poolReads.Load() && r.poolRegistrationUnchangedLocked(clientID, provider, rawModelIDs, newModels) {
+		return
+	}
+	r.poolReadDirty = true
+	defer r.publishPoolDirectoryLocked()
+	defer r.publishPoolClientLocked(clientID)
 
 	if len(uniqueModelIDs) == 0 {
 		// No models supplied; unregister existing client state if present.
@@ -1131,9 +1140,6 @@ func (r *ModelRegistry) ApplyClientModelCapabilities(clientID string, expectedEp
 	}
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	r.poolReadDirty = true
-	defer r.publishPoolDirectoryLocked()
-	defer r.publishPoolClientLocked(clientID)
 
 	if r.clientEpochs == nil || r.clientEpochs[clientID] != expectedEpoch {
 		return false
@@ -1143,10 +1149,17 @@ func (r *ModelRegistry) ApplyClientModelCapabilities(clientID string, expectedEp
 		return false
 	}
 
-	provider := r.clientProviders[clientID]
+	r.poolReadDirty = true
+	defer r.publishPoolDirectoryLocked()
 	for id, info := range clientInfos {
 		if info != nil {
 			mutate(id, info)
+		}
+	}
+	r.publishPoolClientLocked(clientID)
+	provider := r.clientProviders[clientID]
+	for id, info := range clientInfos {
+		if info != nil {
 			if reg, okReg := r.models[id]; okReg && reg != nil {
 				hasWebSearch := r.hasClientSupportingWebSearchLocked(id, "", "")
 				if reg.Info != nil {
@@ -1163,6 +1176,21 @@ func (r *ModelRegistry) ApplyClientModelCapabilities(clientID string, expectedEp
 }
 
 func (r *ModelRegistry) hasClientSupportingWebSearchLocked(modelID, provider, excludeClientID string) bool {
+	if r.poolReads.Load() {
+		for p, group := range r.poolRoutes[modelID] {
+			if provider != "" && p != provider {
+				continue
+			}
+			count := group.supports
+			if info := group.clients[excludeClientID]; info != nil && info.SupportsWebSearch {
+				count--
+			}
+			if count > 0 {
+				return true
+			}
+		}
+		return false
+	}
 	for cID, infos := range r.clientModelInfos {
 		if cID == excludeClientID {
 			continue
@@ -1315,18 +1343,10 @@ func (r *ModelRegistry) IsModelQuotaExceededForClient(clientID, modelID string) 
 // Returns:
 //   - []map[string]any: List of available models in the requested format
 func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any {
-	if snap := r.poolDirectory.Load(); snap != nil {
-		models := make([]map[string]any, 0, len(snap.view.models))
-		now := time.Now()
-		for id, model := range snap.view.models {
-			if r.poolModelAvailability(id).available(now) {
-				if out := r.convertModelToMap(model.Info, handlerType); out != nil {
-					models = append(models, out)
-				}
-			}
-		}
-		return models
+	if r.poolDirectory.Load() != nil {
+		return r.poolAvailableModels(handlerType, time.Now())
 	}
+
 	now := time.Now()
 
 	r.mutex.RLock()

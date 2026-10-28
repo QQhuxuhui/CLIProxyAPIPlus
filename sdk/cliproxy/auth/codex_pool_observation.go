@@ -16,6 +16,7 @@ type codexAvailabilityHint struct {
 func (p *codexAccountPool) refreshAvailabilityHintLocked() {
 	now := p.rate.nowFunc()
 	hint := &codexAvailabilityHint{}
+	quotaOnly := false
 	for _, a := range p.auths {
 		if a.Disabled || a.Status == StatusDisabled || hasUnauthorizedAuthFailure(a) {
 			hint.potential++
@@ -34,7 +35,11 @@ func (p *codexAccountPool) refreshAvailabilityHintLocked() {
 			if count >= limit && release.After(next) {
 				next = release
 			}
-			hint.capacity = true
+			if count >= limit {
+				hint.capacity = true
+			} else if !next.IsZero() {
+				quotaOnly = true
+			}
 		}
 		if next.IsZero() {
 			hint.potential++
@@ -43,6 +48,9 @@ func (p *codexAccountPool) refreshAvailabilityHintLocked() {
 		if hint.until.IsZero() || next.Before(hint.until) {
 			hint.until = next
 		}
+	}
+	if hint.capacity && quotaOnly {
+		hint.potential++
 	}
 	p.availability.Store(hint)
 }

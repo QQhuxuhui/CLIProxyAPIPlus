@@ -6,55 +6,42 @@ import (
 	"net/http"
 	"sync"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	exec "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-type poolGateObservedContext struct {
-	context.Context
-	once    sync.Once
-	waiting chan struct{}
-}
-
-func (ctx *poolGateObservedContext) Done() <-chan struct{} {
-	ctx.once.Do(func() { close(ctx.waiting) })
-	return ctx.Context.Done()
-}
-
 func TestCodexPoolCategoryMoveRechecksCurrentPresence(t *testing.T) {
-	m := newPoolStorageManager(t, 1)
-	a, err := m.Register(context.Background(), &Auth{ID: "presence-move", Provider: "codex"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gate := m.codexPools.Load().owners.gate(a.ID)
-	<-gate
-	defer func() {
-		select {
-		case gate <- struct{}{}:
-		default:
+	synctest.Test(t, func(t *testing.T) {
+		m := newPoolStorageManager(t, 1)
+		a, err := m.Register(context.Background(), &Auth{ID: "presence-move", Provider: "codex"})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-	ctx := &poolGateObservedContext{Context: context.Background(), waiting: make(chan struct{})}
-	moved := a.Clone()
-	moved.Attributes = map[string]string{AttributeAuthKind: AuthKindAPIKey, AttributeSource: AuthSourceConfig, AttributeAPIKey: "fixture-key"}
-	done := make(chan error, 1)
-	go func() { _, err := m.Update(ctx, moved); done <- err }()
-	select {
-	case <-ctx.waiting:
-	case <-time.After(5 * time.Second):
-		t.Fatal("migration did not reach lifecycle gate")
-	}
-	a.Disabled = true
-	if _, err := m.Update(context.Background(), a); err != nil {
-		t.Fatal(err)
-	}
-	gate <- struct{}{}
-	awaitPoolOperation(t, done)
-	if !m.HasProviderAuth("codex") {
-		t.Fatal("enabled migrated credential missing from provider presence")
-	}
+		gate := m.codexPools.Load().owners.gate(a.ID)
+		<-gate
+		defer func() {
+			select {
+			case gate <- struct{}{}:
+			default:
+			}
+		}()
+		ctx := context.Background()
+		moved := a.Clone()
+		moved.Attributes = map[string]string{AttributeAuthKind: AuthKindAPIKey, AttributeSource: AuthSourceConfig, AttributeAPIKey: "fixture-key"}
+		done := make(chan error, 1)
+		go func() { _, err := m.Update(ctx, moved); done <- err }()
+		synctest.Wait()
+		a.Disabled = true
+		if _, err := m.Update(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
+		gate <- struct{}{}
+		awaitPoolOperation(t, done)
+		if !m.HasProviderAuth("codex") {
+			t.Fatal("enabled migrated credential missing from provider presence")
+		}
+	})
 }
 
 func TestCodexPoolCapacityPreservesSelectionErrors(t *testing.T) {

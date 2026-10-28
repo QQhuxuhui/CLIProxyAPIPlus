@@ -27,12 +27,13 @@ type CodexPoolPartitionSnapshot struct {
 	PendingProjections  int    `json:"pending_projections"`
 }
 type CodexPoolsState struct {
-	Configured      bool                         `json:"configured"`
-	RestartRequired bool                         `json:"restart_required"`
-	Enabled         bool                         `json:"enabled"`
-	HomeMode        bool                         `json:"home_mode"`
-	Version         uint64                       `json:"version"`
-	Pools           []CodexPoolPartitionSnapshot `json:"pools"`
+	UnattributedCapacityFailures uint64                       `json:"unattributed_capacity_failures"`
+	Configured                   bool                         `json:"configured"`
+	RestartRequired              bool                         `json:"restart_required"`
+	Enabled                      bool                         `json:"enabled"`
+	HomeMode                     bool                         `json:"home_mode"`
+	Version                      uint64                       `json:"version"`
+	Pools                        []CodexPoolPartitionSnapshot `json:"pools"`
 }
 
 func (m *Manager) CodexPoolsSnapshot() CodexPoolsState {
@@ -43,6 +44,7 @@ func (m *Manager) CodexPoolsSnapshot() CodexPoolsState {
 	if pools == nil {
 		return out
 	}
+	out.UnattributedCapacityFailures = pools.fastFailures.Load()
 	table := pools.table.Load()
 	out.Version = table.version
 	for _, p := range append(append([]*codexAccountPool{}, table.pools...), pools.side) {
@@ -177,7 +179,11 @@ func (m *Manager) recordPoolFailureWithOptions(err error, opts exec.Options) {
 	if !isPoolCapacityError(err) {
 		return
 	}
-	slot, _ := opts.Metadata[poolHintMetadataKey].(uint16)
+	slot, hasSlot := opts.Metadata[poolHintMetadataKey].(uint16)
+	if !hasSlot && pinnedAuthIDFromMetadata(opts.Metadata) == "" {
+		pools.fastFailures.Add(1)
+		return
+	}
 	p := pools.table.Load().owners[slot]
 	if id := pinnedAuthIDFromMetadata(opts.Metadata); id != "" {
 		if pools.owners.entry(id).lease.kind == codexOwnerSide {

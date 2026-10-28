@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -79,7 +80,7 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 		return nil, nil, err
 	}
 	shared := m.shared.Load()
-	if hint := p.availability.Load(); hint != nil && hint.potential == 0 && !rateBypassed(ctx) && time.Now().Before(hint.until) {
+	if hint := p.availability.Load(); hint != nil && pinnedAuthIDFromMetadata(opts.Metadata) == "" && len(tried) == 0 && hint.potential == 0 && !rateBypassed(ctx) && time.Now().Before(hint.until) {
 		delay := time.Until(hint.until)
 		if hint.capacity {
 			return nil, nil, newPoolCapacityError(delay)
@@ -229,18 +230,25 @@ func (pools *codexPoolSet) lockSession(ctx context.Context, key string) (*codexA
 	}
 }
 func (p *codexAccountPool) putBindingLocked(key codexBindingKey, value codexPoolBinding) {
-	if _, ok := p.bindings[key]; !ok {
-		const limit = 4096
-		if len(p.bindingOrder) < limit {
-			p.bindingOrder = append(p.bindingOrder, key)
-		} else {
-			old := p.bindingOrder[p.bindingCursor]
-			delete(p.bindings, old)
-			p.bindingOrder[p.bindingCursor] = key
-			p.bindingCursor = (p.bindingCursor + 1) % limit
+	if p.bindingEntries == nil {
+		p.bindingEntries = make(map[codexBindingKey]*list.Element)
+	}
+	if element := p.bindingEntries[key]; element != nil {
+		p.bindingOrder.MoveToBack(element)
+	} else {
+		if len(p.bindings) >= 4096 {
+			p.deleteBindingLocked(p.bindingOrder.Front().Value.(codexBindingKey))
 		}
+		p.bindingEntries[key] = p.bindingOrder.PushBack(key)
 	}
 	p.bindings[key] = value
+}
+func (p *codexAccountPool) deleteBindingLocked(key codexBindingKey) {
+	delete(p.bindings, key)
+	if element := p.bindingEntries[key]; element != nil {
+		p.bindingOrder.Remove(element)
+		delete(p.bindingEntries, key)
+	}
 }
 func (m *Manager) poolBoundAuth(ctx context.Context, binding codexPoolBinding, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	stale := &Error{Code: "auth_unavailable", Message: staleSelectionMessage, Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
@@ -350,7 +358,7 @@ func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts
 			}
 			if p.bindings[bindingKey] == current {
 				current.expires = time.Now().Add(ttl)
-				p.bindings[bindingKey] = current
+				p.putBindingLocked(bindingKey, current)
 			}
 			p.mu.Unlock()
 			return winner, executor, nil
@@ -377,11 +385,29 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		if _, used := tried[pinned]; used {
 			return nil, nil, &Error{Code: "auth_not_found", Message: "pinned credential already attempted"}
 		}
-		snapshot, ok := m.GetByID(pinned)
-		if !ok {
+		guard, err := m.lockAuth(ctx, pinned)
+		if errors.Is(err, errCodexOwnerMissing) {
 			return nil, nil, &Error{Code: "auth_not_found", Message: "pinned credential missing"}
 		}
-		return m.poolBoundAuth(ctx, codexPoolBinding{authID: pinned, epoch: snapshot.RegistrationEpoch}, model, opts, tried)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer guard.unlock()
+		a := guard.auths[pinned]
+		if a == nil || guard.pool == nil || a.Disabled || a.Status == StatusDisabled || !authSelectionEligibilityForRequest(ctx, opts).allows(a) || !m.authSupportsRouteModel(registry.GetGlobalRegistry(), a, model) || (rateCapRequiresPositiveWeight(m.shared.Load().selector) && authWeight(a) <= 0) {
+			return nil, nil, &Error{Code: "auth_not_found", Message: "pinned credential unavailable"}
+		}
+		if ready, next := m.pooledRateAvailableLocked(guard.pool, a, ctx); !ready && guard.pool.rate.config.FailFast {
+			return nil, nil, newPoolCapacityError(next.Sub(guard.pool.rate.nowFunc()))
+		}
+		if _, err = m.availableAuthsForRouteModelAcrossPriorities([]*Auth{a}, "codex", model, time.Now()); err != nil {
+			return nil, nil, err
+		}
+		executor := m.shared.Load().executors[executorKeyFromAuth(a)]
+		if executor == nil {
+			return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
+		}
+		return a.Clone(), executor, nil
 	}
 	key, affinity := m.poolSessionKey(model, opts)
 	if key != "" {
@@ -560,9 +586,9 @@ func (m *Manager) updatePoolAffinity(result Result, epoch uint64) {
 	}
 	if result.Success {
 		binding.expires = time.Now().Add(affinity.cache.ttl)
-		p.bindings[bindingKey] = binding
+		p.putBindingLocked(bindingKey, binding)
 	} else if !shouldSkipCredentialCooldown(result.Error) {
-		delete(p.bindings, bindingKey)
+		p.deleteBindingLocked(bindingKey)
 	}
 }
 

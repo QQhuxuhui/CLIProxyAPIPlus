@@ -123,6 +123,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
+	opts.EnsureMetadata()
 	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
@@ -240,6 +241,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response *cliproxyexecutor.StreamResult, resultErr error) {
+	opts.EnsureMetadata()
 	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {

@@ -357,6 +357,9 @@ func (m *Manager) cooldownDisabledForAuth(auth *Auth) bool {
 }
 
 func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
+	if m != nil && m.codexPools.Load() == nil {
+		return m.clearLegacyDisabledCooldownStates(cfg)
+	}
 	if m == nil {
 		return false
 	}
@@ -912,7 +915,7 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 	if !ok {
 		return
 	}
-	guard, err := m.lockAuth(ctx, result.AuthID)
+	guard, err := m.lockAuth(context.WithoutCancel(nonNilContext(ctx)), result.AuthID)
 	if err != nil {
 		return
 	}
@@ -1394,7 +1397,7 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	}
 
 	var authSnapshot *Auth
-	guard, err := m.lockAuth(ctx, result.AuthID)
+	guard, err := m.lockAuth(context.WithoutCancel(nonNilContext(ctx)), result.AuthID)
 	if err != nil {
 		return
 	}
@@ -2851,4 +2854,38 @@ func disableTermsViolatedAuth(auth *Auth) {
 	}
 	auth.Metadata["disabled"] = true
 	log.WithField("auth_id", auth.ID).Warn("antigravity account banned for terms of service violation; disabled")
+}
+
+func (m *Manager) clearLegacyDisabledCooldownStates(cfg *internalconfig.Config) bool {
+	if m == nil {
+		return false
+	}
+	now := time.Now()
+	snapshots := make([]*Auth, 0)
+	m.mu.Lock()
+	for _, auth := range m.auths {
+		if auth == nil {
+			continue
+		}
+		if !quotaCooldownDisabledForAuthWithConfig(auth, cfg) && !auth.Disabled && auth.Status != StatusDisabled {
+			continue
+		}
+		credentialParkUntil := auth.NextRetryAfter
+		credentialParked := codexAuthFailureParkActive(auth, now) && !auth.Disabled && auth.Status != StatusDisabled
+		if clearCooldownStateForAuth(auth, now) {
+			if credentialParked {
+				auth.Unavailable = true
+				auth.NextRetryAfter = credentialParkUntil
+			}
+			snapshots = append(snapshots, auth.Clone())
+		}
+	}
+	m.mu.Unlock()
+
+	if m.scheduler != nil {
+		for _, snapshot := range snapshots {
+			m.scheduler.upsertAuth(snapshot)
+		}
+	}
+	return len(snapshots) > 0
 }

@@ -205,11 +205,6 @@ func snapshotCodexPoolLocked(auths map[string]*Auth, r *requestRateCap) CodexPoo
 }
 
 func (r *requestRateCap) HandleUsage(ctx context.Context, record usage.Record) {
-	if ctx != nil {
-		if _, ok := ctx.Value(rateAttemptContextKey{}).(*rateAttemptRef); ok && !cliproxyexecutor.UpstreamAttempted(ctx) {
-			return
-		}
-	}
 	if record.Provider != "codex" || record.AdditionalModel || !usage.GenerateEnabled(record.Generate) {
 		return
 	}
@@ -218,6 +213,11 @@ func (r *requestRateCap) HandleUsage(ctx context.Context, record usage.Record) {
 	r.handleUsageLocked(ctx, record)
 }
 func (r *requestRateCap) handleUsageLocked(ctx context.Context, record usage.Record) {
+	if ctx != nil {
+		if _, ok := ctx.Value(rateAttemptContextKey{}).(*rateAttemptRef); ok && !cliproxyexecutor.UpstreamAttempted(ctx) {
+			return
+		}
+	}
 	if record.Provider != "codex" || record.AdditionalModel || !usage.GenerateEnabled(record.Generate) {
 		return
 	}

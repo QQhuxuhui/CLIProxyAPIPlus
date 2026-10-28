@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"maps"
 	"sync"
 	"sync/atomic"
 )
@@ -31,38 +30,36 @@ type codexOwnerEntry struct {
 	moving bool
 	done   <-chan struct{}
 }
-type codexOwnerSnapshot struct{ entries map[string]codexOwnerEntry }
 
-// codexOwnerIndex publishes immutable category snapshots. The publication lock
+// codexOwnerIndex publishes immutable per-ID category entries. The publication lock
 // is never held while waiting for a lifecycle gate, a container, or a reader.
 // Tombstones and lifecycle gates survive deletion to prevent same-ID ABA races.
 type codexOwnerIndex struct {
 	publication sync.Mutex
-	snapshot    atomic.Pointer[codexOwnerSnapshot]
+	entries     sync.Map // auth ID -> *atomic.Pointer[codexOwnerEntry]
+	revision    atomic.Uint64
 	lifecycle   sync.Map // auth ID -> buffered channel acting as a cancellable gate
 }
 
 func newCodexOwnerIndex() *codexOwnerIndex {
 	index := &codexOwnerIndex{}
-	index.snapshot.Store(&codexOwnerSnapshot{entries: make(map[string]codexOwnerEntry)})
 	return index
 }
 func (index *codexOwnerIndex) entry(id string) codexOwnerEntry {
-	snapshot := index.snapshot.Load()
-	if snapshot == nil {
-		return codexOwnerEntry{}
+	if value, ok := index.entries.Load(id); ok {
+		if entry := value.(*atomic.Pointer[codexOwnerEntry]).Load(); entry != nil {
+			return *entry
+		}
 	}
-	return snapshot.entries[id]
+	return codexOwnerEntry{}
 }
 func (index *codexOwnerIndex) publish(id string, entry codexOwnerEntry) {
 	index.publication.Lock()
 	defer index.publication.Unlock()
-	entries := make(map[string]codexOwnerEntry)
-	if current := index.snapshot.Load(); current != nil {
-		entries = maps.Clone(current.entries)
-	}
-	entries[id] = entry
-	index.snapshot.Store(&codexOwnerSnapshot{entries: entries})
+	index.revision.Add(1)
+	value, _ := index.entries.LoadOrStore(id, &atomic.Pointer[codexOwnerEntry]{})
+	value.(*atomic.Pointer[codexOwnerEntry]).Store(&entry)
+	index.revision.Add(1)
 }
 func (index *codexOwnerIndex) gate(id string) chan struct{} {
 	if existing, ok := index.lifecycle.Load(id); ok {

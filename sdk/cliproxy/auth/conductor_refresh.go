@@ -551,7 +551,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if err != nil {
 		unauthorized := isUnauthorizedError(err)
 		shouldReschedule := false
-		guard, errLock := m.lockAuth(ctx, id)
+		guard, errLock := m.lockAuth(context.WithoutCancel(nonNilContext(ctx)), id)
 		if errLock != nil {
 			return nil, errLock
 		}
