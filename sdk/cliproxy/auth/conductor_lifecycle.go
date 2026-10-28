@@ -2,13 +2,16 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
 // SetRetryConfig updates additional credential retry rounds, the per-round credential limit, and the cooldown wait interval.
@@ -45,12 +48,21 @@ func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	m.mu.Lock()
 	replaced = m.executors[provider]
 	m.executors[provider] = executor
+	m.publishSharedLocked()
 	for id, auth := range m.auths {
 		if auth != nil && strings.EqualFold(executorKeyFromAuth(auth), provider) {
 			toReschedule = append(toReschedule, id)
 		}
 	}
 	m.mu.Unlock()
+
+	if m.codexPools.Load() != nil {
+		for _, a := range m.pooledAuthSnapshots() {
+			if strings.EqualFold(executorKeyFromAuth(a), provider) {
+				toReschedule = append(toReschedule, a.ID)
+			}
+		}
+	}
 
 	for _, id := range toReschedule {
 		m.queueRefreshReschedule(id)
@@ -72,6 +84,7 @@ func (m *Manager) UnregisterExecutor(provider string) {
 	}
 	m.mu.Lock()
 	delete(m.executors, provider)
+	m.publishSharedLocked()
 	m.mu.Unlock()
 }
 
@@ -100,6 +113,34 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
+	if m.codexPools.Load() != nil {
+		tx, err := m.codexPools.Load().owners.begin(context.WithoutCancel(nonNilContext(ctx)), auth.ID)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.abort()
+		saved, err := m.registerPooledStorageTransition(context.WithoutCancel(nonNilContext(ctx)), auth, tx)
+		if err != nil {
+			return nil, err
+		}
+		if auth.Provider != "codex" || IsConfigAPIKeyAuth(auth) {
+			if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
+				m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+			}
+		}
+		if auth.Provider == "codex" && tx.previous.kind == codexOwnerLegacy && m.scheduler != nil {
+			m.scheduler.RecordRemovalTombstone(auth.ID, saved.RegistrationEpoch)
+		}
+		if auth.Provider != "codex" && m.scheduler != nil {
+			m.scheduler.upsertAuth(saved.Clone())
+		}
+		m.queueRefreshReschedule(auth.ID)
+		_ = m.persist(ctx, auth)
+		saved = auth.Clone()
+		tx.release()
+		m.hook.OnAuthRegistered(ctx, saved.Clone())
+		return saved, nil
+	}
 	m.mu.Lock()
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
@@ -160,25 +201,121 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if auth == nil || auth.ID == "" {
 		return nil, nil
 	}
-	NormalizeCredentialMetadata(auth.Metadata)
-	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
-		return nil, fmt.Errorf("update auth: %w", errWeight)
+	if m.codexPools.Load() != nil {
+		auth.Provider = strings.ToLower(strings.TrimSpace(auth.Provider))
 	}
-	m.mu.Lock()
-	existing, ok := m.auths[auth.ID]
-	if !ok || existing == nil {
-		m.mu.Unlock()
+	NormalizeCredentialMetadata(auth.Metadata)
+	if err := ValidateAuthWeight(auth); err != nil {
+		return nil, fmt.Errorf("update auth: %w", err)
+	}
+	guard, err := m.lockAuth(context.WithoutCancel(nonNilContext(ctx)), auth.ID)
+	if err != nil {
+		if errors.Is(err, errCodexOwnerMissing) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	existing := guard.auths[auth.ID]
+	if existing == nil {
+		guard.unlock()
 		return nil, nil
 	}
-	if m.authEpochs == nil {
-		m.authEpochs = make(map[string]uint64)
+	var tx *codexOwnerTransition
+	var window *rateAccount
+	pools := m.codexPools.Load()
+	if pools != nil && (codexAuthOwnerKind(existing) != codexAuthOwnerKind(auth) || auth.RegistrationEpoch > existing.RegistrationEpoch) {
+		guard.unlock()
+		tx, err = pools.owners.begin(context.WithoutCancel(nonNilContext(ctx)), auth.ID)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.abort()
+		guard, err = m.lockAuthCategory(context.WithoutCancel(nonNilContext(ctx)), auth.ID, tx.previous.kind)
+		if err != nil {
+			return nil, err
+		}
+		// Waiting for the lifecycle gate may have allowed another update or removal.
+		existing = guard.auths[auth.ID]
 	}
-	if existing.RegistrationEpoch > m.authEpochs[auth.ID] {
-		m.authEpochs[auth.ID] = existing.RegistrationEpoch
+	snapshot, changed, persisted, err := m.prepareAuthUpdateLocked(ctx, base, auth, mode, guard)
+	if err != nil || snapshot == nil {
+		guard.unlock()
+		return snapshot, err
+	}
+	routingChanged := existing.Provider != snapshot.Provider || existing.Prefix != snapshot.Prefix || existing.ProxyURL != snapshot.ProxyURL || !reflect.DeepEqual(existing.Attributes, snapshot.Attributes)
+	if tx != nil {
+		window = m.takeRateWindowLocked(guard, auth.ID)
+		delete(guard.auths, auth.ID)
+		if guard.pool != nil {
+			guard.pool.clearProjectionLocked(auth.ID)
+		}
+		snapshot.RegistrationEpoch = max(snapshot.RegistrationEpoch, tx.previous.authEpoch) + 1
+		tx.authEpoch = snapshot.RegistrationEpoch
+		snapshot.Generation = 1
+		guard.unlock()
+		guard, err = m.lockAuthCategory(context.WithoutCancel(nonNilContext(ctx)), auth.ID, codexAuthOwnerKind(snapshot))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if guard.pool != nil && tx != nil {
+		guard.pool.clearProjectionLocked(snapshot.ID)
+	}
+	guard.auths[snapshot.ID] = snapshot.Clone()
+	if window != nil {
+		m.putRateWindowLocked(guard, snapshot.ID, window)
+	}
+	if pools != nil {
+		m.adjustProviderPresence(existing, snapshot)
+	}
+	guard.epochs[snapshot.ID] = snapshot.RegistrationEpoch
+	if guard.pool != nil {
+		guard.pool.markDirtyLocked(snapshot.ID)
+		if routingChanged || existing.Disabled != snapshot.Disabled || existing.Status == StatusDisabled || snapshot.Status == StatusDisabled {
+			guard.pool.catalogDirty.Store(true)
+		}
+	}
+	guard.unlock()
+	if tx != nil && tx.previous.kind == codexOwnerLegacy && snapshot.Provider == "codex" && m.scheduler != nil {
+		m.scheduler.RecordRemovalTombstone(snapshot.ID, snapshot.RegistrationEpoch)
+	}
+	if tx != nil {
+		registry.GetGlobalRegistry().TrackClientAuthEpoch(snapshot.ID, snapshot.RegistrationEpoch)
+		tx.publish(codexAuthOwnerKind(snapshot))
+	}
+	if (pools == nil || routingChanged) && !shouldDeferAPIKeyModelAliasRebuild(ctx) {
+		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	}
+	if m.scheduler != nil && (pools == nil || snapshot.Provider != "codex") {
+		m.scheduler.upsertAuth(snapshot.Clone())
+	}
+	m.queueRefreshReschedule(snapshot.ID)
+	if !persisted {
+		_ = m.persist(ctx, snapshot)
+	}
+	if tx != nil {
+		tx.release()
+	}
+	m.hook.OnAuthUpdated(ctx, snapshot.Clone())
+	if changed {
+		m.persistCooldownStates(context.Background())
+	}
+	return snapshot.Clone(), nil
+}
+
+func (m *Manager) prepareAuthUpdateLocked(ctx context.Context, base, auth *Auth, mode updateAuthMode, guard authStorageGuard) (*Auth, bool, bool, error) {
+	existing, ok := guard.auths[auth.ID]
+	if !ok || existing == nil {
+		return nil, false, false, nil
+	}
+	if guard.epochs == nil {
+		guard.epochs = make(map[string]uint64)
+	}
+	if existing.RegistrationEpoch > guard.epochs[auth.ID] {
+		guard.epochs[auth.ID] = existing.RegistrationEpoch
 	}
 	if (mode == updateModeRefresh || mode == updateModePrepare) && base != nil && existing.RegistrationEpoch != base.RegistrationEpoch {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("update auth %s: stale registration epoch %d != %d", auth.ID, base.RegistrationEpoch, existing.RegistrationEpoch)
+		return nil, false, false, fmt.Errorf("update auth %s: stale registration epoch %d != %d", auth.ID, base.RegistrationEpoch, existing.RegistrationEpoch)
 	}
 	if mode == updateModeRefresh {
 		merged := MergeRefreshedAuth(base, existing, auth)
@@ -193,14 +330,13 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
 	}
-	if auth.RegistrationEpoch != 0 && auth.RegistrationEpoch < m.authEpochs[auth.ID] {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("update auth %s: stale registration epoch %d < %d", auth.ID, auth.RegistrationEpoch, m.authEpochs[auth.ID])
+	if auth.RegistrationEpoch != 0 && auth.RegistrationEpoch < guard.epochs[auth.ID] {
+		return nil, false, false, fmt.Errorf("update auth %s: stale registration epoch %d < %d", auth.ID, auth.RegistrationEpoch, guard.epochs[auth.ID])
 	}
-	if auth.RegistrationEpoch >= m.authEpochs[auth.ID] {
-		m.authEpochs[auth.ID] = auth.RegistrationEpoch
+	if auth.RegistrationEpoch >= guard.epochs[auth.ID] {
+		guard.epochs[auth.ID] = auth.RegistrationEpoch
 	} else if auth.RegistrationEpoch == 0 {
-		auth.RegistrationEpoch = m.authEpochs[auth.ID]
+		auth.RegistrationEpoch = guard.epochs[auth.ID]
 	}
 	if !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
@@ -286,29 +422,14 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	// or removal cannot let an obsolete mint overwrite the credential on disk.
 	persistMetaMint := (mode == updateModePrepare || mode == updateModeRefresh) && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta")
 	if persistMetaMint {
+		if guard.pool != nil {
+			return nil, false, false, fmt.Errorf("provider changes during credential preparation require Update")
+		}
 		if errPersist := m.persist(ctx, auth); errPersist != nil {
-			m.mu.Unlock()
-			return nil, fmt.Errorf("persist meta auth: %w", errPersist)
+			return nil, false, false, fmt.Errorf("persist meta auth: %w", errPersist)
 		}
 	}
-	authClone := auth.Clone()
-	m.auths[auth.ID] = authClone
-	m.mu.Unlock()
-	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
-		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	}
-	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone.Clone())
-	}
-	m.queueRefreshReschedule(auth.ID)
-	if !persistMetaMint {
-		_ = m.persist(ctx, auth)
-	}
-	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	if cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
-	}
-	return auth.Clone(), nil
+	return auth.Clone(), cooldownStateChanged, persistMetaMint, nil
 }
 
 // Remove deletes an auth from runtime state without persisting.
@@ -321,8 +442,35 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	if id == "" {
 		return
 	}
-	_ = ctx
-
+	if m.codexPools.Load() != nil {
+		tx, err := m.codexPools.Load().owners.begin(context.WithoutCancel(nonNilContext(ctx)), id)
+		if err != nil {
+			return
+		}
+		defer tx.abort()
+		existing, epoch, err := m.removePooledStorage(context.WithoutCancel(nonNilContext(ctx)), id, tx)
+		if err != nil || existing == nil {
+			return
+		}
+		if existing.Provider != "codex" && m.scheduler != nil {
+			m.scheduler.RecordRemovalTombstone(id, epoch)
+		}
+		if IsConfigAPIKeyAuth(existing) && !shouldDeferAPIKeyModelAliasRebuild(ctx) {
+			m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+		}
+		m.queueRefreshUnschedule(id)
+		if strings.EqualFold(existing.Provider, "antigravity") {
+			DeleteAntigravityAuthState(id)
+		}
+		if executor, ok := m.Executor(existing.Provider); ok {
+			if closer, ok := executor.(ExecutionSessionCloser); ok {
+				closer.CloseExecutionSession(CloseAllExecutionSessionsID)
+			}
+		}
+		m.invalidateSessionAffinity(id)
+		m.persistCooldownStates(context.Background())
+		return
+	}
 	m.mu.Lock()
 	existing := m.auths[id]
 	if existing == nil {
@@ -390,6 +538,9 @@ func (m *Manager) invalidateSessionAffinity(authID string) {
 
 // Load resets manager state from the backing store.
 func (m *Manager) Load(ctx context.Context) error {
+	if m.codexPools.Load() != nil {
+		return m.loadPooledStorage(ctx)
+	}
 	m.mu.Lock()
 	if m.store == nil {
 		m.mu.Unlock()
@@ -458,7 +609,13 @@ type authPersistLock struct {
 }
 
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {
-	if m.store == nil || auth == nil {
+	var store Store
+	if m.codexPools.Load() != nil {
+		store = m.shared.Load().store
+	} else {
+		store = m.store
+	}
+	if store == nil || auth == nil {
 		return nil
 	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
@@ -493,13 +650,13 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 		if shouldSkipPersist(ctx) {
 			return nil
 		}
-		_, err := m.store.Save(ctx, auth)
+		_, err := store.Save(ctx, auth)
 		return err
 	}
 
 	if shouldSkipPersist(ctx) {
 		return nil
 	}
-	_, err := m.store.Save(ctx, auth)
+	_, err := store.Save(ctx, auth)
 	return err
 }

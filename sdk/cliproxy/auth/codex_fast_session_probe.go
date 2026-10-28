@@ -21,6 +21,9 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 	if m.HomeEnabled() {
 		return nil, "home mode"
 	}
+	if m.codexPools.Load() != nil {
+		return m.acquirePooledProbeAuth(model)
+	}
 	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -94,7 +97,7 @@ func (m *Manager) MarkCodexProbeResult(ctx context.Context, auth *Auth, model st
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ref := &rateAttemptRef{authID: attempt.authID}
+	ref := &rateAttemptRef{authID: attempt.authID, epoch: attempt.epoch}
 	ref.token.Store(token)
 	ctx = context.WithValue(ctx, rateAttemptContextKey{}, ref)
 	result := Result{
@@ -103,5 +106,8 @@ func (m *Manager) MarkCodexProbeResult(ctx context.Context, auth *Auth, model st
 		SkipQuotaObservation: true,
 	}
 	fillQuotaHints(&result, err)
+	if m.codexPools.Load() != nil {
+		ctx = context.WithValue(ctx, poolResultEpochKey{}, auth.RegistrationEpoch)
+	}
 	m.markResult(ctx, result, true)
 }

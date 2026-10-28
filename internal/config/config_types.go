@@ -195,7 +195,8 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
-	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	Pools           CodexPoolsConfig `yaml:"pools" json:"pools"`
+	IdentityConfuse bool             `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// CloakingUserAgent replaces the built-in Codex User-Agent forced by cloaking; the Originator
@@ -1021,3 +1022,31 @@ func (m OpenAICompatibilityModel) GetForceMapping() bool    { return m.ForceMapp
 func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// CodexPoolsConfig controls independent local OAuth account pools. Changing Enable
+// requires restarting the manager; sizing and migration cadence can be reloaded.
+type CodexPoolsConfig struct {
+	Enable                   bool `yaml:"enable" json:"enable"`
+	MaxAccounts              int  `yaml:"max-accounts,omitempty" json:"max-accounts,omitempty"`
+	MinAccounts              int  `yaml:"min-accounts,omitempty" json:"min-accounts,omitempty"`
+	RebalanceIntervalSeconds int  `yaml:"rebalance-interval-seconds,omitempty" json:"rebalance-interval-seconds,omitempty"`
+	MigrationSlotsPerTick    int  `yaml:"migration-slots-per-tick,omitempty" json:"migration-slots-per-tick,omitempty"`
+}
+
+func (c CodexPoolsConfig) WithDefaults() CodexPoolsConfig {
+	if c.MaxAccounts <= 0 {
+		c.MaxAccounts = 300
+	}
+	if c.MinAccounts <= 0 {
+		c.MinAccounts = 80
+	}
+	c.MinAccounts = min(c.MinAccounts, max(1, c.MaxAccounts/2))
+	if c.RebalanceIntervalSeconds <= 0 {
+		c.RebalanceIntervalSeconds = 10
+	}
+	if c.MigrationSlotsPerTick <= 0 {
+		c.MigrationSlotsPerTick = 64
+	}
+	c.MigrationSlotsPerTick = min(c.MigrationSlotsPerTick, 1024)
+	return c
+}

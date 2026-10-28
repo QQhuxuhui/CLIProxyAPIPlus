@@ -24,6 +24,7 @@ func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
 	}
 	m.mu.Lock()
 	m.pluginScheduler = scheduler
+	m.publishSharedLocked()
 	m.mu.Unlock()
 }
 
@@ -77,6 +78,8 @@ type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
 
 type authSelectionEligibility struct {
+	poolSlot         uint16
+	poolRound        poolRetryRound
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
@@ -108,10 +111,19 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
 	}
+	if slot, ok := opts.Metadata[poolHintMetadataKey].(uint16); ok {
+		eligibility.poolSlot = slot
+	}
+	if ctx != nil {
+		eligibility.poolRound, _ = ctx.Value(poolRetryRoundKey{}).(poolRetryRound)
+	}
 	return eligibility
 }
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
+	if auth != nil && e.poolRound.round > 0 && effectiveRequestRetryLimit(auth, e.poolRound.limit) < e.poolRound.round {
+		return false
+	}
 	if auth == nil {
 		return false
 	}
@@ -128,6 +140,15 @@ func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
 	if m == nil || m.scheduler == nil {
 		return
 	}
+	if m.codexPools.Load() != nil {
+		legacy := make([]*Auth, 0, len(auths))
+		for _, a := range auths {
+			if a.Provider != "codex" {
+				legacy = append(legacy, a)
+			}
+		}
+		auths = legacy
+	}
 	m.scheduler.rebuild(auths)
 }
 
@@ -140,11 +161,13 @@ func (m *Manager) syncScheduler() {
 
 func (m *Manager) snapshotAuths() []*Auth {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+
 	out := make([]*Auth, 0, len(m.auths))
 	for _, a := range m.auths {
 		out = append(out, a.Clone())
 	}
+	m.mu.RUnlock()
+	out = append(out, m.pooledAuthSnapshots()...)
 	return out
 }
 
@@ -157,15 +180,13 @@ func (m *Manager) RefreshSchedulerEntry(authID string) {
 	if m == nil || m.scheduler == nil || authID == "" {
 		return
 	}
-	m.mu.RLock()
-	auth, ok := m.auths[authID]
-	if !ok || auth == nil {
-		m.mu.RUnlock()
+	if m.poolOwnsAuth(authID) {
+		m.markPoolProjectionDirty(authID)
 		return
 	}
-	snapshot := auth.Clone()
-	m.mu.RUnlock()
-	m.scheduler.upsertAuth(snapshot)
+	if a, ok := m.GetByID(authID); ok {
+		m.scheduler.upsertAuth(a)
+	}
 }
 
 // RefreshSchedulerAll rebuilds scheduler entries for every known auth.
@@ -173,14 +194,8 @@ func (m *Manager) RefreshSchedulerAll() {
 	if m == nil {
 		return
 	}
-	m.mu.RLock()
-	ids := make([]string, 0, len(m.auths))
-	for id := range m.auths {
-		ids = append(ids, id)
-	}
-	m.mu.RUnlock()
-	for _, id := range ids {
-		m.RefreshSchedulerEntry(id)
+	for _, a := range m.snapshotAuths() {
+		m.RefreshSchedulerEntry(a.ID)
 	}
 }
 
@@ -204,13 +219,17 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		regEpoch             uint64
 		now                  time.Time
 		cooldownStateChanged bool
+		persistChanged       bool
 	)
 
-	m.mu.Lock()
-	auth, ok := m.auths[authID]
+	guard, errLock := m.lockAuth(ctx, authID)
+	if errLock != nil {
+		return
+	}
+	auth, ok := guard.auths[authID]
 	if ok && auth != nil {
 		now = time.Now()
-		trackCooldownState := m.cooldownStore != nil
+		trackCooldownState := m.cooldownStoreSnapshot() != nil
 		var cooldownRecordsBefore []CooldownStateRecord
 		if trackCooldownState {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -332,6 +351,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if globalReg.ClientRegistrationEpoch(authID) == regEpoch {
 				auth.ModelStates = candidateAuth.ModelStates
 				if candidateChanged {
+					persistChanged = true
 					updateAggregatedAvailability(auth, now)
 					if !hasModelError(auth, now) {
 						auth.LastError = nil
@@ -340,9 +360,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 					}
 					auth.Generation++
 					auth.UpdatedAt = now
-					if errPersist := m.persist(context.Background(), auth); errPersist != nil {
-						logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
-					}
+
 				}
 				if trackCooldownState {
 					cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -353,12 +371,24 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			}
 		}
 	}
-	m.mu.Unlock()
+	if guard.pool != nil {
+		guard.pool.markDirtyLocked(authID)
+		guard.pool.catalogDirty.Store(true)
+	}
+	guard.unlock()
 
 	if snapshot == nil {
 		return
 	}
 
+	if persistChanged {
+		if errPersist := m.persist(ctx, snapshot); errPersist != nil {
+			logEntryWithRequestID(ctx).Warnf("persist reconciled auth: %v", errPersist)
+		}
+	}
+	if guard.pool != nil {
+		return
+	}
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
 	for _, sm := range supportedModels {
 		if sm == nil || strings.TrimSpace(sm.ID) == "" {
@@ -366,7 +396,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		}
 		projections = append(projections, m.clientModelProjectionForAuth(snapshot, sm.ID, now))
 	}
-	globalReg.ApplyClientModelProjections(authID, regEpoch, snapshot.Generation, projections)
+	m.applyRegistryProjection(snapshot, regEpoch, projections)
 
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(snapshot)
@@ -422,6 +452,7 @@ func (m *Manager) SetSelector(selector Selector) {
 		return
 	}
 	m.selector = selector
+	m.publishSharedLocked()
 	m.mu.Unlock()
 
 	if oldSelector != nil {
@@ -437,6 +468,9 @@ func (m *Manager) SetSelector(selector Selector) {
 
 // Selector returns the current credential selector.
 func (m *Manager) Selector() Selector {
+	if m != nil && m.codexPools.Load() != nil {
+		return m.shared.Load().selector
+	}
 	if m == nil {
 		return nil
 	}
@@ -447,7 +481,7 @@ func (m *Manager) Selector() Selector {
 
 // LookupSessionAffinity observes the current session affinity binding without side effects.
 // It returns (auth, status) where status can be "bound", "unbound", "ambiguous", or "unsupported".
-func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Auth, string) {
+func (m *Manager) lookupLegacySessionAffinity(provider, model, sessionID string) (*Auth, string) {
 	if m == nil {
 		return nil, "unsupported"
 	}
@@ -515,6 +549,7 @@ func (m *Manager) SetStore(store Store) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.store = store
+	m.publishSharedLocked()
 }
 
 // SetCooldownStateStore swaps the independent runtime cooldown state store.
@@ -527,12 +562,14 @@ func (m *Manager) SetCooldownStateStore(store CooldownStateStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cooldownStore = store
+	m.publishSharedLocked()
 }
 
 // SetRoundTripperProvider register a provider that returns a per-auth RoundTripper.
 func (m *Manager) SetRoundTripperProvider(p RoundTripperProvider) {
 	m.mu.Lock()
 	m.rtProvider = p
+	m.publishSharedLocked()
 	m.mu.Unlock()
 }
 
@@ -1058,6 +1095,17 @@ func (m *Manager) normalizeProviders(providers []string) []string {
 // providers that auth selection would refuse to use, which would otherwise cause execution
 // failures instead of falling back to lower-priority routers.
 func (m *Manager) AvailableProviders() []string {
+	if m != nil && m.codexPools.Load() != nil {
+		var out []string
+		m.providerPresence.Range(func(key, value any) bool {
+			if m.pooledProviderPresent(key.(string)) {
+				out = append(out, key.(string))
+			}
+			return true
+		})
+		sort.Strings(out)
+		return out
+	}
 	if m == nil {
 		return nil
 	}
@@ -1087,6 +1135,9 @@ func (m *Manager) AvailableProviders() []string {
 // the provider. Disabled auths (Disabled flag or StatusDisabled) are excluded to match the
 // behavior of auth selection, which refuses to pick disabled credentials.
 func (m *Manager) HasProviderAuth(provider string) bool {
+	if m != nil && m.codexPools.Load() != nil {
+		return m.pooledProviderPresent(provider)
+	}
 	if m == nil {
 		return false
 	}
@@ -1125,6 +1176,9 @@ func effectiveRequestRetryLimit(auth *Auth, defaultRetry int) int {
 }
 
 func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetry int) map[string]struct{} {
+	if m != nil && m.codexPools.Load() != nil {
+		return nil
+	}
 	excluded := make(map[string]struct{})
 	if m == nil || retryRound <= 0 {
 		return excluded
@@ -1198,6 +1252,9 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 }
 
 func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}) (time.Duration, bool) {
+	if m != nil && m.codexPools.Load() != nil {
+		return m.poolRetryAvailability(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
+	}
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
@@ -1290,6 +1347,10 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
 }
 
 func (m *Manager) retryAllowed(attempt int, providers []string, model string, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) bool {
+	if m != nil && m.codexPools.Load() != nil {
+		_, ok := m.poolRetryAvailability(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, 0, nil)
+		return ok
+	}
 	if m == nil || attempt < 0 || len(providers) == 0 {
 		return false
 	}
@@ -1539,28 +1600,32 @@ func waitForCooldown(ctx context.Context, wait, maxWait time.Duration) error {
 }
 
 // List returns all auth entries currently known by the manager.
-func (m *Manager) List() []*Auth {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	list := make([]*Auth, 0, len(m.auths))
-	for _, auth := range m.auths {
-		list = append(list, auth.Clone())
-	}
-	return list
-}
+func (m *Manager) List() []*Auth { return m.snapshotAuths() }
 
 // GetByID retrieves an auth entry by its ID.
 func (m *Manager) GetByID(id string) (*Auth, bool) {
+	if m.codexPools.Load() == nil {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		a, ok := m.auths[id]
+		if !ok || a == nil {
+			return nil, false
+		}
+		return a.Clone(), true
+	}
 	if id == "" {
 		return nil, false
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	auth, ok := m.auths[id]
-	if !ok {
+	guard, err := m.lockAuthRead(context.Background(), id)
+	if err != nil {
 		return nil, false
 	}
-	return auth.Clone(), true
+	defer guard.unlock()
+	a, ok := guard.auths[id]
+	if !ok || a == nil {
+		return nil, false
+	}
+	return a.Clone(), true
 }
 
 // GetExecutionSessionAuthByID retrieves a Home runtime auth scoped to an execution session.
@@ -1582,6 +1647,14 @@ func (m *Manager) GetExecutionSessionAuthByID(sessionID string, authID string) (
 
 // Executor returns the registered provider executor for a provider key.
 func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
+	if m != nil && m.codexPools.Load() != nil {
+		executors := m.shared.Load().executors
+		e := executors[strings.TrimSpace(provider)]
+		if e == nil {
+			e = executors[strings.ToLower(strings.TrimSpace(provider))]
+		}
+		return e, e != nil
+	}
 	if m == nil {
 		return nil, false
 	}
@@ -1670,6 +1743,9 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	if m.codexPools.Load() != nil && !m.HomeEnabled() && provider == "codex" {
+		return m.pickCodexPool(ctx, model, opts, tried)
+	}
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -1937,6 +2013,9 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (pickedAuth *Auth, pickedExecutor ProviderExecutor, pickErr error) {
+	if m.codexPools.Load() != nil && !m.HomeEnabled() && provider == "codex" {
+		return m.pickCodexPool(ctx, model, opts, tried)
+	}
 	defer func() { pickErr = m.poolCapacityAfterPickFailure(ctx, []string{provider}, model, opts, pickErr) }()
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
@@ -2124,6 +2203,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (pickedAuth *Auth, pickedExecutor ProviderExecutor, pickedProvider string, pickErr error) {
+	if m.codexPools.Load() != nil && !m.HomeEnabled() && hasCodexProvider(providers) {
+		return m.pickPoolMixed(ctx, providers, model, opts, tried)
+	}
+
 	defer func() { pickErr = m.poolCapacityAfterPickFailure(ctx, providers, model, opts, pickErr) }()
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
@@ -2284,6 +2367,12 @@ type authCoolingCandidate struct {
 }
 
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {
+	if m != nil && m.codexPools.Load() != nil && hasCodexProvider(providers) {
+		if err != nil && m.authUnavailableLogAllowed(model, time.Now()) {
+			logEntryWithRequestID(ctx).Warnf("codex pools unavailable for model %q", model)
+		}
+		return
+	}
 	if m == nil || err == nil || !isAuthUnavailableError(err) {
 		return
 	}
@@ -2369,4 +2458,25 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in cooldown: %s", len(cooling), totalCandidates, model, providerText, detail)
 		}
 	}
+}
+
+func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Auth, string) {
+	if m == nil || m.codexPools.Load() == nil {
+		return m.lookupLegacySessionAffinity(provider, model, sessionID)
+	}
+	if provider == "codex" {
+		return m.lookupPoolSessionAffinity(model, CanonicalSessionID(nil, nil, map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID}))
+	}
+	legacy, status := m.lookupLegacySessionAffinity(provider, model, sessionID)
+	if provider != "mixed" {
+		return legacy, status
+	}
+	pooled, poolStatus := m.lookupPoolSessionAffinity(model, CanonicalSessionID(nil, nil, map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID}))
+	if status == "ambiguous" || poolStatus == "ambiguous" || (legacy != nil && pooled != nil && legacy.ID != pooled.ID) {
+		return nil, "ambiguous"
+	}
+	if pooled != nil {
+		return pooled, poolStatus
+	}
+	return legacy, status
 }

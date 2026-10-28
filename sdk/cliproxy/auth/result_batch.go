@@ -42,6 +42,9 @@ type successResultBatcher struct {
 // SetAsyncSuccessResults enables batched, asynchronous recording of successful execution
 // results. Failures are always recorded synchronously.
 func (m *Manager) SetAsyncSuccessResults(enabled bool) {
+	if m != nil {
+		m.poolAsyncResults.Store(enabled)
+	}
 	if m == nil {
 		return
 	}
@@ -54,6 +57,9 @@ func (m *Manager) SetAsyncSuccessResults(enabled bool) {
 // and stops the applier. Later successes are recorded synchronously. Call it after the
 // HTTP server stopped accepting requests.
 func (m *Manager) StopSuccessResults(ctx context.Context) error {
+	if m != nil && m.codexPools.Load() != nil {
+		return m.stopPoolResults(ctx)
+	}
 	if m == nil {
 		return nil
 	}
@@ -87,6 +93,9 @@ func (m *Manager) StopSuccessResults(ctx context.Context) error {
 
 // enqueueSuccessResult queues a successful result and reports whether it was accepted.
 func (m *Manager) enqueueSuccessResult(ctx context.Context, result Result, auth *Auth) bool {
+	if m != nil && m.codexPools.Load() != nil {
+		return m.enqueuePoolSuccess(ctx, result, auth)
+	}
 	if m == nil || result.AuthID == "" {
 		return false
 	}
@@ -149,6 +158,10 @@ func (m *Manager) runSuccessResultApplier(queue <-chan queuedResult, done chan<-
 
 // flushSuccessResults blocks until every success queued before the call is applied.
 func (m *Manager) flushSuccessResults() {
+	if m.codexPools.Load() != nil {
+		m.flushPoolResults()
+		return
+	}
 	b := &m.successResults
 	b.mu.Lock()
 	if b.queue == nil || b.stopped {
@@ -163,6 +176,15 @@ func (m *Manager) flushSuccessResults() {
 
 // applyResultBatch records results with one manager write lock for the whole batch.
 func (m *Manager) applyResultBatch(batch []queuedResult) {
+	if m.codexPools.Load() != nil {
+		m.applyPoolResultBatch(nil, batch)
+		return
+	}
+	m.applyLegacyResultBatch(batch)
+}
+
+// applyLegacyResultBatch retains one manager write lock for non-pooled accounts.
+func (m *Manager) applyLegacyResultBatch(batch []queuedResult) {
 	type prepared struct {
 		item   queuedResult
 		ctx    context.Context

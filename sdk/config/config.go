@@ -10,6 +10,8 @@ type SDKConfig = internalconfig.SDKConfig
 
 type Config = internalconfig.Config
 
+type CodexPoolsConfig = internalconfig.CodexPoolsConfig
+
 type RequestRateCapConfig = internalconfig.RequestRateCapConfig
 
 type StreamingConfig = internalconfig.StreamingConfig

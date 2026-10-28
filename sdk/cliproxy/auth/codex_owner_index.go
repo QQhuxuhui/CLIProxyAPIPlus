@@ -1,0 +1,170 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+)
+
+// The category index is separate from slot routing: moving a slot never rewrites
+// this map. A pooled owner must additionally validate its slot under the pool lock.
+type codexOwnerKind uint8
+
+const (
+	codexOwnerMissing codexOwnerKind = iota
+	codexOwnerPooled
+	codexOwnerSide
+	codexOwnerLegacy
+)
+
+var errCodexOwnerMissing = errors.New("credential ownership is not registered")
+
+type codexOwnerLease struct {
+	authEpoch uint64
+	kind      codexOwnerKind
+	version   uint64
+}
+type codexOwnerEntry struct {
+	lease  codexOwnerLease
+	moving bool
+	done   <-chan struct{}
+}
+
+// codexOwnerIndex publishes immutable per-ID category entries. The publication lock
+// is never held while waiting for a lifecycle gate, a container, or a reader.
+// Tombstones and lifecycle gates survive deletion to prevent same-ID ABA races.
+type codexOwnerIndex struct {
+	publication sync.Mutex
+	entries     sync.Map // auth ID -> *atomic.Pointer[codexOwnerEntry]
+	revision    atomic.Uint64
+	lifecycle   sync.Map // auth ID -> buffered channel acting as a cancellable gate
+}
+
+func newCodexOwnerIndex() *codexOwnerIndex {
+	index := &codexOwnerIndex{}
+	return index
+}
+func (index *codexOwnerIndex) entry(id string) codexOwnerEntry {
+	if value, ok := index.entries.Load(id); ok {
+		if entry := value.(*atomic.Pointer[codexOwnerEntry]).Load(); entry != nil {
+			return *entry
+		}
+	}
+	return codexOwnerEntry{}
+}
+func (index *codexOwnerIndex) publish(id string, entry codexOwnerEntry) {
+	index.publication.Lock()
+	defer index.publication.Unlock()
+	index.revision.Add(1)
+	value, _ := index.entries.LoadOrStore(id, &atomic.Pointer[codexOwnerEntry]{})
+	value.(*atomic.Pointer[codexOwnerEntry]).Store(&entry)
+	index.revision.Add(1)
+}
+func (index *codexOwnerIndex) gate(id string) chan struct{} {
+	if existing, ok := index.lifecycle.Load(id); ok {
+		return existing.(chan struct{})
+	}
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	actual, _ := index.lifecycle.LoadOrStore(id, gate)
+	return actual.(chan struct{})
+}
+
+// begin serializes the complete lifecycle operation for this ID. Its caller must
+// commit after installing the target state, or restore the original storage and
+// abort. No publication lock is held when begin returns.
+func (index *codexOwnerIndex) begin(ctx context.Context, id string) (*codexOwnerTransition, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, errCodexOwnerMissing
+	}
+	gate := index.gate(id)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-gate:
+	}
+	if err := ctx.Err(); err != nil {
+		gate <- struct{}{}
+		return nil, err
+	}
+	previous := index.entry(id)
+	done := make(chan struct{})
+	tx := &codexOwnerTransition{index: index, id: id, previous: previous.lease, authEpoch: previous.lease.authEpoch, version: previous.lease.version + 1, done: done, gate: gate}
+	index.publish(id, codexOwnerEntry{lease: codexOwnerLease{kind: previous.lease.kind, version: tx.version, authEpoch: tx.authEpoch}, moving: true, done: done})
+	return tx, nil
+}
+
+// resolve waits without holding any lock. Call valid after acquiring the resolved
+// container lock, then validate slot ownership separately for pooled credentials.
+func (index *codexOwnerIndex) resolve(ctx context.Context, id string) (codexOwnerLease, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return codexOwnerLease{}, err
+		}
+		current := index.entry(id)
+		if current.moving {
+			select {
+			case <-ctx.Done():
+				return codexOwnerLease{}, ctx.Err()
+			case <-current.done:
+			}
+			continue
+		}
+		if current.lease.kind == codexOwnerMissing {
+			return codexOwnerLease{}, errCodexOwnerMissing
+		}
+		return current.lease, nil
+	}
+}
+func (index *codexOwnerIndex) valid(id string, lease codexOwnerLease) bool {
+	current := index.entry(id)
+	return !current.moving && lease.kind != codexOwnerMissing && current.lease == lease
+}
+
+type codexOwnerTransition struct {
+	authEpoch uint64
+	released  atomic.Bool
+	index     *codexOwnerIndex
+	id        string
+	previous  codexOwnerLease
+	version   uint64
+	done      chan struct{}
+	gate      chan struct{}
+	finished  atomic.Bool
+}
+
+// commit publishes a stable destination before waking readers. A missing
+// destination is a versioned deletion tombstone, not removal of the index entry.
+func (tx *codexOwnerTransition) publish(kind codexOwnerKind) bool {
+	if !tx.finished.CompareAndSwap(false, true) {
+		return false
+	}
+	tx.index.publish(tx.id, codexOwnerEntry{lease: codexOwnerLease{kind: kind, version: tx.version + 1, authEpoch: tx.authEpoch}})
+	close(tx.done)
+	return true
+}
+func (tx *codexOwnerTransition) release() {
+	<-tx.done
+	if tx.released.CompareAndSwap(false, true) {
+		tx.gate <- struct{}{}
+	}
+}
+func (tx *codexOwnerTransition) commit(kind codexOwnerKind) bool {
+	ok := tx.publish(kind)
+	tx.release()
+	return ok
+}
+
+// abort restores the previous route only while unpublished. Stable publication
+// can retain the lifecycle gate through internal post-storage housekeeping.
+func (tx *codexOwnerTransition) abort() { tx.publish(tx.previous.kind); tx.release() }

@@ -106,13 +106,8 @@ func (m *Manager) localFallbackAuth(authID string) *Auth {
 	if !m.localExecutionAllowed() {
 		return nil
 	}
-	m.mu.RLock()
-	auth := m.auths[strings.TrimSpace(authID)]
-	m.mu.RUnlock()
-	if auth == nil {
-		return nil
-	}
-	return auth.Clone()
+	a, _ := m.GetByID(strings.TrimSpace(authID))
+	return a
 }
 
 type homeErrorEnvelope struct {

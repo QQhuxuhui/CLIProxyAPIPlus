@@ -349,6 +349,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.coreManager != nil {
 			if errDrain := s.coreManager.StopSuccessResults(ctx); errDrain != nil {
 				log.Errorf("failed to drain queued request results: %v", errDrain)
+				if shutdownErr == nil {
+					shutdownErr = errDrain
+				}
+			}
+			if errFlush := s.coreManager.FlushCodexPools(ctx); errFlush != nil {
+				log.Errorf("failed to flush codex pools: %v", errFlush)
+				if shutdownErr == nil {
+					shutdownErr = errFlush
+				}
 			}
 		}
 

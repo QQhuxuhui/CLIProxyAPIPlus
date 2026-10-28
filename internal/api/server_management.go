@@ -28,6 +28,7 @@ func (s *Server) registerManagementRoutes() {
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
 		mgmt.GET("/codex-pool", s.mgmt.GetCodexPool)
+		mgmt.GET("/codex-pools", s.mgmt.GetCodexPools)
 		mgmt.PUT("/codex-pool/config", s.mgmt.PutCodexPoolConfig)
 		mgmt.GET("/codex-fast-session", s.mgmt.GetCodexFastSession)
 		mgmt.GET("/config", s.mgmt.GetConfig)
