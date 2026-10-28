@@ -245,3 +245,29 @@ func TestPoolReviewMixedQuotaAndRateHint(t *testing.T) {
 		}
 	}
 }
+func TestPoolReviewClearDisabledCooldownCoversLegacyAndPooled(t *testing.T) {
+	m := newPoolStorageManager(t, 1)
+	until := time.Now().Add(time.Hour)
+	for _, provider := range []string{"codex", "antigravity"} {
+		id := "clear-" + provider
+		if _, err := m.Register(context.Background(), &Auth{ID: id, Provider: provider}); err != nil {
+			t.Fatal(err)
+		}
+		guard, err := m.lockAuth(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := guard.auths[id]
+		a.Disabled, a.Status, a.Unavailable, a.NextRetryAfter = true, StatusDisabled, true, until
+		guard.unlock()
+	}
+	if !m.clearDisabledCooldownStates(&internalconfig.Config{}) {
+		t.Fatal("expected cooldown states to be cleared")
+	}
+	for _, provider := range []string{"codex", "antigravity"} {
+		got, _ := m.GetByID("clear-" + provider)
+		if got == nil || got.Unavailable || !got.NextRetryAfter.IsZero() {
+			t.Fatalf("%s cooldown not cleared: %+v", provider, got)
+		}
+	}
+}

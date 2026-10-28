@@ -357,15 +357,18 @@ func (m *Manager) cooldownDisabledForAuth(auth *Auth) bool {
 }
 
 func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
-	if m != nil && m.codexPools.Load() == nil {
-		return m.clearLegacyDisabledCooldownStates(cfg)
-	}
 	if m == nil {
 		return false
 	}
+	// Legacy auths stay in m.auths even with pools enabled; clear them under one
+	// manager write lock instead of one lock per auth.
+	legacyCleared := m.clearLegacyDisabledCooldownStates(cfg)
+	if m.codexPools.Load() == nil {
+		return legacyCleared
+	}
 	now := time.Now()
 	snapshots := make([]*Auth, 0)
-	for _, snapshot := range m.snapshotAuths() {
+	for _, snapshot := range m.pooledAuthSnapshots() {
 		guard, err := m.lockAuth(context.Background(), snapshot.ID)
 		if err != nil {
 			continue
@@ -401,7 +404,7 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 			}
 		}
 	}
-	return len(snapshots) > 0
+	return legacyCleared || len(snapshots) > 0
 }
 
 // RestoreCooldownStates restores unexpired persisted cooldown records into registered auths.
