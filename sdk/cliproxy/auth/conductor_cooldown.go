@@ -862,7 +862,7 @@ func (m *Manager) markResult(ctx context.Context, result Result, probe bool) {
 // prepareMarkResult runs the lock-free steps before a result is applied. It reports false
 // when the result must be dropped.
 func (m *Manager) prepareMarkResult(ctx context.Context, result Result, probe bool) (context.Context, Result, bool) {
-	if result.Provider == "codex" && !result.Success && result.Error != nil {
+	if m.codexRetryEnabled() && result.Provider == "codex" && !result.Success && result.Error != nil {
 
 		switch codexFailureClass(result.Error) {
 		case "overload":

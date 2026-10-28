@@ -2,8 +2,8 @@ package executor
 
 import "sync/atomic"
 
-var codexBootstrapReleaseCounts [7]atomic.Uint64
-var codexBootstrapReleaseReasons = [...]string{"content", "event", "terminal", "frame budget", "byte budget", "time budget", "overload"}
+var codexBootstrapReleaseCounts [8]atomic.Uint64
+var codexBootstrapReleaseReasons = [...]string{"content", "unknown", "terminal", "frame budget", "byte budget", "time budget", "overload", "tool"}
 
 // ObserveCodexBootstrapRelease counts a fixed set of bootstrap outcomes. Unknown
 // events share one bucket so upstream event names cannot grow label cardinality.

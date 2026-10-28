@@ -194,8 +194,14 @@ type AntigravityConnectionPoolConfig struct {
 }
 
 // CodexConfig configures provider-wide Codex request behavior.
+type CodexRetryBudgetConfig struct {
+	Enable bool `yaml:"enable" json:"enable"`
+}
+
+// CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
-	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	RetryBudget     CodexRetryBudgetConfig `yaml:"retry-budget" json:"retry-budget"`
+	IdentityConfuse bool                   `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// CloakingUserAgent replaces the built-in Codex User-Agent forced by cloaking; the Originator

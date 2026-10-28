@@ -138,7 +138,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
-	if codexOnly(normalized) {
+	if codexOnly(normalized) && codexBudget(ctx) != nil {
 		return runCodexRetry(m, ctx, authSelectionModelFromOptions(opts, req.Model), opts, func(attemptCtx context.Context) (cliproxyexecutor.Response, error) {
 			return m.executeMixedOnce(attemptCtx, normalized, req, opts, 1, 0, 0)
 		})
@@ -211,7 +211,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return resp, unwrapExecutionBoundaryError(errHome)
 	}
 
-	if codexOnly(normalized) {
+	if codexOnly(normalized) && codexBudget(ctx) != nil {
 		return runCodexRetry(m, ctx, authSelectionModelFromOptions(opts, req.Model), opts, func(attemptCtx context.Context) (cliproxyexecutor.Response, error) {
 			return m.executeCountMixedOnce(attemptCtx, normalized, req, opts, 1, 0, 0)
 		})
@@ -274,14 +274,14 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
-	if codexOnly(normalized) && !m.HomeEnabled() {
+	if codexOnly(normalized) && codexBudget(ctx) != nil {
 		result, err := runCodexRetry(m, ctx, authSelectionModelFromOptions(opts, req.Model), opts, func(attemptCtx context.Context) (*cliproxyexecutor.StreamResult, error) {
 			homeRetryLimit := -1
 			return m.executeStreamMixedOnce(attemptCtx, normalized, req, opts, 1, &homeRetryLimit, 0, 0)
 		})
 		var bootstrapErr *streamBootstrapError
 		if err != nil && statusCodeFromError(err) != 529 && errors.As(err, &bootstrapErr) {
-			return streamErrorResult(bootstrapErr.Headers(), err), nil
+			return streamErrorResult(codexFinalHeaders(err, bootstrapErr.Headers()), err), nil
 		}
 		return result, err
 	}
@@ -357,7 +357,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		var bootstrapErr *streamBootstrapError
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
+			return streamErrorResult(codexFinalHeaders(lastErr, bootstrapErr.Headers()), lastErr), nil
 		}
 		return nil, lastErr
 	}
@@ -543,7 +543,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
+		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		if errPick != nil {
 			if isPoolCapacityError(busyErr) {
 				return cliproxyexecutor.Response{}, busyErr
@@ -813,7 +813,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
+		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -902,7 +902,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			startExec := time.Now()
 			if provider == "codex" {
-				if errBudget := CheckCodexRetryAdmission(execCtx); errBudget != nil {
+				if errBudget := admitCodexDispatch(execCtx); errBudget != nil {
 					return cliproxyexecutor.Response{}, errBudget
 				}
 			}
@@ -1074,7 +1074,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixedProbed(ctx, providers, routeModel, pickOpts, tried, probe)
+			auth, executor, provider, errPick = m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		}
 		if errPick != nil {
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)

@@ -879,6 +879,9 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError(t *testing.T) {
 	executor := &failOnceStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
+	retryConfig := &sdkconfig.Config{}
+	retryConfig.Codex.RetryBudget.Enable = true
+	manager.SetConfig(retryConfig)
 	manager.RegisterExecutor(executor)
 
 	auth1 := &coreauth.Auth{
@@ -970,6 +973,9 @@ func (e *overloadStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *h
 func TestExecuteStreamWithAuthManager_ForwardsOverloadErrorWhenAllAuthsOverloaded(t *testing.T) {
 	executor := &overloadStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
+	retryConfig := &sdkconfig.Config{}
+	retryConfig.Codex.RetryBudget.Enable = true
+	manager.SetConfig(retryConfig)
 	manager.RegisterExecutor(executor)
 
 	auth1 := &coreauth.Auth{
@@ -1284,6 +1290,9 @@ func TestCodexRetryBudgetSurvivesHandlerBootstrapRetries(t *testing.T) {
 		return &coreexecutor.StreamResult{Chunks: ch}, nil
 	}}}
 	m := coreauth.NewManager(nil, nil, nil)
+	retryConfig := &sdkconfig.Config{}
+	retryConfig.Codex.RetryBudget.Enable = true
+	m.SetConfig(retryConfig)
 	m.RegisterExecutor(e)
 	model := "codex-budget-bootstrap"
 	for i := 0; i < 10; i++ {

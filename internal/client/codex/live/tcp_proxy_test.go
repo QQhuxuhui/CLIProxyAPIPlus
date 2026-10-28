@@ -358,7 +358,21 @@ func TestTCPCandidateTunnelProxyFailureDoesNotFallBack(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("proxy dial was not attempted")
 	}
-	if _, errSecondDial := net.Dial("tcp", tunnel.listener.Addr().String()); errSecondDial == nil {
+	// Check the original listener, not a released ephemeral port that can be reused.
+	closed := make(chan error, 1)
+	go func() {
+		connection, errAccept := tunnel.listener.Accept()
+		if connection != nil {
+			_ = connection.Close()
+		}
+		closed <- errAccept
+	}()
+	select {
+	case errAccept := <-closed:
+		if !errors.Is(errAccept, net.ErrClosed) {
+			t.Fatalf("candidate listener after proxy failure: %v", errAccept)
+		}
+	case <-time.After(time.Second):
 		t.Fatal("candidate listener remained available after proxy failure")
 	}
 	assertNoForwardingStart(t, forwardingStarted)

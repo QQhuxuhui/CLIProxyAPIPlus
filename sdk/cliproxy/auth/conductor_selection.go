@@ -1376,8 +1376,31 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
-	if wait, retry, handled := m.codexRetryOverride(ctx, opts, model, maxWait); handled {
-		return wait, retry
+	if b := codexBudget(ctx); b != nil {
+		if codexOnly(providers) {
+			if wait, retry, handled := m.codexRetryOverride(ctx, opts, model, maxWait); handled {
+				return wait, retry
+			}
+		} else {
+			others := make([]string, 0, len(providers))
+			for _, p := range providers {
+				if p != "codex" {
+					others = append(others, p)
+				}
+			}
+			if len(others) < len(providers) {
+				cw, cr := time.Duration(0), false
+				if b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0) {
+					cw, cr = m.codexRetryWait(ctx, model, opts, maxWait)
+				}
+				legacyCtx := context.WithValue(ctx, codexRetryKey{}, (*codexRetryBudget)(nil))
+				lw, lr := m.shouldRetryAfterErrorWithAttempted(legacyCtx, opts, err, attempt, others, model, maxWait, homeRetryLimit, defaultRequestRetry, attempted)
+				if cr && (!lr || cw < lw) {
+					return cw, true
+				}
+				return lw, lr
+			}
+		}
 	}
 	if m.HomeEnabled() {
 		var cooldownErr *homeDispatchRetryAfterError

@@ -113,6 +113,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+	cliproxyexecutor.ObserveCodexGeneration(ctx)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -168,7 +169,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	bufferedFrames := 0
 	bufferedBytes := 0
 	var initialChunks [][]byte
-	bootstrapReleaseReason := "event"
+	bootstrapReleaseReason := "unknown"
 	streamStarted := false
 	immediateTerminal := false
 	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
@@ -230,7 +231,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				if helps.HasMeaningfulCodexOutputDelta(data) {
 					sawOutputDelta = true
-					bootstrapReleaseReason = "content"
+					bootstrapReleaseReason = helps.CodexBootstrapReleaseReason(data)
 				}
 				if helps.IsCodexTerminalEmptyIncomplete(data, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 					closeBootstrapBody()
@@ -244,6 +245,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					// effect for downstream formats that render the held frames into a chunk.
 					bootstrapTerminalErr = streamErr
 					break
+				}
+				if !isCodexBootstrapBufferableEvent(eventType, data) {
+					bootstrapReleaseReason = helps.CodexBootstrapReleaseReason(data)
 				}
 				if isCodexBootstrapBufferableEvent(eventType, data) {
 					isHandshake = true

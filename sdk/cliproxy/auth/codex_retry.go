@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -19,17 +20,19 @@ const codexRetryWindow = 20 * time.Second
 
 type codexRetryKey struct{}
 type codexRetryBudget struct {
-	mu            sync.Mutex
-	now           func() time.Time
-	deadline      time.Time
-	attempted     map[string]struct{}
-	failures      int
-	overloads     int
-	otherFailures int
-	quota         bool
-	last          error
-	quotaError    error
-	lastProvider  string
+	upstreamCalls      atomic.Uint64
+	admittedDispatches int
+	mu                 sync.Mutex
+	now                func() time.Time
+	deadline           time.Time
+	attempted          map[string]struct{}
+	failures           int
+	overloads          int
+	otherFailures      int
+	quota              bool
+	last               error
+	quotaError         error
+	lastProvider       string
 }
 
 // WithCodexRetryBudget establishes one soft budget for a logical request. It is
@@ -77,7 +80,7 @@ func (b *codexRetryBudget) exclusions() map[string]struct{} {
 func (b *codexRetryBudget) claim(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.now().Before(b.deadline) || len(b.attempted) >= codexRetryAccounts {
+	if (len(b.attempted) > 0 && !b.now().Before(b.deadline)) || len(b.attempted) >= codexRetryAccounts {
 		return false
 	}
 	if _, seen := b.attempted[id]; seen {
@@ -129,10 +132,17 @@ func codexFailureClass(err error) string {
 	if code == "" {
 		code = strings.ToLower(gjson.Get(body, "code").String())
 	}
+	if code == "" && resultErr != nil {
+		code = strings.ToLower(resultErr.Code)
+	}
 	lower := strings.ToLower(body)
-	if status == 429 || typ == "rate_limit_error" || code == "rate_limit_exceeded" || typ == "usage_limit_reached" || code == "usage_limit_reached" || strings.Contains(lower, "model is at capacity") || strings.Contains(lower, "model_at_capacity") || strings.Contains(lower, "model_is_at_capacity") || (strings.Contains(lower, "model") && strings.Contains(lower, "at capacity")) {
+	if status == 429 || typ == "rate_limit_error" || code == "rate_limit_exceeded" || typ == "usage_limit_reached" || code == "usage_limit_reached" {
 		return "quota"
 	}
+	if code == "model_at_capacity" || code == "model_is_at_capacity" || typ == "model_at_capacity" || typ == "model_is_at_capacity" {
+		return "capacity"
+	}
+
 	if isRequestInvalidError(err) || isRequestStopError(err) || isRequestTerminatedError(err) {
 		return "other"
 	}
@@ -286,7 +296,7 @@ func runCodexRetry[T any](m *Manager, ctx context.Context, model string, opts ex
 	}
 	_, _, maxWait := m.retrySettings()
 	var last error
-	for b.count() < codexRetryAccounts && b.remaining() > 0 {
+	for b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0) {
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
@@ -373,7 +383,7 @@ func (m *Manager) executionResultError(ctx context.Context, provider string, err
 		b.lastProvider = provider
 		b.mu.Unlock()
 	}
-	if provider != "codex" || err == nil || m.HomeEnabled() {
+	if provider != "codex" || err == nil || !m.codexRetryEnabled() {
 		return result
 	}
 	codexBudget(ctx).observe(err)
@@ -390,12 +400,14 @@ func (m *Manager) codexRequestContext(ctx context.Context, providers []string) c
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if m.HomeEnabled() {
-		return context.WithValue(ctx, codexRetryKey{}, (*codexRetryBudget)(nil))
+	if !m.codexRetryEnabled() {
+		return exec.WithCodexGenerationObserver(context.WithValue(ctx, codexRetryKey{}, (*codexRetryBudget)(nil)), nil)
 	}
 	for _, p := range providers {
 		if strings.EqualFold(strings.TrimSpace(p), "codex") {
-			return WithCodexRetryBudget(ctx)
+			ctx = WithCodexRetryBudget(ctx)
+			b := codexBudget(ctx)
+			return exec.WithCodexGenerationObserver(ctx, func() { exec.ObserveCodexLogicalCall(b.upstreamCalls.Add(1)) })
 		}
 	}
 	return ctx
@@ -444,4 +456,56 @@ func (m *Manager) codexUsesRequestBudget(ctx context.Context, id string) bool {
 	defer m.mu.RUnlock()
 	a := m.auths[id]
 	return a != nil && a.Provider == "codex"
+}
+
+// codexRetryEnabled is read on each logical request so rollback needs no restart.
+func (m *Manager) codexRetryEnabled() bool {
+	cfg := m.runtimeConfigSnapshot()
+	return cfg.Codex.RetryBudget.Enable && !m.HomeEnabled()
+}
+
+func codexFinalHeaders(err error, fallback http.Header) http.Header {
+	var final *codexRetryFinalError
+	if !errors.As(err, &final) {
+		return fallback
+	}
+	headers := fallback.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	for k, v := range final.Headers() {
+		headers[k] = v
+	}
+	return headers
+}
+
+func codexEligibleProviders(ctx context.Context, providers []string) []string {
+	b := codexBudget(ctx)
+	if b == nil || (b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0)) {
+		return providers
+	}
+	others := make([]string, 0, len(providers))
+	for _, p := range providers {
+		if p != "codex" {
+			others = append(others, p)
+		}
+	}
+	return others
+}
+
+// admitCodexDispatch counts sends separately from accounts: aliases on the first
+// account are retries too. Only the first dispatch may start after the soft deadline.
+func admitCodexDispatch(ctx context.Context) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if b := codexBudget(ctx); b != nil {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.admittedDispatches > 0 && !b.now().Before(b.deadline) {
+			return errCodexRetryBudget
+		}
+		b.admittedDispatches++
+	}
+	return nil
 }

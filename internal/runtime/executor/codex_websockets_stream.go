@@ -197,6 +197,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	cliproxyexecutor.ObserveCodexGeneration(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
@@ -218,6 +219,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			// Retry once with a new websocket connection for the same execution session.
+			if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+				sess.clearActive(conn, readCh)
+				sess.reqMu.Unlock()
+				return nil, errSend
+			}
 			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 			if errDialRetry != nil || connRetry == nil {
 				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
@@ -258,6 +264,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
+			cliproxyexecutor.ObserveCodexGeneration(ctx)
 			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
 				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
@@ -289,7 +296,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
-	bootstrapReleaseReason := "event"
+	bootstrapReleaseReason := "unknown"
 	var bootstrapTimeout time.Duration
 	var bootstrapStart time.Time
 	var exhaustionLogged bool
@@ -548,10 +555,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap byte limit reached after %d messages / %d bytes, releasing stream without overload probing", bufferedFrames, bufferedBytes)
 			}
 
-			if bootstrapReleaseReason == "event" && helps.HasMeaningfulCodexOutputDelta(payload) {
-				bootstrapReleaseReason = "content"
+			if bootstrapReleaseReason == "unknown" {
+				bootstrapReleaseReason = helps.CodexBootstrapReleaseReason(payload)
 			}
-			if isTerminalEvent && bootstrapReleaseReason == "event" {
+			if isTerminalEvent && bootstrapReleaseReason == "unknown" {
 				bootstrapReleaseReason = "terminal"
 			}
 			cliproxyexecutor.ObserveCodexBootstrapRelease(bootstrapReleaseReason)

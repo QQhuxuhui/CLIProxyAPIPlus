@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
@@ -17,6 +18,7 @@ func TestExecuteStream_AllCredentialsOverloaded_ReturnsStatusError(t *testing.T)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
 
 	m := NewManager(nil, nil, nil)
+	m.SetConfig(&internalconfig.Config{Codex: internalconfig.CodexConfig{RetryBudget: internalconfig.CodexRetryBudgetConfig{Enable: true}}})
 	m.SetRetryConfig(5, 0, 3)
 	registerOverloadAuths(t, m, 3)
 

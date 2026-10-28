@@ -163,8 +163,8 @@ func (m *Manager) beginRateAttempt(ctx context.Context, a *Auth) (context.Contex
 	if a == nil || a.Provider != "codex" || m.HomeEnabled() || rateBypassed(ctx) {
 		return ctx, nil
 	}
-	if b := codexBudget(ctx); b != nil && b.remaining() <= 0 {
-		return ctx, errCodexRetryBudget
+	if err := admitCodexDispatch(ctx); err != nil {
+		return ctx, err
 	}
 	r := m.rateCap
 	r.mu.Lock()

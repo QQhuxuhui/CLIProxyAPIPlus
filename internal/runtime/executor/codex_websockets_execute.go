@@ -200,6 +200,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	cliproxyexecutor.ObserveCodexGeneration(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
 		if sess != nil && !isEphemeralSession {
@@ -220,6 +221,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
+			if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
+				return resp, errSend
+			}
 			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 			if errDialRetry == nil && connRetry != nil {
 				previousConn, previousReadCh := conn, readCh
@@ -252,6 +256,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				}
 				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
+				cliproxyexecutor.ObserveCodexGeneration(ctx)
 				if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry == nil {
 					wsReqBody = wsReqBodyRetry
 				} else {

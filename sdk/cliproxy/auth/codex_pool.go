@@ -70,28 +70,29 @@ type PoolLimitBucket struct {
 
 // CodexPoolSnapshot contains aggregate metrics only, without credential identifiers.
 type CodexPoolSnapshot struct {
-	UpstreamOverloads []CodexOverloadPoint                `json:"upstream_overloads"`
-	BootstrapReleases map[string]uint64                   `json:"bootstrap_releases"`
-	Config            internalconfig.RequestRateCapConfig `json:"config"`
-	HomeMode          bool                                `json:"home_mode"`
-	RPMAvailable      bool                                `json:"rpm_available"`
-	AlgorithmActive   bool                                `json:"algorithm_active"`
-	Schedulable       int                                 `json:"schedulable"`
-	Cooling           int                                 `json:"cooling"`
-	CoolingReasons    map[string]int                      `json:"cooling_reasons"`
-	Disabled          int                                 `json:"disabled"`
-	Expired           int                                 `json:"expired"`
-	Capacity          int                                 `json:"capacity"`
-	RPM               int                                 `json:"rpm"`
-	Remaining         int                                 `json:"remaining"`
-	EffectiveCapacity float64                             `json:"effective_capacity"`
-	Full              int                                 `json:"full"`
-	SuccessRate       float64                             `json:"success_rate"`
-	TTFTP50           float64                             `json:"ttft_p50"`
-	TTFTP90           float64                             `json:"ttft_p90"`
-	FastFailures      int                                 `json:"fast_failures"`
-	Limits            []PoolLimitBucket                   `json:"limits"`
-	Points            []PoolPoint                         `json:"points"`
+	LogicalRequestUpstreamCalls map[string]int64                    `json:"logical_request_upstream_calls"`
+	UpstreamOverloads           []CodexOverloadPoint                `json:"upstream_overloads"`
+	BootstrapReleases           map[string]uint64                   `json:"bootstrap_releases"`
+	Config                      internalconfig.RequestRateCapConfig `json:"config"`
+	HomeMode                    bool                                `json:"home_mode"`
+	RPMAvailable                bool                                `json:"rpm_available"`
+	AlgorithmActive             bool                                `json:"algorithm_active"`
+	Schedulable                 int                                 `json:"schedulable"`
+	Cooling                     int                                 `json:"cooling"`
+	CoolingReasons              map[string]int                      `json:"cooling_reasons"`
+	Disabled                    int                                 `json:"disabled"`
+	Expired                     int                                 `json:"expired"`
+	Capacity                    int                                 `json:"capacity"`
+	RPM                         int                                 `json:"rpm"`
+	Remaining                   int                                 `json:"remaining"`
+	EffectiveCapacity           float64                             `json:"effective_capacity"`
+	Full                        int                                 `json:"full"`
+	SuccessRate                 float64                             `json:"success_rate"`
+	TTFTP50                     float64                             `json:"ttft_p50"`
+	TTFTP90                     float64                             `json:"ttft_p90"`
+	FastFailures                int                                 `json:"fast_failures"`
+	Limits                      []PoolLimitBucket                   `json:"limits"`
+	Points                      []PoolPoint                         `json:"points"`
 }
 
 func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
@@ -102,7 +103,7 @@ func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.nowFunc()
-	out := CodexPoolSnapshot{UpstreamOverloads: m.codexOverloadSnapshot(), BootstrapReleases: cliproxyexecutor.CodexBootstrapMetrics(), Config: r.config, HomeMode: r.home, RPMAvailable: !r.home, AlgorithmActive: r.config.Enabled && !r.home, CoolingReasons: map[string]int{}, Limits: []PoolLimitBucket{}, Points: make([]PoolPoint, 0, 60)}
+	out := CodexPoolSnapshot{LogicalRequestUpstreamCalls: cliproxyexecutor.CodexLogicalCallMetrics(), UpstreamOverloads: m.codexOverloadSnapshot(), BootstrapReleases: cliproxyexecutor.CodexBootstrapMetrics(), Config: r.config, HomeMode: r.home, RPMAvailable: !r.home, AlgorithmActive: r.config.Enabled && !r.home, CoolingReasons: map[string]int{}, Limits: []PoolLimitBucket{}, Points: make([]PoolPoint, 0, 60)}
 	distribution := map[int]int{}
 	live := map[string]bool{}
 	for _, a := range auths {

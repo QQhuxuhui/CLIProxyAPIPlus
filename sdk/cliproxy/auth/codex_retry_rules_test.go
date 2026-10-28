@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	exec "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -42,6 +43,7 @@ func (e *codexRulesExecutor) ExecuteStream(_ context.Context, a *Auth, _ exec.Re
 func newCodexRulesManager(t *testing.T, n int, failure error) (*Manager, *codexRulesExecutor, string, []string) {
 	t.Helper()
 	m := NewManager(nil, nil, nil)
+	m.SetConfig(&internalconfig.Config{Codex: internalconfig.CodexConfig{RetryBudget: internalconfig.CodexRetryBudgetConfig{Enable: true}}})
 	m.SetRetryConfig(3, 3, 0)
 	e := &codexRulesExecutor{retryRoundCallExecutor: retryRoundCallExecutor{identifier: "codex"}, failure: failure}
 	m.RegisterExecutor(e)
@@ -265,5 +267,112 @@ func TestCodexRetryRulesInheritsIngressBudget(t *testing.T) {
 	handler := WithCodexRetryBudget(context.Background(), ingress)
 	if codexBudget(handler) != codexBudget(ingress) {
 		t.Fatal("handler reset the ingress budget")
+	}
+}
+
+func TestCodexRetryExpiredBudgetAllowsFirstAccount(t *testing.T) {
+	m, e, model, _ := newCodexRulesManager(t, 2, nil)
+	ctx := WithCodexRetryBudget(context.Background())
+	b := codexBudget(ctx)
+	b.deadline = b.now().Add(-time.Minute)
+	_, err := m.Execute(ctx, []string{"codex"}, exec.Request{Model: model}, exec.Options{})
+	if err != nil || len(e.ids("execute")) != 1 {
+		t.Fatalf("first attempt: calls=%v err=%v", e.ids("execute"), err)
+	}
+}
+func TestCodexRetryCapacityKeepsOriginalCooldown(t *testing.T) {
+	old := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(5)
+	t.Cleanup(func() { transientErrorCooldownSeconds.Store(old) })
+	m, _, model, ids := newCodexRulesManager(t, 1, &Error{HTTPStatus: 503, Message: `{"error":{"code":"model_at_capacity"}}`})
+	_, err := m.Execute(context.Background(), []string{"codex"}, exec.Request{Model: model}, exec.Options{})
+	a, _ := m.GetByID(ids[0])
+	state := a.ModelStates[model]
+	if statusCodeFromError(err) != 503 || state == nil || state.Quota.Exceeded || time.Until(state.NextRetryAfter) > 6*time.Second {
+		t.Fatalf("capacity changed: err=%v state=%+v", err, state)
+	}
+	if class := codexFailureClass(&Error{HTTPStatus: 503, Message: `{"error":{"code":"server_is_overloaded","message":"model backend at capacity"}}`}); class != "overload" {
+		t.Fatalf("broad text changed overload to %s", class)
+	}
+}
+func TestCodexRetryDefaultOffUsesLegacyCooldown(t *testing.T) {
+	m, _, model, ids := newCodexRulesManager(t, 1, &Error{HTTPStatus: 503, Message: "overloaded"})
+	m.SetConfig(&internalconfig.Config{})
+	_, err := m.Execute(context.Background(), []string{"codex"}, exec.Request{Model: model}, exec.Options{})
+	a, _ := m.GetByID(ids[0])
+	if statusCodeFromError(err) != 503 || a.Failed == 0 {
+		t.Fatalf("disabled retry rules: err=%v failed=%d", err, a.Failed)
+	}
+}
+
+func TestCodexRetryMixedBudgetKeepsOtherProviderRounds(t *testing.T) {
+	m, _, model, _ := newCodexRulesManager(t, 1, &Error{HTTPStatus: 503, Message: "overload"})
+	id := model + "-openai"
+	registry.GetGlobalRegistry().RegisterClient(id, "openai", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+	m.RegisterExecutor(&retryRoundCallExecutor{identifier: "openai"})
+	_, _ = m.Register(context.Background(), &Auth{ID: id, Provider: "openai"})
+	ctx := WithCodexRetryBudget(context.Background())
+	b := codexBudget(ctx)
+	for i := range 6 {
+		b.claim(fmt.Sprint(i))
+	}
+	b.lastProvider = "codex"
+	_, retry := m.shouldRetryAfterErrorWithAttempted(ctx, exec.Options{}, &Error{HTTPStatus: 503}, 0, []string{"codex", "openai"}, model, 0, -1, 1, nil)
+	if !retry {
+		t.Fatal("Codex exhaustion suppressed OpenAI retry")
+	}
+}
+func TestCodexRetryFinalHeadersAreTrusted(t *testing.T) {
+	for _, status := range []int{429, 529} {
+		err := &codexRetryFinalError{status: status, cause: &Error{HTTPStatus: 503}, delay: 7 * time.Second}
+		if got := SafeResponseHeaders(err).Get("Retry-After"); got != "7" {
+			t.Fatalf("status=%d retry-after=%q", status, got)
+		}
+		if got := codexFinalHeaders(err, http.Header{"Retry-After": {"999"}}).Get("Retry-After"); got != "7" {
+			t.Fatalf("stale bootstrap header=%q", got)
+		}
+	}
+}
+
+func TestCodexRetryLogicalCallCounterSharedAndDisabled(t *testing.T) {
+	m, _, _, _ := newCodexRulesManager(t, 1, nil)
+	root := WithCodexRetryBudget(context.Background())
+	for range 3 {
+		ctx := m.codexRequestContext(root, []string{"codex"})
+		exec.ObserveCodexGeneration(ctx)
+	}
+	if n := codexBudget(root).upstreamCalls.Load(); n != 3 {
+		t.Fatalf("calls=%d", n)
+	}
+	m.SetConfig(&internalconfig.Config{})
+	exec.ObserveCodexGeneration(m.codexRequestContext(root, []string{"codex"}))
+	if n := codexBudget(root).upstreamCalls.Load(); n != 3 {
+		t.Fatalf("disabled request counted: %d", n)
+	}
+}
+
+func TestCodexRetryExpiredFirstCountTokens(t *testing.T) {
+	m, e, model, _ := newCodexRulesManager(t, 2, nil)
+	ctx := WithCodexRetryBudget(context.Background())
+	b := codexBudget(ctx)
+	b.deadline = b.now().Add(-time.Minute)
+	_, _ = m.ExecuteCount(ctx, []string{"codex"}, exec.Request{Model: model}, exec.Options{})
+	if n := len(e.ids("count")); n != 1 {
+		t.Fatalf("expired first CountTokens calls=%d", n)
+	}
+}
+func TestCodexRetryExpiredSecondDispatchOnSameAccount(t *testing.T) {
+	m, _, _, ids := newCodexRulesManager(t, 1, nil)
+	ctx := WithCodexRetryBudget(context.Background())
+	b := codexBudget(ctx)
+	b.claim(ids[0])
+	a, _ := m.GetByID(ids[0])
+	if _, err := m.beginRateAttempt(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	b.deadline = b.now().Add(-time.Minute)
+	if _, err := m.beginRateAttempt(ctx, a); !errors.Is(err, errCodexRetryBudget) {
+		t.Fatalf("second same-account dispatch admitted: %v", err)
 	}
 }
