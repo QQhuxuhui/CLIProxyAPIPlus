@@ -210,7 +210,7 @@ type CodexConfig struct {
 	CloakingUserAgent string `yaml:"cloaking-user-agent,omitempty" json:"cloaking-user-agent,omitempty"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
 	// which the client has seen anything from - the handshake (response.created, response.in_progress,
-	// the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item
+	// response.metadata and the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item
 	// or part that is still empty - until the first generated event arrives. The upstream delivers
 	// server_is_overloaded rejections inside an HTTP 200 stream right after those frames instead of
 	// returning 503 on the wire, so buffering them keeps the downstream response headers uncommitted

@@ -136,6 +136,24 @@ func TestCodexExecutor_BootstrapBuffering_OverloadFailsAttemptWithoutLeakingHand
 	}
 }
 
+// Live SSE capture: the upstream sends response.metadata between the handshake and the overload
+// rejection. Releasing on it delivered the rejection in-stream instead of failing over.
+func TestCodexExecutor_BootstrapBuffering_ResponseMetadataBeforeOverloadFailsOver(t *testing.T) {
+	metadata := `{"type":"response.metadata","sequence_number":2,"response_id":"resp_1","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{},"generation":{},"tool_call":{},"tool_response":{}}}}`
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent, metadata, codexOverloadEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	if result != nil {
+		drainChunks(result)
+		t.Fatal("expected nil result so no buffered frame can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
 func TestCodexExecutor_BootstrapBuffering_CapacityFailsAttemptWithoutLeakingHandshake(t *testing.T) {
 	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent, codexCapacityEvent)
 	defer server.Close()
@@ -901,6 +919,7 @@ func TestIsCodexBootstrapBufferableEvent(t *testing.T) {
 		`{"type":"response.in_progress"}`,
 		`{"type":"codex.rate_limits"}`,
 		`{"type":"codex.response.metadata"}`,
+		`{"type":"response.metadata","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{},"generation":{}}}}`,
 		codexKeepaliveEvent,
 		codexOutputAddedEvent,
 		`{"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,

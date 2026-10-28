@@ -373,7 +373,7 @@ codex:
   # The Originator header follows the product name before the first "/".
   # cloaking-user-agent: "codex-tui/0.160.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.160.0)"
   # Hold back the frames that carry nothing the client has seen - the handshake (response.created,
-  # response.in_progress, the websocket metadata frames), keepalive heartbeats, and the *.added
+  # response.in_progress, response.metadata, the websocket metadata frames), keepalive heartbeats, and the *.added
   # announcements of an item or part that is still empty - until the upstream emits its first
   # generated event. Anything else, including a server-side tool item such as web_search_call and
   # any frame not on that list, releases the stream immediately. On the SSE transport the lines that
