@@ -508,6 +508,38 @@ codex:
   #     min-samples: 30            # per group, within the window
   #     ttft-worse-percent: 20     # small-request (input < 20000 tokens) TTFT p50
   #     failure-worse-points: 5    # failure rate, percentage points
+  # Outbound proxy pool for HTTP/SSE /responses attempts. Credentials with their own proxy_url
+  # never use it. Retries after an upstream overload/5xx/transport error go through the pool
+  # (control-percent of them stay direct as the control group); with shift enabled, a share of
+  # first attempts also moves to the pool while the direct overload rate is high. A proxy that
+  # fails to connect (CONNECT 429, dial/TLS error, connect timeout) is cooled down and the attempt
+  # continues on another proxy or direct with the same credential. Editable on quota-monitor.html.
+  # egress-pool:
+  #   enable: false
+  #   proxies:
+  #     - name: sweden
+  #       url: "http://user:pass@proxy.example.com:10003"
+  #       max-concurrency: 30      # in-flight cap per proxy
+  #   control-percent: 10          # retries kept direct as the control group
+  #   connect-timeout-seconds: 5   # dial + CONNECT + TLS only; no timeout after connecting
+  #   cooldown-base-seconds: 30    # doubles on consecutive connect failures
+  #   cooldown-max-seconds: 600
+  #   shift:
+  #     enable: false
+  #     window-minutes: 5
+  #     min-samples: 50
+  #     enter-overload-percent: 35 # start/grow the shift above this direct overload rate
+  #     exit-overload-percent: 20  # shrink the shift below it
+  #     start-percent: 20
+  #     step-percent: 10
+  #     max-percent: 50
+  #   rollback:
+  #     enable: false
+  #     window-minutes: 30
+  #     min-samples: 40            # per group
+  #     failure-better-points: 5   # pool failure rate must beat direct by this many points
+  #     ttft-worse-percent: 30     # small-request TTFT p50
+  #     retry-minutes: 10          # off period before a retry-only trial
 
 # Antigravity provider behavior.
 # antigravity:

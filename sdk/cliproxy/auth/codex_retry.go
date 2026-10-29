@@ -33,6 +33,9 @@ type codexRetryBudget struct {
 	last               error
 	quotaError         error
 	lastProvider       string
+	// egressRetry records that an earlier attempt of this request failed in a way an
+	// alternative outbound route may avoid, so later attempts may use the egress pool.
+	egressRetry atomic.Bool
 }
 
 // WithCodexRetryBudget establishes one soft budget for a logical request. It is
@@ -383,6 +386,11 @@ func (m *Manager) executionResultError(ctx context.Context, provider string, err
 		b.lastProvider = provider
 		b.mu.Unlock()
 	}
+	if provider == "codex" && codexEgressRetryable(err) {
+		if b := codexBudget(ctx); b != nil {
+			b.egressRetry.Store(true)
+		}
+	}
 	if provider != "codex" || err == nil || !m.codexRetryEnabled() {
 		return result
 	}
@@ -394,6 +402,30 @@ func (m *Manager) executionResultError(ctx context.Context, provider string, err
 		result.HTTPStatus = http.StatusTooManyRequests
 	}
 	return result
+}
+
+// codexEgressRetryable reports whether a failed attempt is one an alternative outbound route
+// may avoid: upstream overloads, upstream 5xx server errors and transport failures. Account
+// limits, quota and CPA's own capacity errors are excluded.
+func codexEgressRetryable(err error) bool {
+	switch codexFailureClass(err) {
+	case "overload", "transport":
+		return true
+	case "other":
+		status := statusCodeFromError(err)
+		if status >= 500 && status != 529 {
+			return true
+		}
+		return strings.Contains(strings.ToLower(err.Error()), `"server_error"`)
+	}
+	return false
+}
+
+// CodexEgressRetryPending reports whether an earlier attempt of the request carried by ctx
+// failed in a way the Codex egress pool may avoid.
+func CodexEgressRetryPending(ctx context.Context) bool {
+	b := codexBudget(ctx)
+	return b != nil && b.egressRetry.Load()
 }
 
 func (m *Manager) codexRequestContext(ctx context.Context, providers []string) context.Context {

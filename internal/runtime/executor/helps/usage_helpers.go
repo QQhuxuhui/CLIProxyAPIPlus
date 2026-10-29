@@ -54,6 +54,11 @@ type UsageReporter struct {
 	// published record also feeds the per-group stats.
 	codexFastSessionGroup      string
 	codexFastSessionGeneration uint64
+	// codexEgressGroup and codexEgressRoute tag the request with the egress pool route that
+	// carried it, so the published record also feeds the per-route stats.
+	codexEgressMu    sync.Mutex
+	codexEgressGroup string
+	codexEgressRoute string
 }
 
 type usageExecutor interface {
@@ -137,6 +142,16 @@ func (r *UsageReporter) SetCodexFastSessionGroup(group string, generation uint64
 	}
 	r.codexFastSessionGroup = group
 	r.codexFastSessionGeneration = generation
+}
+
+// SetCodexEgress tags the request with its Codex egress pool group and route.
+func (r *UsageReporter) SetCodexEgress(group, route string) {
+	if r == nil {
+		return
+	}
+	r.codexEgressMu.Lock()
+	r.codexEgressGroup, r.codexEgressRoute = group, route
+	r.codexEgressMu.Unlock()
 }
 
 // SetSessionHierarchy sets the explicit session and parent session identifiers.
@@ -443,6 +458,12 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	if r.codexFastSessionGroup != "" {
 		observeCodexFastSessionRecord(r.codexFastSessionGroup, record, r.codexFastSessionGeneration)
+	}
+	r.codexEgressMu.Lock()
+	egressGroup, egressRoute := r.codexEgressGroup, r.codexEgressRoute
+	r.codexEgressMu.Unlock()
+	if egressGroup != "" {
+		CodexEgressPools().observe(egressGroup, egressRoute, record)
 	}
 	usage.PublishRecord(ctx, record)
 }

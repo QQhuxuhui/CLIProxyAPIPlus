@@ -60,3 +60,26 @@ func TestCodexFastSessionIDsConfigNormalizeProberAndRollback(t *testing.T) {
 		t.Fatalf("negative interval = %d", cfg.ProbeIntervalSeconds)
 	}
 }
+
+func TestCodexEgressPoolConfigNormalize(t *testing.T) {
+	cfg := CodexEgressPoolConfig{Proxies: []CodexEgressProxyConfig{{URL: " http://a:1 "}, {URL: "http://a:1"}, {URL: ""}}}
+	cfg.Normalize()
+	if len(cfg.Proxies) != 1 || cfg.Proxies[0].URL != "http://a:1" || cfg.Proxies[0].MaxConcurrency != DefaultCodexEgressProxyMaxConcurrency {
+		t.Fatalf("proxies = %+v", cfg.Proxies)
+	}
+	if cfg.ControlPercent != 10 || cfg.ConnectTimeoutSeconds != 5 || cfg.CooldownBaseSeconds != 30 || cfg.CooldownMaxSeconds != 600 {
+		t.Fatalf("defaults = %+v", cfg)
+	}
+	s, r := cfg.Shift, cfg.Rollback
+	if s.WindowMinutes != 5 || s.MinSamples != 50 || s.EnterOverloadPercent != 35 || s.ExitOverloadPercent != 20 || s.StartPercent != 20 || s.StepPercent != 10 || s.MaxPercent != 50 {
+		t.Fatalf("shift defaults = %+v", s)
+	}
+	if r.WindowMinutes != 30 || r.MinSamples != 40 || r.FailureBetterPoints != 5 || r.TTFTWorsePercent != 30 || r.RetryMinutes != 10 {
+		t.Fatalf("rollback defaults = %+v", r)
+	}
+	cfg = CodexEgressPoolConfig{ControlPercent: 90, Shift: CodexEgressShiftConfig{EnterOverloadPercent: 15}}
+	cfg.Normalize()
+	if cfg.ControlPercent != 50 || cfg.Shift.ExitOverloadPercent != 15 {
+		t.Fatalf("bounds = %d %v", cfg.ControlPercent, cfg.Shift.ExitOverloadPercent)
+	}
+}

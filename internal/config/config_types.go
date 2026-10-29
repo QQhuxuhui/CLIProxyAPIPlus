@@ -245,6 +245,10 @@ type CodexConfig struct {
 	// FastSessionIDs remaps the outgoing upstream Session-Id header of HTTP/SSE Codex
 	// /responses requests onto a pool of known-fast values.
 	FastSessionIDs CodexFastSessionIDsConfig `yaml:"fast-session-ids" json:"fast-session-ids"`
+	// EgressPool routes some HTTP/SSE Codex /responses attempts through a pool of outbound
+	// proxies: retries after upstream overloads, and a share of first attempts while the direct
+	// route is overloaded.
+	EgressPool CodexEgressPoolConfig `yaml:"egress-pool" json:"egress-pool"`
 }
 
 // CodexFastSessionIDsConfig configures the Codex fast Session-Id pool.
@@ -338,6 +342,135 @@ func (c *CodexFastSessionIDsConfig) Normalize() {
 	if c.Rollback.FailureWorsePoints <= 0 {
 		c.Rollback.FailureWorsePoints = 5
 	}
+}
+
+// CodexEgressPoolConfig configures the Codex outbound proxy pool. Credentials with their own
+// proxy_url never use the pool; "direct" means the route the credential would use without it.
+type CodexEgressPoolConfig struct {
+	// Enable turns the pool on. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Proxies lists the pool members.
+	Proxies []CodexEgressProxyConfig `yaml:"proxies" json:"proxies"`
+	// ControlPercent is the share (0-50) of retries kept on the direct route as the control
+	// group. Default 10.
+	ControlPercent int `yaml:"control-percent" json:"control-percent"`
+	// ConnectTimeoutSeconds bounds proxy dial, CONNECT and TLS handshake. Default 5.
+	ConnectTimeoutSeconds int `yaml:"connect-timeout-seconds" json:"connect-timeout-seconds"`
+	// CooldownBaseSeconds is the first cooldown after a proxy connect failure; it doubles on
+	// consecutive failures up to CooldownMaxSeconds. Defaults 30 and 600.
+	CooldownBaseSeconds int `yaml:"cooldown-base-seconds" json:"cooldown-base-seconds"`
+	CooldownMaxSeconds  int `yaml:"cooldown-max-seconds" json:"cooldown-max-seconds"`
+	// Shift moves a share of first attempts to the pool while the direct route is overloaded.
+	Shift CodexEgressShiftConfig `yaml:"shift" json:"shift"`
+	// Rollback disables the pool when it does not beat the direct control group.
+	Rollback CodexEgressRollbackConfig `yaml:"rollback" json:"rollback"`
+}
+
+// CodexEgressProxyConfig is one pool member.
+type CodexEgressProxyConfig struct {
+	// Name is a display label. Defaults to the proxy host:port.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+	// URL is the proxy URL (http, https or socks5), credentials included.
+	URL string `yaml:"url" json:"url"`
+	// MaxConcurrency caps in-flight attempts through this proxy. Default 30.
+	MaxConcurrency int `yaml:"max-concurrency" json:"max-concurrency"`
+	// Disabled keeps the entry configured but unused.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+}
+
+// CodexEgressShiftConfig configures peak-time shifting of first attempts.
+type CodexEgressShiftConfig struct {
+	// Enable turns shifting on. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// WindowMinutes is the direct overload measurement window (1-30). Default 5.
+	WindowMinutes int `yaml:"window-minutes" json:"window-minutes"`
+	// MinSamples is the direct attempt count required within the window. Default 50.
+	MinSamples int `yaml:"min-samples" json:"min-samples"`
+	// EnterOverloadPercent starts or grows the shift when the direct overload rate is above it.
+	// Default 35.
+	EnterOverloadPercent float64 `yaml:"enter-overload-percent" json:"enter-overload-percent"`
+	// ExitOverloadPercent shrinks the shift when the direct overload rate is below it. Default 20.
+	ExitOverloadPercent float64 `yaml:"exit-overload-percent" json:"exit-overload-percent"`
+	// StartPercent, StepPercent and MaxPercent shape the shifted share. Defaults 20, 10, 50.
+	StartPercent int `yaml:"start-percent" json:"start-percent"`
+	StepPercent  int `yaml:"step-percent" json:"step-percent"`
+	MaxPercent   int `yaml:"max-percent" json:"max-percent"`
+}
+
+// CodexEgressRollbackConfig configures automatic disabling of the pool.
+type CodexEgressRollbackConfig struct {
+	// Enable turns automatic rollback on. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// WindowMinutes is the comparison window (1-60). Default 30.
+	WindowMinutes int `yaml:"window-minutes" json:"window-minutes"`
+	// MinSamples is the per-group sample count required within the window. Default 40.
+	MinSamples int `yaml:"min-samples" json:"min-samples"`
+	// FailureBetterPoints is how many percentage points the pool failure rate must be below
+	// the direct control group. Default 5.
+	FailureBetterPoints float64 `yaml:"failure-better-points" json:"failure-better-points"`
+	// TTFTWorsePercent triggers rollback when the pool small-request TTFT p50 is worse than the
+	// control group by more than this percentage. Default 30.
+	TTFTWorsePercent float64 `yaml:"ttft-worse-percent" json:"ttft-worse-percent"`
+	// RetryMinutes is how long the pool stays off before a retry-only trial. Default 10.
+	RetryMinutes int `yaml:"retry-minutes" json:"retry-minutes"`
+}
+
+// DefaultCodexEgressProxyMaxConcurrency is the default per-proxy in-flight cap.
+const DefaultCodexEgressProxyMaxConcurrency = 30
+
+// Normalize trims proxies, drops empty or duplicate URLs, and applies defaults and bounds.
+func (c *CodexEgressPoolConfig) Normalize() {
+	if c == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(c.Proxies))
+	proxies := c.Proxies[:0:0]
+	for _, p := range c.Proxies {
+		p.URL = strings.TrimSpace(p.URL)
+		p.Name = strings.TrimSpace(p.Name)
+		if p.URL == "" {
+			continue
+		}
+		if _, dup := seen[p.URL]; dup {
+			continue
+		}
+		seen[p.URL] = struct{}{}
+		p.MaxConcurrency = normalizeBoundedInt(p.MaxConcurrency, DefaultCodexEgressProxyMaxConcurrency, 10000)
+		proxies = append(proxies, p)
+	}
+	if len(proxies) == 0 {
+		proxies = nil
+	}
+	c.Proxies = proxies
+	if c.ControlPercent <= 0 {
+		c.ControlPercent = 10
+	}
+	c.ControlPercent = min(c.ControlPercent, 50)
+	c.ConnectTimeoutSeconds = normalizeBoundedInt(c.ConnectTimeoutSeconds, 5, 60)
+	c.CooldownBaseSeconds = normalizeBoundedInt(c.CooldownBaseSeconds, 30, 3600)
+	c.CooldownMaxSeconds = max(normalizeBoundedInt(c.CooldownMaxSeconds, 600, 86400), c.CooldownBaseSeconds)
+	s := &c.Shift
+	s.WindowMinutes = normalizeBoundedInt(s.WindowMinutes, 5, 30)
+	s.MinSamples = normalizeBoundedInt(s.MinSamples, 50, 1000000)
+	if s.EnterOverloadPercent <= 0 || s.EnterOverloadPercent > 100 {
+		s.EnterOverloadPercent = 35
+	}
+	if s.ExitOverloadPercent <= 0 || s.ExitOverloadPercent > s.EnterOverloadPercent {
+		s.ExitOverloadPercent = min(20, s.EnterOverloadPercent)
+	}
+	s.MaxPercent = normalizeBoundedInt(s.MaxPercent, 50, 100)
+	s.StartPercent = min(normalizeBoundedInt(s.StartPercent, 20, 100), s.MaxPercent)
+	s.StepPercent = normalizeBoundedInt(s.StepPercent, 10, 100)
+	r := &c.Rollback
+	r.WindowMinutes = normalizeBoundedInt(r.WindowMinutes, 30, 60)
+	r.MinSamples = normalizeBoundedInt(r.MinSamples, 40, 1000000)
+	if r.FailureBetterPoints <= 0 {
+		r.FailureBetterPoints = 5
+	}
+	if r.TTFTWorsePercent <= 0 {
+		r.TTFTWorsePercent = 30
+	}
+	r.RetryMinutes = normalizeBoundedInt(r.RetryMinutes, 10, 1440)
 }
 
 // normalizeBoundedInt returns def for non-positive values and caps values above maxValue.

@@ -36,3 +36,18 @@ func (s *Service) startCodexFastSessionProber(ctx context.Context) {
 		},
 	})
 }
+
+// startCodexEgressPoolSync keeps the Codex egress pool in step with the service config.
+func (s *Service) startCodexEgressPoolSync(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	helps.StartCodexEgressPoolSync(ctx, func() internalconfig.CodexEgressPoolConfig {
+		s.cfgMu.RLock()
+		defer s.cfgMu.RUnlock()
+		if s.cfg == nil {
+			return internalconfig.CodexEgressPoolConfig{}
+		}
+		return s.cfg.Codex.EgressPool
+	})
+}

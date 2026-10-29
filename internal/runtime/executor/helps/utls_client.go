@@ -27,6 +27,10 @@ import (
 // gets a dedicated connection that is closed with the response body.
 type utlsRoundTripper struct {
 	dialer proxy.Dialer
+	// connectTimeout, when positive, bounds dial, proxy CONNECT and TLS handshake, and marks
+	// failures in that phase as codexEgressConnectError. It never applies after the
+	// connection is established.
+	connectTimeout time.Duration
 }
 
 type closeConnectionBody struct {
@@ -110,8 +114,16 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(hostname, port)
 
-	h2Conn, err := t.createConnection(req.Context(), hostname, addr)
-	if err != nil {
+	var h2Conn *http2.ClientConn
+	var err error
+	if t.connectTimeout > 0 {
+		connectCtx, cancel := context.WithTimeout(req.Context(), t.connectTimeout)
+		h2Conn, err = t.createConnection(connectCtx, hostname, addr)
+		cancel()
+		if err != nil {
+			return nil, &codexEgressConnectError{err: err}
+		}
+	} else if h2Conn, err = t.createConnection(req.Context(), hostname, addr); err != nil {
 		return nil, err
 	}
 

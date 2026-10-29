@@ -111,7 +111,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewCodexEgressHTTPClient(ctx, e.cfg, auth, reporter)
 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
 	cliproxyexecutor.ObserveCodexGeneration(ctx)
 	httpResp, err := httpClient.Do(httpReq)
