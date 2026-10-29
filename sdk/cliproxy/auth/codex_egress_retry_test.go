@@ -50,3 +50,19 @@ func TestCodexEgressRetryPendingFollowsBudget(t *testing.T) {
 		t.Fatal("overload must mark the request for the egress pool")
 	}
 }
+
+func TestCodexEgressRetryPendingWithRetryBudgetDisabled(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	if m.codexRetryEnabled() {
+		t.Fatal("test expects codex.retry-budget disabled by default")
+	}
+	// Handlers install the budget; the manager then masks it because the retry budget is off.
+	ctx := m.codexRequestContext(WithCodexRetryBudget(context.Background()), []string{"codex"})
+	if codexBudget(ctx) != nil {
+		t.Fatal("disabled retry budget must stay masked")
+	}
+	m.executionResultError(ctx, "codex", egressStatusErr{502, `{"error":{"code":"server_is_overloaded"}}`})
+	if !CodexEgressRetryPending(ctx) {
+		t.Fatal("overload must mark the request for the egress pool even with the retry budget disabled")
+	}
+}

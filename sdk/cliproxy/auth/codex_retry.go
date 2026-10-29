@@ -33,10 +33,12 @@ type codexRetryBudget struct {
 	last               error
 	quotaError         error
 	lastProvider       string
-	// egressRetry records that an earlier attempt of this request failed in a way an
-	// alternative outbound route may avoid, so later attempts may use the egress pool.
-	egressRetry atomic.Bool
 }
+
+// codexEgressRetryKey carries a request-scoped flag recording that an earlier attempt failed
+// in a way an alternative outbound route may avoid. It is kept apart from the retry budget
+// because codexRequestContext masks the budget when codex.retry-budget is disabled.
+type codexEgressRetryKey struct{}
 
 // WithCodexRetryBudget establishes one soft budget for a logical request. It is
 // idempotent so handler retries and websocket replays share the original budget.
@@ -45,6 +47,7 @@ func WithCodexRetryBudget(ctx context.Context, parents ...context.Context) conte
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = withCodexEgressRetryFlag(ctx, parents...)
 	if codexBudget(ctx) != nil {
 		return ctx
 	}
@@ -54,6 +57,24 @@ func WithCodexRetryBudget(ctx context.Context, parents ...context.Context) conte
 		}
 	}
 	return context.WithValue(ctx, codexRetryKey{}, &codexRetryBudget{now: time.Now, deadline: time.Now().Add(codexRetryWindow), attempted: make(map[string]struct{})})
+}
+func withCodexEgressRetryFlag(ctx context.Context, parents ...context.Context) context.Context {
+	if codexEgressRetryFlag(ctx) != nil {
+		return ctx
+	}
+	for _, parent := range parents {
+		if flag := codexEgressRetryFlag(parent); flag != nil {
+			return context.WithValue(ctx, codexEgressRetryKey{}, flag)
+		}
+	}
+	return context.WithValue(ctx, codexEgressRetryKey{}, new(atomic.Bool))
+}
+func codexEgressRetryFlag(ctx context.Context) *atomic.Bool {
+	if ctx == nil {
+		return nil
+	}
+	flag, _ := ctx.Value(codexEgressRetryKey{}).(*atomic.Bool)
+	return flag
 }
 func codexBudget(ctx context.Context) *codexRetryBudget {
 	if ctx == nil {
@@ -387,8 +408,8 @@ func (m *Manager) executionResultError(ctx context.Context, provider string, err
 		b.mu.Unlock()
 	}
 	if provider == "codex" && codexEgressRetryable(err) {
-		if b := codexBudget(ctx); b != nil {
-			b.egressRetry.Store(true)
+		if flag := codexEgressRetryFlag(ctx); flag != nil {
+			flag.Store(true)
 		}
 	}
 	if provider != "codex" || err == nil || !m.codexRetryEnabled() {
@@ -424,8 +445,8 @@ func codexEgressRetryable(err error) bool {
 // CodexEgressRetryPending reports whether an earlier attempt of the request carried by ctx
 // failed in a way the Codex egress pool may avoid.
 func CodexEgressRetryPending(ctx context.Context) bool {
-	b := codexBudget(ctx)
-	return b != nil && b.egressRetry.Load()
+	flag := codexEgressRetryFlag(ctx)
+	return flag != nil && flag.Load()
 }
 
 func (m *Manager) codexRequestContext(ctx context.Context, providers []string) context.Context {
