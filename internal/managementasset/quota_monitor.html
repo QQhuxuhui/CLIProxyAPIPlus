@@ -5,15 +5,58 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>配额监控 · CLIProxyAPI</title>
 <style>
+  /* Dark operations console theme. Colors live in tokens; utility classes map onto them. */
+  :root {
+    color-scheme: dark;
+    --bg: #0a0e14;
+    --bg-raise: #0d121a;
+    --surface: #111823;
+    --surface-2: #161f2c;
+    --surface-3: #1b2636;
+    --field: #0c121a;
+    --line: rgba(148, 163, 184, .12);
+    --line-2: rgba(148, 163, 184, .20);
+    --line-3: rgba(148, 163, 184, .32);
+    --text: #e7edf4;
+    --text-2: #bac6d4;
+    --text-3: #8b9bb0;
+    --text-4: #718297;
+    --accent: #4aa3ff;
+    --accent-strong: #1f6fd6;
+    --accent-hover: #2b7fe6;
+    --accent-soft: rgba(74, 163, 255, .12);
+    --accent-line: rgba(74, 163, 255, .35);
+    --ok: #3ccf8e;
+    --ok-soft: rgba(60, 207, 142, .12);
+    --warn: #f2a93b;
+    --warn-soft: rgba(242, 169, 59, .12);
+    --danger: #f2626a;
+    --danger-soft: rgba(242, 98, 106, .12);
+    --off: #64748b;
+    --radius: 10px;
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+
   /* Local utility subset keeps this privileged page self-contained. */
-  *, ::before, ::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: #e5e7eb; }
-  html { line-height: 1.5; -webkit-text-size-adjust: 100%; }
+  *, ::before, ::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: var(--line); }
+  html { line-height: 1.5; -webkit-text-size-adjust: 100%; background: var(--bg); }
   body, h1, h2, h3, p { margin: 0; }
   button, input, select { font: inherit; color: inherit; }
   button { background: none; cursor: pointer; }
-  input::placeholder { opacity: 1; }
+  button:disabled { cursor: default; }
+  input::placeholder { opacity: 1; color: var(--text-4); }
+  input:not([type="checkbox"]):not([type="radio"]), select { background-color: var(--field); color: var(--text); }
+  input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  ::selection { background: rgba(74, 163, 255, .35); color: #fff; }
+  code { font-family: var(--mono); font-size: .92em; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, .18); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgba(148, 163, 184, .3); }
+  ::-webkit-scrollbar-track { background: transparent; }
 
   [class~="block"] { display: block; }
+  [class~="inline-block"] { display: inline-block; }
   [class~="flex"] { display: flex; }
   [class~="inline-flex"] { display: inline-flex; }
   [class~="hidden"] { display: none; }
@@ -39,13 +82,17 @@
   [class~="h-10"], [class~="w-10"] { width: 2.5rem; height: 2.5rem; }
   [class~="h-16"] { height: 4rem; }
   [class~="w-full"] { width: 100%; }
+  [class~="w-20"] { width: 5rem; }
+  [class~="w-28"] { width: 7rem; }
+  [class~="w-56"] { width: 14rem; }
   [class~="min-h-[20px]"] { min-height: 20px; }
   [class~="min-h-[100dvh]"] { min-height: 100vh; min-height: 100dvh; }
   [class~="max-h-[80vh]"] { max-height: 80vh; }
   [class~="max-w-[280px]"] { max-width: 280px; }
   [class~="max-w-md"] { max-width: 28rem; }
   [class~="max-w-2xl"] { max-width: 42rem; }
-  [class~="max-w-7xl"] { max-width: 80rem; }
+  [class~="max-w-3xl"] { max-width: 48rem; }
+  [class~="max-w-7xl"] { max-width: 90rem; }
   [class~="overflow-auto"] { overflow: auto; }
   [class~="overflow-x-auto"] { overflow-x: auto; }
 
@@ -65,6 +112,7 @@
   [class~="p-7"] { padding: 1.75rem; }
   [class~="px-1"] { padding-left: .25rem; padding-right: .25rem; }
   [class~="px-2"] { padding-left: .5rem; padding-right: .5rem; }
+  [class~="px-2.5"] { padding-left: .625rem; padding-right: .625rem; }
   [class~="px-3"] { padding-left: .75rem; padding-right: .75rem; }
   [class~="px-4"] { padding-left: 1rem; padding-right: 1rem; }
   [class~="px-5"] { padding-left: 1.25rem; padding-right: 1.25rem; }
@@ -80,8 +128,9 @@
   [class~="space-y-1.5"] > :not([hidden]) ~ :not([hidden]) { margin-top: .375rem; }
 
   [class~="text-center"] { text-align: center; }
-  [class~="text-xs"] { font-size: .75rem; line-height: 1rem; }
-  [class~="text-sm"] { font-size: .875rem; line-height: 1.25rem; }
+  [class~="text-right"] { text-align: right; }
+  [class~="text-xs"] { font-size: .75rem; line-height: 1.1rem; }
+  [class~="text-sm"] { font-size: .875rem; line-height: 1.3rem; }
   [class~="text-base"] { font-size: 1rem; line-height: 1.5rem; }
   [class~="text-lg"] { font-size: 1.125rem; line-height: 1.75rem; }
   [class~="font-medium"] { font-weight: 500; }
@@ -89,111 +138,170 @@
   [class~="leading-none"] { line-height: 1; }
   [class~="antialiased"] { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   [class~="truncate"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [class~="whitespace-nowrap"] { white-space: nowrap; }
   [class~="select-none"] { user-select: none; }
 
   [class~="text-white"] { color: #fff; }
-  [class~="text-indigo-600"] { color: #4f46e5; }
-  [class~="text-emerald-600"] { color: #059669; }
-  [class~="text-red-600"] { color: #dc2626; }
-  [class~="text-slate-400"] { color: #94a3b8; }
-  [class~="text-slate-500"] { color: #64748b; }
-  [class~="text-slate-600"] { color: #475569; }
-  [class~="text-slate-700"] { color: #334155; }
-  [class~="text-slate-800"] { color: #1e293b; }
-  [class~="text-slate-900"] { color: #0f172a; }
-  [class~="bg-white"] { background-color: #fff; }
-  [class~="bg-white/90"] { background-color: rgba(255, 255, 255, .9); }
-  [class~="bg-indigo-600"] { background-color: #4f46e5; }
-  [class~="bg-slate-50"] { background-color: #f8fafc; }
-  [class~="placeholder:text-slate-400"]::placeholder { color: #94a3b8; }
+  [class~="text-indigo-600"] { color: var(--accent); }
+  [class~="text-emerald-600"] { color: var(--ok); }
+  [class~="text-red-600"] { color: var(--danger); }
+  [class~="text-slate-400"] { color: var(--text-4); }
+  [class~="text-slate-500"] { color: var(--text-3); }
+  [class~="text-slate-600"] { color: var(--text-2); }
+  [class~="text-slate-700"] { color: var(--text-2); }
+  [class~="text-slate-800"] { color: var(--text); }
+  [class~="text-slate-900"] { color: var(--text); }
+  [class~="bg-white"] { background-color: var(--surface); }
+  [class~="bg-white/90"] { background-color: rgba(10, 14, 20, .86); }
+  [class~="bg-indigo-600"] { background-color: var(--accent-strong); }
+  [class~="bg-indigo-50"] { background-color: var(--accent-soft); }
+  [class~="bg-red-50"] { background-color: var(--danger-soft); }
+  [class~="bg-slate-50"] { background-color: var(--bg); }
+  [class~="placeholder:text-slate-400"]::placeholder { color: var(--text-4); }
 
   [class~="border"] { border-width: 1px; }
   [class~="border-b"] { border-bottom-width: 1px; }
   [class~="border-b-2"] { border-bottom-width: 2px; }
   [class~="border-t"] { border-top-width: 1px; }
   [class~="border-transparent"] { border-color: transparent; }
-  [class~="border-indigo-600"] { border-color: #4f46e5; }
-  [class~="border-slate-100"] { border-color: #f1f5f9; }
-  [class~="border-slate-200"] { border-color: #e2e8f0; }
-  [class~="border-slate-300"] { border-color: #cbd5e1; }
+  [class~="border-indigo-500"] { border-color: var(--accent); }
+  [class~="border-indigo-600"] { border-color: var(--accent); }
+  [class~="border-slate-100"] { border-color: var(--line); }
+  [class~="border-slate-200"] { border-color: var(--line); }
+  [class~="border-slate-300"] { border-color: var(--line-2); }
   [class~="rounded"] { border-radius: .25rem; }
   [class~="rounded-md"] { border-radius: .375rem; }
   [class~="rounded-lg"] { border-radius: .5rem; }
-  [class~="rounded-xl"] { border-radius: .75rem; }
-  [class~="rounded-2xl"] { border-radius: 1rem; }
-  [class~="shadow-sm"] { box-shadow: 0 1px 2px 0 rgba(15, 23, 42, .06); }
-  [class~="shadow-xl"] { box-shadow: 0 20px 25px -5px rgba(15, 23, 42, .12), 0 8px 10px -6px rgba(15, 23, 42, .08); }
-  [class~="backdrop-blur"] { backdrop-filter: blur(8px); }
+  [class~="rounded-xl"] { border-radius: var(--radius); }
+  [class~="rounded-2xl"] { border-radius: 14px; }
+  [class~="shadow-sm"] { box-shadow: 0 1px 0 rgba(255, 255, 255, .02) inset; }
+  [class~="shadow-xl"] { box-shadow: 0 24px 48px -12px rgba(0, 0, 0, .6); }
+  [class~="backdrop-blur"] { backdrop-filter: blur(10px); }
   [class~="transition"] { transition: color .15s, background-color .15s, border-color .15s, transform .15s; }
 
-  [class~="hover:bg-indigo-500"]:hover { background-color: #6366f1; }
-  [class~="hover:bg-red-50"]:hover { background-color: #fef2f2; }
-  [class~="hover:bg-slate-50"]:hover { background-color: #f8fafc; }
-  [class~="hover:text-indigo-600"]:hover { color: #4f46e5; }
-  [class~="hover:text-red-600"]:hover { color: #dc2626; }
-  [class~="hover:text-slate-700"]:hover { color: #334155; }
-  [class~="hover:text-slate-800"]:hover { color: #1e293b; }
+  [class~="hover:bg-indigo-500"]:hover { background-color: var(--accent-hover); }
+  [class~="hover:bg-red-50"]:hover { background-color: var(--danger-soft); }
+  [class~="hover:bg-slate-50"]:hover { background-color: var(--surface-3); }
+  [class~="hover:text-indigo-600"]:hover { color: var(--accent); }
+  [class~="hover:text-red-600"]:hover { color: var(--danger); }
+  [class~="hover:text-slate-700"]:hover { color: var(--text); }
+  [class~="hover:text-slate-800"]:hover { color: var(--text); }
   [class~="focus:outline-none"]:focus { outline: 2px solid transparent; outline-offset: 2px; }
-  [class~="focus:border-indigo-500"]:focus { border-color: #6366f1; }
-  [class~="focus:ring-2"]:focus { box-shadow: 0 0 0 2px rgba(99, 102, 241, .45); }
-  [class~="focus:ring-indigo-500"]:focus { --focus-ring-color: #6366f1; }
+  [class~="focus:border-indigo-500"]:focus { border-color: var(--accent); }
+  [class~="focus:ring-2"]:focus { box-shadow: 0 0 0 3px rgba(74, 163, 255, .22); }
   [class~="active:translate-y-px"]:active { transform: translateY(1px); }
 
   @media (min-width: 640px) {
     [class~="sm:inline"] { display: inline; }
     [class~="sm:px-6"] { padding-left: 1.5rem; padding-right: 1.5rem; }
   }
+  @media (min-width: 1024px) {
+    [class~="sm:px-6"] { padding-left: 2rem; padding-right: 2rem; }
+  }
 
   /* Structural CSS keeps table and health markup stable. */
   [hidden] { display: none !important; }
   #modal-backdrop[hidden] { display: none; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
-  .muted { color: #94a3b8; }
+  body { font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; background: var(--bg); color: var(--text-2); }
+  .muted { color: var(--text-3); }
 
-  /* Shared white-SaaS data table look. Account-table headers stay plain <th>. */
-  .data-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
-  .data-table th, .data-table td { padding: 10px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid #eef2f6; }
-  .data-table thead th { background: #f8fafc; color: #64748b; font-weight: 600; font-size: 12px; letter-spacing: .01em; position: sticky; top: 0; z-index: 1; }
-  .data-table tbody tr:hover { background: #f8fafc; }
+  /* Shell: brand, live indicator, refresh progress */
+  .brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); }
+  .brand-title { color: var(--text); font-weight: 600; font-size: 15px; letter-spacing: .02em; }
+  .brand-sub { color: var(--text-4); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+  .app-header { position: sticky; top: 0; z-index: 30; background: rgba(10, 14, 20, .88); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .live-pill { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 999px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--off); }
+  .live-pill.on .live-dot { background: var(--ok); box-shadow: 0 0 0 0 rgba(60, 207, 142, .5); animation: live-pulse 2s ease-out infinite; }
+  .live-pill.on { color: var(--text-2); }
+  #updated:empty::before { content: "未连接"; }
+  @keyframes live-pulse { 0% { box-shadow: 0 0 0 0 rgba(60, 207, 142, .45); } 70% { box-shadow: 0 0 0 6px rgba(60, 207, 142, 0); } 100% { box-shadow: 0 0 0 0 rgba(60, 207, 142, 0); } }
+  .refresh-progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; overflow: hidden; pointer-events: none; }
+  .refresh-progress span { display: block; height: 100%; width: 100%; background: var(--accent); opacity: .55; transform-origin: left center; transform: scaleX(0); }
+  .refresh-progress.run span { animation: refresh-fill linear forwards; }
+  @keyframes refresh-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  .btn-ghost { height: 32px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 7px; color: var(--text-2); font-size: 13px; font-weight: 500; background: var(--surface); transition: background-color .15s, color .15s, border-color .15s; }
+  .btn-ghost:hover { background: var(--surface-3); color: var(--text); border-color: var(--line-3); }
+  .btn-quiet { height: 32px; padding: 0 10px; border-radius: 7px; color: var(--text-3); font-size: 13px; transition: background-color .15s, color .15s; }
+  .btn-quiet:hover { color: var(--danger); background: var(--danger-soft); }
+  @media (max-width: 640px) { .brand-sub, .live-pill { display: none; } }
+  .tab-nav { display: flex; align-items: center; gap: 4px; overflow-x: auto; white-space: nowrap; }
+  .tab-nav button { position: relative; padding: 12px 14px; font-size: 13.5px; font-weight: 500; letter-spacing: .02em; border-bottom-width: 2px; margin-bottom: -1px; transition: color .15s, border-color .15s; }
+
+  /* Live overview band */
+  .ov { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .ov-item { position: relative; min-width: 0; padding: 16px 20px 15px; border-left: 1px solid var(--line); }
+  .ov-item:first-child { border-left: 0; }
+  .ov-label { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 12px; letter-spacing: .04em; white-space: nowrap; }
+  .ov-label i { width: 6px; height: 6px; border-radius: 2px; background: var(--text-4); }
+  .ov-value { display: flex; align-items: baseline; gap: 6px; margin-top: 8px; color: var(--text); font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ov-value small { color: var(--text-4); font-size: 13px; font-weight: 500; letter-spacing: 0; }
+  .ov-sub { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-height: 18px; color: var(--text-4); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ov-delta { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; opacity: 0; transition: opacity .4s; }
+  .ov-delta.show { opacity: 1; }
+  .ov-delta.up { color: var(--ok); background: var(--ok-soft); }
+  .ov-delta.down { color: var(--danger); background: var(--danger-soft); }
+  .ov-delta.neutral { color: var(--accent); background: var(--accent-soft); }
+  .ov-meter { display: flex; height: 3px; margin-top: 10px; overflow: hidden; border-radius: 3px; background: rgba(148, 163, 184, .12); }
+  .ov-meter span { height: 100%; transition: width .6s cubic-bezier(.2, .7, .2, 1); }
+  .ov-item.tone-ok .ov-label i { background: var(--ok); }
+  .ov-item.tone-warn .ov-label i { background: var(--warn); }
+  .ov-item.tone-danger .ov-label i { background: var(--danger); }
+  .ov-item.tone-accent .ov-label i { background: var(--accent); }
+  .ov-item.flash::after { content: ""; position: absolute; inset: 0; background: var(--accent-soft); opacity: 0; animation: ov-flash 1.2s ease-out; pointer-events: none; }
+  @keyframes ov-flash { 0% { opacity: .9; } 100% { opacity: 0; } }
+  @media (max-width: 1100px) { .ov { grid-template-columns: repeat(3, minmax(0, 1fr)); } .ov-item:nth-child(4) { border-left: 0; } .ov-item:nth-child(n+4) { border-top: 1px solid var(--line); } }
+  @media (max-width: 620px) { .ov { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ov-item:nth-child(4) { border-left: 1px solid var(--line); } .ov-item:nth-child(odd) { border-left: 0; } .ov-item:nth-child(n+3) { border-top: 1px solid var(--line); } .ov-value { font-size: 22px; } }
+
+  .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--text); font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+  .section-title::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: var(--accent); }
+
+  /* Shared data table */
+  .data-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .data-table th, .data-table td { padding: 11px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  .data-table td { color: var(--text-2); }
+  .data-table thead th { background: var(--surface-2); color: var(--text-3); font-weight: 500; font-size: 12px; letter-spacing: .04em; position: sticky; top: 0; z-index: 1; }
+  .data-table tbody tr { transition: background-color .12s; }
+  .data-table tbody tr:hover { background: rgba(74, 163, 255, .04); }
   .data-table tbody tr:last-child td { border-bottom: 0; }
 
   /* Account-row inline controls */
-  .acct-name { color: #4f46e5; background: none; border: none; padding: 0; font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; }
-  .acct-name:hover { text-decoration: underline; }
-  .del-btn { color: #dc2626; background: none; border: none; padding: 0; font-size: 13px; cursor: pointer; }
-  .del-btn:hover { text-decoration: underline; }
-  .refresh-credits { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 8px; font-size: 11px; line-height: 1.6; color: #4f46e5; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 9999px; cursor: pointer; }
-  .refresh-credits:hover { background: #e0e7ff; }
+  .acct-name { color: var(--text); background: none; border: none; padding: 0; font-size: 13px; font-weight: 500; text-decoration: none; cursor: pointer; }
+  .acct-name:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  .del-btn { color: var(--text-3); background: none; border: none; padding: 0; font-size: 13px; cursor: pointer; }
+  .del-btn:hover { color: var(--danger); text-decoration: underline; text-underline-offset: 3px; }
+  .refresh-credits { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 8px; font-size: 11px; line-height: 1.6; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 9999px; cursor: pointer; }
+  .refresh-credits:hover { background: rgba(74, 163, 255, .2); }
   .refresh-credits[disabled] { opacity: .5; cursor: default; }
-  .account-filters { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(130px, .8fr) minmax(145px, .9fr) minmax(145px, .9fr) minmax(130px, .8fr) minmax(130px, .8fr); gap: 10px; margin-bottom: 12px; }
-  .account-filter label { display: block; margin-bottom: 4px; color: #64748b; font-size: 12px; font-weight: 500; }
-  .account-filter input, .account-filter select, .account-page-size { width: 100%; height: 36px; padding: 0 10px; color: #334155; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
-  .account-filter input:focus, .account-filter select:focus, .account-page-size:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,.16); }
-  .account-pagination { min-height: 52px; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #eef2f6; }
+  .account-filters { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(130px, .8fr) minmax(145px, .9fr) minmax(145px, .9fr) minmax(130px, .8fr) minmax(130px, .8fr); gap: 10px; margin-bottom: 14px; }
+  .account-filter label { display: block; margin-bottom: 5px; color: var(--text-3); font-size: 12px; font-weight: 500; letter-spacing: .02em; }
+  .account-filter input, .account-filter select, .account-page-size { width: 100%; height: 36px; padding: 0 10px; color: var(--text); background: var(--field); border: 1px solid var(--line-2); border-radius: 7px; outline: none; }
+  .account-filter input:focus, .account-filter select:focus, .account-page-size:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(74, 163, 255, .18); }
+  .account-pagination { min-height: 52px; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); }
   .account-page-controls { display: flex; align-items: center; gap: 8px; }
   .account-page-size { width: 76px; }
-  .account-page-button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 6px; color: #475569; background: #fff; }
-  .account-page-button:hover:not(:disabled) { background: #f8fafc; color: #0f172a; }
-  .account-page-button:disabled { opacity: .4; cursor: default; }
-  .status-error { color: #dc2626; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+  .account-page-button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-2); border-radius: 7px; color: var(--text-2); background: var(--surface); }
+  .account-page-button:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+  .account-page-button:disabled { opacity: .35; cursor: default; }
+  .status-error { color: var(--danger); text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
   /* Raw upstream bodies can be long; the cell truncates and the hover tip carries the full text. */
-  .error-detail { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; color: #dc2626; font-variant-numeric: tabular-nums; cursor: help; }
-  .request-count { font-variant-numeric: tabular-nums; cursor: help; }
-  .auth-failures { display: inline-block; margin-left: 6px; padding: 0 6px; color: #991b1b; background: #fee2e2; border-radius: 999px; font-size: 11px; font-variant-numeric: tabular-nums; cursor: help; }
+  .error-detail { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; color: var(--danger); font-variant-numeric: tabular-nums; cursor: help; }
+  .request-count { color: var(--text); font-variant-numeric: tabular-nums; cursor: help; }
+  .auth-failures { display: inline-block; margin-left: 6px; padding: 0 6px; color: var(--danger); background: var(--danger-soft); border-radius: 999px; font-size: 11px; font-variant-numeric: tabular-nums; cursor: help; }
 
   /* Multi-select + batch delete */
   .data-table th.select-col, .data-table td.select-col { width: 36px; padding-right: 0; }
-  .row-select, #account-select-all { width: 14px; height: 14px; accent-color: #4f46e5; cursor: pointer; vertical-align: middle; }
-  .account-bulk-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; margin-bottom: 12px; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 8px; }
+  .row-select, #account-select-all { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; vertical-align: middle; }
+  .account-bulk-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; margin-bottom: 12px; background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 8px; }
   .account-bulk-actions { display: flex; align-items: center; gap: 8px; }
-  .account-bulk-button { padding: 4px 12px; font-size: 12px; color: #475569; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer; }
-  .account-bulk-button:hover:not(:disabled) { background: #f8fafc; color: #0f172a; }
-  .account-bulk-button.danger { color: #dc2626; border-color: #fecaca; }
-  .account-bulk-button.danger:hover:not(:disabled) { background: #fef2f2; }
+  .account-bulk-button { padding: 4px 12px; font-size: 12px; color: var(--text-2); background: var(--surface); border: 1px solid var(--line-2); border-radius: 6px; cursor: pointer; }
+  .account-bulk-button:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+  .account-bulk-button.danger { color: var(--danger); border-color: rgba(242, 98, 106, .35); }
+  .account-bulk-button.danger:hover:not(:disabled) { background: var(--danger-soft); }
   .account-bulk-button:disabled { opacity: .5; cursor: default; }
   /* Fixed-position tooltip driven by delegated JS: native title tooltips get
      cancelled every time the 15s auto-refresh rebuilds the table rows. */
-  #hover-tip { position: fixed; z-index: 60; max-width: 360px; padding: 6px 10px; font-size: 12px; line-height: 1.5; color: #fff; background: #1f2937; border-radius: 6px; box-shadow: 0 4px 12px rgba(15,23,42,.25); white-space: pre-wrap; word-break: break-all; pointer-events: none; }
+  #hover-tip { position: fixed; z-index: 60; max-width: 360px; padding: 7px 10px; font-size: 12px; line-height: 1.5; color: var(--text); background: var(--surface-3); border: 1px solid var(--line-2); border-radius: 7px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); white-space: pre-wrap; word-break: break-all; pointer-events: none; }
   @media (max-width: 900px) { .account-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 560px) {
     .account-filters { grid-template-columns: minmax(0, 1fr); }
@@ -203,42 +311,44 @@
 
   /* Model-health table specifics (unchanged behavior) */
   .mh .glyph { font-weight: 700; }
-  .mh .track { display: inline-flex; width: 120px; height: 12px; background: #eef2f6; border-radius: 6px; overflow: hidden; vertical-align: middle; }
-  .mh .seg { height: 12px; }
+  .mh .track { display: inline-flex; width: 120px; height: 6px; background: rgba(148, 163, 184, .12); border-radius: 6px; overflow: hidden; vertical-align: middle; }
+  .mh .seg { height: 6px; }
   @media (max-width: 700px) { .mh th.wide, .mh td.wide { display: none; } }
 
   /* Usage-stats modal */
-  #modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
-  .range-bar button.active { color: #4f46e5; font-weight: 600; }
+  #modal-backdrop { position: fixed; inset: 0; background: rgba(3, 6, 10, .72); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+  .range-bar button.active { color: var(--accent); font-weight: 600; }
 
   /* Model call statistics */
   .stats-card { overflow: hidden; }
   .stats-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 10px; }
-  .stats-legend { display: flex; align-items: center; gap: 14px; color: #475569; font-size: 12px; }
+  .stats-legend { display: flex; align-items: center; gap: 14px; color: var(--text-3); font-size: 12px; }
   .stats-legend span { display: inline-flex; align-items: center; gap: 5px; }
   .stats-swatch { width: 9px; height: 9px; border-radius: 2px; }
-  .stats-swatch-success { background: #16a34a; }
-  .stats-swatch-fail { background: #dc2626; }
+  .stats-swatch-success { background: var(--ok); }
+  .stats-swatch-fail { background: var(--danger); }
   .stats-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 20px 12px; }
-  .stats-controls > button { min-height: 32px; padding: 5px 10px; border: 1px solid transparent; border-radius: 6px; color: #475569; font-size: 13px; }
-  .stats-controls > button:hover { color: #4f46e5; background: #f8fafc; }
-  .stats-controls > button.active { color: #4338ca; background: #eef2ff; border-color: #c7d2fe; font-weight: 600; }
+  .stats-controls > button { min-height: 32px; padding: 5px 12px; border: 1px solid transparent; border-radius: 7px; color: var(--text-3); font-size: 13px; }
+  .stats-controls > button:hover { color: var(--text); background: var(--surface-2); }
+  .stats-controls > button.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); font-weight: 600; }
   .stats-custom-range { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 6px; }
-  .stats-custom-range input { height: 32px; min-width: 0; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 6px; color: #334155; }
-  .stats-custom-range button { height: 32px; padding: 0 12px; border-radius: 6px; color: #fff; background: #4f46e5; font-weight: 600; }
+  .stats-custom-range input { height: 32px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 7px; color: var(--text); }
+  .stats-custom-range button { height: 32px; padding: 0 12px; border-radius: 7px; color: #fff; background: var(--accent-strong); font-weight: 600; }
+  .stats-custom-range button:hover { background: var(--accent-hover); }
   .stats-status { min-height: 30px; padding: 4px 20px 8px; }
-  .stats-rows { max-height: 560px; overflow-y: auto; border-top: 1px solid #eef2f6; }
-  .stats-row { display: grid; grid-template-columns: minmax(140px, 220px) minmax(160px, 1fr) minmax(150px, auto); align-items: center; gap: 16px; min-height: 54px; padding: 10px 20px; border-bottom: 1px solid #eef2f6; }
+  .stats-rows { max-height: 560px; overflow-y: auto; border-top: 1px solid var(--line); }
+  .stats-row { display: grid; grid-template-columns: minmax(140px, 220px) minmax(160px, 1fr) minmax(150px, auto); align-items: center; gap: 16px; min-height: 54px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
   .stats-row:last-child { border-bottom: 0; }
-  .stats-model { display: block; overflow: hidden; color: #334155; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-  .stats-model:focus, .stats-bar:focus { outline: 2px solid rgba(99,102,241,.45); outline-offset: 2px; }
-  .stats-track { width: 100%; height: 14px; overflow: hidden; background: #eef2f6; border-radius: 4px; }
-  .stats-fill { display: flex; height: 100%; overflow: hidden; border-radius: 4px; }
-  .stats-segment-success { height: 100%; background: #16a34a; }
-  .stats-segment-fail { height: 100%; background: #dc2626; }
+  .stats-row:hover { background: rgba(74, 163, 255, .04); }
+  .stats-model { display: block; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .stats-model:focus, .stats-bar:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .stats-track { width: 100%; height: 8px; overflow: hidden; background: rgba(148, 163, 184, .1); border-radius: 4px; }
+  .stats-fill { display: flex; height: 100%; overflow: hidden; border-radius: 4px; transition: width .6s cubic-bezier(.2, .7, .2, 1); }
+  .stats-segment-success { height: 100%; background: var(--ok); }
+  .stats-segment-fail { height: 100%; background: var(--danger); }
   .stats-counts { text-align: right; }
-  .stats-total { display: block; color: #0f172a; font-size: 13px; font-weight: 600; }
-  .stats-breakdown { display: block; margin-top: 2px; color: #64748b; font-size: 11px; white-space: nowrap; }
+  .stats-total { display: block; color: var(--text); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stats-breakdown { display: block; margin-top: 2px; color: var(--text-4); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   @media (max-width: 640px) {
     .stats-header { align-items: flex-start; flex-direction: column; }
     .stats-controls { align-items: stretch; }
@@ -251,33 +361,56 @@
     .stats-breakdown { grid-column: 1 / -1; grid-row: 3; margin-top: 0; text-align: left; }
   }
 
-  .pool-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:18px; }
-  .pool-settings,.pool-chart-card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:20px; }
-  .pool-switches { display:flex; flex-wrap:wrap; gap:24px; font-size:14px; margin-bottom:18px; }
-  .pool-fields { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)) auto; gap:14px; align-items:end; margin-bottom:14px; }
-  .pool-fields label { font-size:12px; color:#64748b; }
-  .pool-fields input { display:block; width:100%; border:1px solid #cbd5e1; border-radius:6px; padding:8px; margin-top:5px; color:#0f172a; }
-  .pool-cards { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0; }
-  .pool-metric { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:16px; font-size:12px; color:#64748b; }
-  .pool-metric strong { display:block; margin-top:8px; font-size:26px; color:#0f172a; font-variant-numeric:tabular-nums; }
-  .pool-charts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-  .pool-chart-card { min-width:0; }
-  .pool-chart-card h3 { font-size:14px; font-weight:600; }
-  .pool-chart { height:280px; width:100%; overflow:hidden; }
-  nav { overflow-x:auto; white-space:nowrap; }
-  @media(max-width:760px) { .pool-fields,.pool-cards {grid-template-columns:repeat(2,minmax(0,1fr));} .pool-charts {grid-template-columns:1fr;} }
+  /* Codex pool and egress panels */
+  .pool-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 16px; }
+  .pool-heading h2 { color: var(--text); letter-spacing: .02em; }
+  .pool-settings, .pool-chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+  .pool-switches { display: flex; flex-wrap: wrap; gap: 24px; font-size: 13.5px; color: var(--text-2); margin-bottom: 18px; }
+  .pool-switches label { display: inline-flex; align-items: center; gap: 8px; }
+  .pool-fields { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: 14px; align-items: end; margin-bottom: 14px; }
+  .pool-fields label { font-size: 12px; color: var(--text-3); letter-spacing: .02em; }
+  .pool-fields input { display: block; width: 100%; border: 1px solid var(--line-2); border-radius: 7px; padding: 8px 10px; margin-top: 6px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .pool-fields input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(74, 163, 255, .18); }
+  .pool-fields button { height: 38px; padding: 0 16px !important; font-weight: 600; }
+  .pool-fields button:hover:not(:disabled) { background: var(--accent-hover); }
+  .pool-fields button:disabled { opacity: .5; }
+  .pool-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); margin: 18px 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .pool-metric { position: relative; background: var(--surface); padding: 16px 18px; box-shadow: 1px 0 0 var(--line), 0 1px 0 var(--line); font-size: 12px; color: var(--text-3); letter-spacing: .03em; }
+  .pool-metric strong { display: block; margin-top: 8px; font-size: 24px; font-weight: 600; color: var(--text); letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+  .pool-metric.flash::after { content: ""; position: absolute; inset: 0; background: var(--accent-soft); opacity: 0; animation: ov-flash 1.2s ease-out; pointer-events: none; }
+  .pool-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .pool-chart-card { min-width: 0; }
+  .pool-chart-card h3 { margin-bottom: 14px; color: var(--text); font-size: 13.5px; font-weight: 600; letter-spacing: .02em; }
+  .pool-chart { height: 280px; width: 100%; overflow: hidden; }
+  .proxy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+  .proxy-grid > * { margin-top: 0 !important; min-width: 0; }
+  @media (max-width: 1100px) { .proxy-grid { grid-template-columns: minmax(0, 1fr); } }
+  details summary { cursor: pointer; color: var(--text-2); }
+  details summary:hover { color: var(--text); }
+  #egress-rows input[data-field="url"] { min-width: 300px; }
+  #egress-events { margin: 0; padding: 0; list-style: none; }
+  #egress-events li { padding: 6px 0; border-bottom: 1px dashed var(--line); font-variant-numeric: tabular-nums; }
+  #egress-events li:last-child { border-bottom: 0; }
+  @media (max-width: 760px) { .pool-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pool-charts { grid-template-columns: 1fr; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
 </style>
 </head>
-<body class="bg-slate-50 text-slate-800 antialiased">
+<body class="antialiased">
 
 <!-- ============ LOGIN VIEW ============ -->
 <div id="login-view" class="min-h-[100dvh] flex items-center justify-center px-4">
   <div class="w-full max-w-md">
     <div class="flex items-center gap-3 justify-center mb-6">
-      <div class="h-10 w-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-sm">
-        <svg viewBox="0 0 24 24" fill="none" class="h-6 w-6 text-white"><path d="M12 3l7 4v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="brand-mark" style="width:40px;height:40px;border-radius:10px">
+        <svg viewBox="0 0 24 24" fill="none" class="h-6 w-6"><path d="M12 3l7 4v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <div>
+        <div class="brand-title" style="font-size:17px">配额监控</div>
+        <div class="brand-sub">CLIProxyAPI Console</div>
       </div>
-      <div class="text-lg font-semibold text-slate-900">配额监控</div>
     </div>
     <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-7">
       <h1 class="text-base font-semibold text-slate-900">请输入管理 key</h1>
@@ -300,23 +433,26 @@
 
 <!-- ============ APP VIEW ============ -->
 <div id="app-view" hidden>
-  <header class="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-slate-200">
+  <header class="app-header">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
-      <div class="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
-        <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5 text-white"><path d="M12 3l7 4v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="brand-mark shrink-0">
+        <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5"><path d="M12 3l7 4v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <div class="mr-2">
+        <div class="brand-title">配额监控</div>
+        <div class="brand-sub">CLIProxyAPI Console</div>
       </div>
-      <div class="font-semibold text-slate-900 mr-2">配额监控</div>
-      <span id="updated" class="muted text-xs hidden sm:inline"></span>
+      <span id="live-pill" class="live-pill"><i class="live-dot"></i><span id="updated"></span></span>
       <div class="flex-1"></div>
       <span id="app-status" class="text-xs text-slate-500 hidden sm:inline max-w-[280px] truncate"></span>
-      <label class="flex items-center gap-1.5 text-xs text-slate-600 select-none">
-        <input id="auto" type="checkbox" disabled class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"> 自动刷新
+      <label class="flex items-center gap-1.5 text-xs text-slate-600 select-none whitespace-nowrap">
+        <input id="auto" type="checkbox" disabled> 自动刷新
       </label>
-      <button id="refresh" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">刷新</button>
-      <button id="clear" class="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 transition">退出</button>
+      <button id="refresh" class="btn-ghost active:translate-y-px">刷新</button>
+      <button id="clear" class="btn-quiet">退出</button>
     </div>
     <div class="max-w-7xl mx-auto px-4 sm:px-6">
-      <nav class="flex items-center gap-6 border-t border-slate-100">
+      <nav class="tab-nav">
         <button id="tabbtn-accounts" data-tab="accounts" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-indigo-600 border-indigo-600">账号统计</button>
         <button id="tabbtn-stats" data-tab="stats" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">调用统计</button>
         <button id="tabbtn-health" data-tab="health" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">模型健康</button>
@@ -324,13 +460,48 @@
       <button id="tabbtn-pool" data-tab="pool" class="px-1 py-3 text-sm font-medium border-b-2 -mb-px transition text-slate-500 border-transparent hover:text-slate-800">Codex 号池</button>
       </nav>
     </div>
+    <div id="refresh-progress" class="refresh-progress" aria-hidden="true"><span></span></div>
   </header>
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
 
+    <!-- Live overview: shared by every tab, refreshed with the account list -->
+    <section id="overview" class="ov" aria-label="运行总览">
+      <div class="ov-item tone-accent" data-ov="accounts">
+        <div class="ov-label"><i></i>账号总数</div>
+        <div class="ov-value"><span data-v>—</span></div>
+        <div class="ov-sub"><span data-s></span><span class="ov-delta" data-d></span></div>
+      </div>
+      <div class="ov-item tone-ok" data-ov="available">
+        <div class="ov-label"><i></i>可用资源</div>
+        <div class="ov-value"><span data-v>—</span><small data-u></small></div>
+        <div class="ov-meter" data-m><span style="width:0;background:var(--ok)"></span><span style="width:0;background:var(--danger)"></span><span style="width:0;background:var(--off)"></span></div>
+      </div>
+      <div class="ov-item tone-warn" data-ov="cooling">
+        <div class="ov-label"><i></i>冷却中</div>
+        <div class="ov-value"><span data-v>—</span></div>
+        <div class="ov-sub"><span data-s></span><span class="ov-delta" data-d></span></div>
+      </div>
+      <div class="ov-item tone-accent" data-ov="requests">
+        <div class="ov-label"><i></i>累计请求</div>
+        <div class="ov-value"><span data-v>—</span></div>
+        <div class="ov-sub"><span data-s></span><span class="ov-delta" data-d></span></div>
+      </div>
+      <div class="ov-item tone-ok" data-ov="success">
+        <div class="ov-label"><i></i>成功率</div>
+        <div class="ov-value"><span data-v>—</span><small>%</small></div>
+        <div class="ov-sub"><span data-s></span><span class="ov-delta" data-d></span></div>
+      </div>
+      <div class="ov-item tone-danger" data-ov="models">
+        <div class="ov-label"><i></i>模型健康</div>
+        <div class="ov-value"><span data-v>—</span><small data-u></small></div>
+        <div class="ov-sub"><span data-s></span></div>
+      </div>
+    </section>
+
     <!-- Tab: Accounts -->
     <section id="tab-accounts">
-      <h2 class="text-sm font-semibold text-slate-900 mb-3">账号列表</h2>
+      <h2 class="section-title">账号列表</h2>
       <div class="account-filters">
         <div class="account-filter"><label for="account-name-filter">账号名称</label><input id="account-name-filter" type="search" placeholder="搜索账号名称"></div>
         <div class="account-filter"><label for="account-plan-filter">套餐</label><select id="account-plan-filter"><option value="">全部</option></select></div>
@@ -422,7 +593,7 @@
 
     <!-- Tab: Proxy settings -->
     <section id="tab-proxy" hidden>
-      <div class="max-w-3xl">
+      <div class="proxy-grid">
         <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
           <h3 class="text-sm font-semibold text-slate-900">代理设置</h3>
           <p class="mt-1 text-sm text-slate-500">支持 <code class="text-slate-600">http://</code>、<code class="text-slate-600">https://</code>、<code class="text-slate-600">socks5://</code>。留空表示直连。保存后自动热加载生效。</p>
@@ -461,6 +632,71 @@
           <div id="provider-proxy-result" class="mt-4 text-sm text-slate-500 min-h-[20px]"></div>
           <p class="mt-2 text-xs text-slate-400">类型名即账号列表里“类型”一列显示的 provider，不区分大小写。每行的“测试”按该行填写的地址探测；该行留空时按全局代理探测。</p>
         </div>
+      </div>
+
+      <div id="egress-section" class="mt-5">
+        <div class="pool-heading"><div><h2 class="text-lg font-semibold text-slate-900">Codex 出口 IP 池</h2><p class="muted text-xs">overload 后的重试按比例走代理；直连 overload 率过高时把部分首次请求分到代理 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="egress-updated" class="muted text-xs"></span></div>
+        <form id="egress-config" class="pool-settings" novalidate>
+          <div class="pool-switches">
+            <label><input id="egress-enable" type="checkbox"> 启用出口 IP 池</label>
+            <label><input id="egress-shift-enable" type="checkbox"> 高峰分流（直连 overload 率高时分走首次请求）</label>
+            <label><input id="egress-rollback-enable" type="checkbox"> 自动回滚（不如直连对照组时停用）</label>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="data-table">
+              <thead><tr><th>名称</th><th class="w-full">代理地址</th><th>并发上限</th><th>启用</th><th>状态</th><th>在途</th><th>60 分钟请求</th><th>overload</th><th>CONNECT 429</th><th>首字 p50</th><th></th></tr></thead>
+              <tbody id="egress-rows"></tbody>
+            </table>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button id="egress-add" type="button" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">添加代理</button>
+            <span class="text-xs text-slate-400">密码显示为 ***；不改地址就保留原密码。CPA1、CPA2 若共用同一个代理端口，并发上限要按两边加起来规划。</span>
+          </div>
+          <details class="mt-4">
+            <summary class="text-sm text-slate-600">高级参数</summary>
+            <div class="pool-fields mt-3">
+              <label>重试直连对照 %<input id="egress-control" type="number" min="1" max="50"></label>
+              <label>连接超时 秒<input id="egress-connect-timeout" type="number" min="1" max="60"></label>
+              <label>冷却起步 秒<input id="egress-cooldown-base" type="number" min="1"></label>
+              <label>冷却上限 秒<input id="egress-cooldown-max" type="number" min="1"></label>
+              <span></span><span></span>
+              <label>分流统计窗口 分钟<input id="egress-shift-window" type="number" min="1" max="30"></label>
+              <label>分流最少样本<input id="egress-shift-min" type="number" min="1"></label>
+              <label>开始分流 overload %<input id="egress-shift-enter" type="number" min="1" max="100" step="0.1"></label>
+              <label>减少分流 overload %<input id="egress-shift-exit" type="number" min="1" max="100" step="0.1"></label>
+              <label>起始/步长/上限 %<input id="egress-shift-steps" type="text" placeholder="20/10/50"></label>
+              <span></span>
+              <label>回滚窗口 分钟<input id="egress-rb-window" type="number" min="1" max="60"></label>
+              <label>回滚最少样本<input id="egress-rb-min" type="number" min="1"></label>
+              <label>失败率需低于直连 点<input id="egress-rb-fail" type="number" min="0.1" step="0.1"></label>
+              <label>首字慢于直连 % 回滚<input id="egress-rb-ttft" type="number" min="1" step="1"></label>
+              <label>回滚后试探间隔 分钟<input id="egress-rb-retry" type="number" min="1"></label>
+            </div>
+          </details>
+          <div class="mt-4 flex flex-wrap gap-2 items-center">
+            <button id="egress-save" type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 active:translate-y-px transition">保存并生效</button>
+            <button id="egress-reload" type="button" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 active:translate-y-px transition">放弃修改</button>
+            <span id="egress-status" class="text-xs text-slate-500" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+        <div id="egress-cards" class="pool-cards"></div>
+        <div class="pool-chart-card mb-3">
+          <h3>直连对照（回滚窗口内）</h3>
+          <div class="overflow-x-auto mt-2">
+            <table class="data-table">
+              <thead><tr><th>分组</th><th>请求</th><th>失败率</th><th>overload 率</th><th>小请求首字 p50</th><th>小请求首字 p90</th><th>样本</th></tr></thead>
+              <tbody id="egress-groups"></tbody>
+            </table>
+          </div>
+        </div>
+        <p id="egress-charts-status" class="text-xs text-slate-500 mb-3"></p>
+        <div class="pool-charts">
+          <div class="pool-chart-card"><h3>每分钟 overload 率（按线路）</h3><div id="egress-overload-chart" class="pool-chart" role="img" aria-label="每条线路每分钟 overload 率折线图"></div></div>
+          <div class="pool-chart-card"><h3>成功请求首字 p50（按线路）</h3><div id="egress-ttft-chart" class="pool-chart" role="img" aria-label="每条线路每分钟首字 p50 折线图"></div></div>
+          <div class="pool-chart-card"><h3>每分钟请求量（按线路）</h3><div id="egress-attempts-chart" class="pool-chart" role="img" aria-label="每条线路每分钟请求量折线图"></div></div>
+          <div class="pool-chart-card"><h3>代理连接失败（CONNECT 429 / 其他）</h3><div id="egress-connect-chart" class="pool-chart" role="img" aria-label="每个代理每分钟连接失败柱状图"></div></div>
+        </div>
+        <div class="pool-chart-card mt-3"><h3>最近事件</h3><ul id="egress-events" class="mt-2 text-xs text-slate-600"></ul></div>
       </div>
     </section>
 
@@ -558,10 +794,21 @@
     var app = document.getElementById('app-status');
     if (app) { app.textContent = msg || ''; app.className = 'text-xs hidden sm:inline max-w-[280px] truncate ' + cls; }
   }
-  function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
+  function stopAuto() { els.auto.checked = false; if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } paintLive(); }
   function startAuto() {
     if (autoTimer) return;
     autoTimer = setInterval(function () { fetchData('auto'); }, REFRESH_MS);
+    paintLive();
+  }
+  // Header live pill plus a hairline that fills until the next automatic refresh.
+  function paintLive() {
+    document.getElementById('live-pill').classList.toggle('on', !!autoTimer);
+    var bar = document.getElementById('refresh-progress');
+    bar.classList.remove('run');
+    if (!autoTimer) return;
+    void bar.offsetWidth; // restart the CSS animation
+    bar.firstElementChild.style.animationDuration = REFRESH_MS + 'ms';
+    bar.classList.add('run');
   }
 
   function showApp() {
@@ -569,6 +816,7 @@
     document.getElementById('app-view').hidden = false;
     loadProxyOnce();
     if (currentTab === 'pool') startPool();
+    if (currentTab === 'proxy') startEgress();
   }
   function showLogin() {
     document.getElementById('app-view').hidden = true;
@@ -577,6 +825,7 @@
 
   function clearRenderedData() {
     clearPool();
+    clearEgress();
     accountsData = []; modelRows = []; accountPage = 1; selectedAccounts = [];
     els['account-bulk-bar'].hidden = true;
     els['account-select-all'].checked = false;
@@ -590,6 +839,7 @@
     document.getElementById('strip-models').innerHTML = '';
     document.getElementById('strip-soonest').textContent = '';
     resetModelStatsState();
+    resetOverview();
     els.updated.textContent = '';
   }
   function readError(resp) {
@@ -690,23 +940,101 @@
         if (reason === 'manual' || reason === 'login') requestModelStats();
         else if (reason === 'auto') maybeAutoRefreshModelStats();
       }
-      els.updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
+      els.updated.textContent = (autoTimer ? '实时 · ' : '更新于 ') + new Date().toLocaleTimeString();
+      paintLive();
       setStatus('', '');
     }).catch(function (e) { setStatus('网络错误：' + e, 'err'); });
   }
 
-  var COLORS = { available: '#16a34a', cooling: '#dc2626', disabled: '#94a3b8' };
+  // ---- Live overview ----
+  // Numbers tween from the previous value; a short-lived badge shows what changed since the last refresh.
+  var overviewPrev = {};
+  var reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  function ovPart(name, part) { return document.querySelector('[data-ov="' + name + '"] [data-' + part + ']'); }
+  function ovFormat(v, decimals) { return Number(v).toLocaleString(undefined, { minimumFractionDigits: decimals || 0, maximumFractionDigits: decimals || 0 }); }
+  function ovTween(el, to, decimals) {
+    var from = typeof el._ov === 'number' ? el._ov : null;
+    el._ov = to;
+    if (el._raf) cancelAnimationFrame(el._raf);
+    if (from === null || from === to || reduceMotion) { el.textContent = ovFormat(to, decimals); return; }
+    var start = performance.now(), dur = 700;
+    (function step(now) {
+      var k = Math.min(1, (now - start) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = ovFormat(from + (to - from) * e, decimals);
+      el._raf = k < 1 ? requestAnimationFrame(step) : 0;
+    })(start);
+  }
+  function ovDelta(name, text, kind) {
+    var el = ovPart(name, 'd');
+    if (!el) return;
+    clearTimeout(el._t);
+    el.textContent = text;
+    el.className = 'ov-delta show ' + kind;
+    el._t = setTimeout(function () { el.classList.remove('show'); }, 6000);
+    var item = el.closest('.ov-item');
+    item.classList.remove('flash'); void item.offsetWidth; item.classList.add('flash');
+  }
+  function ovSet(name, value, decimals) {
+    var prev = overviewPrev[name];
+    overviewPrev[name] = value;
+    ovTween(ovPart(name, 'v'), value, decimals);
+    return typeof prev === 'number' ? value - prev : 0;
+  }
+  function signed(v, decimals) { return (v > 0 ? '+' : '−') + ovFormat(Math.abs(v), decimals); }
+  function paintOverviewAccounts(files) {
+    var success = 0, failed = 0, errors = 0;
+    files.forEach(function (a) {
+      var st = AccountViewLogic.requestStats(a);
+      success += st.success; failed += st.failed;
+      if (String(a.status || '').toLowerCase() === 'error') errors++;
+    });
+    var total = success + failed;
+    var dAcc = ovSet('accounts', files.length);
+    ovPart('accounts', 's').textContent = errors ? '异常 ' + ovFormat(errors) : '全部正常';
+    if (dAcc) ovDelta('accounts', signed(dAcc), dAcc > 0 ? 'up' : 'down');
+    var dReq = ovSet('requests', total);
+    ovPart('requests', 's').textContent = '服务端启动以来';
+    if (dReq > 0) ovDelta('requests', '+' + ovFormat(dReq) + ' 本轮', 'neutral');
+    var rate = total ? Math.round(1000 * success / total) / 10 : 0;
+    var dRate = ovSet('success', rate, 1);
+    ovPart('success', 's').textContent = '失败 ' + ovFormat(failed);
+    if (Math.abs(dRate) >= 0.1) ovDelta('success', signed(dRate, 1), dRate > 0 ? 'up' : 'down');
+  }
+  function paintOverviewSummary(p, counts) {
+    var total = p.total || 0, available = p.available || 0, cooling = p.cooling || 0, disabled = p.disabled || 0;
+    ovSet('available', available);
+    ovPart('available', 'u').textContent = '/ ' + ovFormat(total);
+    var meter = ovPart('available', 'm').children, pct = function (v) { return total ? (100 * v / total) + '%' : '0'; };
+    meter[0].style.width = pct(available); meter[1].style.width = pct(cooling); meter[2].style.width = pct(disabled);
+    var dCool = ovSet('cooling', cooling);
+    ovPart('cooling', 's').textContent = '禁用 ' + ovFormat(disabled) + ' · 占比 ' + (total ? Math.round(100 * cooling / total) : 0) + '%';
+    if (dCool) ovDelta('cooling', signed(dCool), dCool > 0 ? 'down' : 'up');
+    var serving = counts.OK + counts.WARN + counts.CRIT + counts.DOWN, bad = counts.WARN + counts.CRIT + counts.DOWN;
+    ovSet('models', counts.OK);
+    ovPart('models', 'u').textContent = '/ ' + ovFormat(serving);
+    ovPart('models', 's').textContent = bad ? '告警 ' + (counts.WARN + counts.CRIT) + ' · 不可用 ' + counts.DOWN : '全部健康';
+    var item = document.querySelector('[data-ov="models"]');
+    item.classList.toggle('tone-danger', bad > 0); item.classList.toggle('tone-ok', bad === 0);
+  }
+  function resetOverview() {
+    overviewPrev = {};
+    Array.prototype.forEach.call(document.querySelectorAll('#overview [data-v]'), function (el) { if (el._raf) cancelAnimationFrame(el._raf); el._ov = null; el.textContent = '—'; });
+    Array.prototype.forEach.call(document.querySelectorAll('#overview [data-s], #overview [data-u], #overview [data-d]'), function (el) { el.textContent = ''; el.classList.remove('show'); });
+    Array.prototype.forEach.call(document.querySelectorAll('#overview [data-m] span'), function (el) { el.style.width = '0'; });
+  }
+
+  var COLORS = { available: '#3ccf8e', cooling: '#f2626a', disabled: '#4b5a6d' };
   // Health tiers derived from round-robin load math: survivors absorb serving/available x
   // their normal share. <60% -> >1.67x (WARN); <20% -> >=5x, cascade imminent (CRIT);
   // a single surviving account in a multi-account pool is a SPOF (CRIT).
   var HEALTH = {
     pctCrit: 20, pctWarn: 60,
     tiers: {
-      DOWN: { glyph: '○', color: '#dc2626', rank: 0 },
-      CRIT: { glyph: '◔', color: '#dc2626', rank: 1 },
-      WARN: { glyph: '◑', color: '#ea580c', rank: 2 },
-      OK:   { glyph: '●', color: '#16a34a', rank: 3 },
-      OFF:  { glyph: '◌', color: '#94a3b8', rank: 4 }
+      DOWN: { glyph: '○', color: '#f2626a', rank: 0 },
+      CRIT: { glyph: '◔', color: '#f2626a', rank: 1 },
+      WARN: { glyph: '◑', color: '#f2a93b', rank: 2 },
+      OK:   { glyph: '●', color: '#3ccf8e', rank: 3 },
+      OFF:  { glyph: '◌', color: '#718297', rank: 4 }
     }
   };
   function healthOf(m) {
@@ -764,6 +1092,7 @@
         }).join(' · ') + (counts.OFF ? ' · ' + counts.OFF + ' ◌OFF' : '') + ' │ ' + resTxt;
     }
     paintModels();
+    paintOverviewSummary(p, counts);
     document.getElementById('dashboard').hidden = false;
   }
 
@@ -1094,6 +1423,7 @@
     accountsData = files || []; // already sorted by name server-side
     if (proxyLoaded) renderProviderProxyRows(true); // keep per-type account counts fresh, keep unsaved edits
     renderAccountView({ resetPage: false, rebuildOptions: true });
+    paintOverviewAccounts(accountsData);
   }
 
   function currentAccountFilters() {
@@ -1459,6 +1789,7 @@
   }
   function switchTab(name) {
     if (name!=='pool') stopPool();
+    if (name!=='proxy') stopEgress();
     currentTab = name;
     ['accounts', 'stats', 'health', 'proxy', 'pool'].forEach(function (tabName) {
       var panel = document.getElementById('tab-' + tabName);
@@ -1467,7 +1798,7 @@
       if (button) button.className = tabBtnClass(tabName === name);
     });
     if (name === 'pool') startPool();
-    if (name === 'proxy') loadProxyOnce();
+    if (name === 'proxy') { loadProxyOnce(); startEgress(); }
     if (name === 'stats' && (!statsState.loaded || ModelStatsLogic.shouldRefreshOnActivate(statsState.lastSuccessAt, Date.now()))) requestModelStats();
   }
 
@@ -1491,13 +1822,30 @@
   };
   /* CODEX_POOL_LOGIC_END */
   var poolState = {timer:null, controller:null, generation:0, charts:[], loaded:false, dirty:false, saving:false, home:false, saveToken:0, saveController:null, lastData:null, chartsLoading:false, chartsFailed:false};
+  // ECharts theme matching the console tokens; registered once the library loads.
+  var CHART_THEME = {
+    color: ['#4aa3ff', '#3ccf8e', '#f2a93b', '#f2626a', '#a78bfa', '#2dd4bf', '#f472b6', '#94a3b8'],
+    backgroundColor: 'transparent',
+    textStyle: { color: '#8b9bb0', fontFamily: 'Inter, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif' },
+    legend: { textStyle: { color: '#bac6d4' }, pageTextStyle: { color: '#8b9bb0' }, pageIconColor: '#bac6d4', pageIconInactiveColor: '#3a4757', icon: 'roundRect', itemWidth: 12, itemHeight: 4 },
+    tooltip: { backgroundColor: '#1b2636', borderColor: 'rgba(148,163,184,.25)', textStyle: { color: '#e7edf4' } },
+    categoryAxis: { axisLine: { lineStyle: { color: 'rgba(148,163,184,.25)' } }, axisTick: { show: false }, axisLabel: { color: '#8b9bb0' }, splitLine: { show: false } },
+    valueAxis: { axisLine: { show: false }, axisLabel: { color: '#8b9bb0' }, nameTextStyle: { color: '#718297' }, splitLine: { lineStyle: { color: 'rgba(148,163,184,.08)' } } },
+    line: { symbol: 'none', lineStyle: { width: 1.8 } },
+    bar: { barMaxWidth: 14, itemStyle: { borderRadius: [2, 2, 0, 0] } }
+  };
+  function chartInit(el) {
+    if (!window.echarts.__cpaTheme && window.echarts.registerTheme) { window.echarts.registerTheme('cpa-dark', CHART_THEME); window.echarts.__cpaTheme = true; }
+    return window.echarts.init(el, 'cpa-dark');
+  }
+
   // ECharts (~1 MB) is loaded on first entry to this tab; a failed load is retried on the next entry.
   function loadPoolECharts() {
     if (window.echarts || poolState.chartsLoading) return;
     poolState.chartsLoading=true;poolState.chartsFailed=false;
     var script=document.createElement('script');
     script.src='/quota-monitor/echarts.min.js';
-    script.onload=function(){poolState.chartsLoading=false;if(currentTab==='pool' && poolState.lastData)renderPoolCharts(poolState.lastData);};
+    script.onload=function(){poolState.chartsLoading=false;if(currentTab==='pool' && poolState.lastData)renderPoolCharts(poolState.lastData);if(currentTab==='proxy' && egressState.lastData)egressRenderCharts(egressState.lastData);};
     script.onerror=function(){poolState.chartsLoading=false;poolState.chartsFailed=true;script.remove();if(currentTab==='pool' && poolState.lastData)renderPoolCharts(poolState.lastData);};
     document.head.appendChild(script);
   }
@@ -1512,7 +1860,7 @@
   }
   function clearPool() {
     stopPool();poolState.saveToken++;if(poolState.saveController)poolState.saveController.abort();poolState.saveController=null;poolState.charts.forEach(function(c){c.dispose();});poolState.charts=[];
-    poolState.loaded=false;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
+    poolState.loaded=false;poolState.prevCards=null;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
     poolEl('config').reset();setPoolSaving(false);poolEl('save').disabled=true;poolEl('fail-fast').disabled=true;
     poolEl('cards').textContent='';poolEl('updated').textContent='';poolEl('charts-status').textContent='';poolStatus('',false);
   }
@@ -1532,7 +1880,9 @@
     poolEl('cards').textContent='';
     CodexPoolLogic.cards(data).forEach(function(pair){
       var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
-      card.className='pool-metric';label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);poolEl('cards').appendChild(card);
+      var prev=poolState.prevCards && poolState.prevCards[pair[0]];
+      card.className='pool-metric'+(prev!=null && prev!==String(pair[1])?' flash':'');label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);poolEl('cards').appendChild(card);
+      (poolState.prevCards=poolState.prevCards||{})[pair[0]]=String(pair[1]);
     });
     renderPoolCharts(data);
     poolEl('updated').textContent='更新于 '+new Date().toLocaleTimeString();
@@ -1541,7 +1891,7 @@
   // Asset callbacks update charts only; cached snapshots must not rewrite saved form values.
   function renderPoolCharts(data) {
     if (window.echarts) {
-      if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart'].forEach(function(id){poolState.charts.push(window.echarts.init(poolEl(id)));});
+      if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
       CodexPoolLogic.chartOptions(data).forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
     }
     var failed=!window.echarts && poolState.chartsFailed;
@@ -1637,6 +1987,204 @@
       else { setProxyResult('连通失败：' + (d.error || ('HTTP ' + d.http_status)) + ' · ' + d.latency_ms + 'ms', 'err'); }
     }).catch(function (e) { setProxyResult('测试失败：网络错误 ' + e, 'err'); });
   }
+
+  // ---- Codex egress IP pool ----
+  var EGRESS_GROUP_LABELS = {retry_pool:'重试 · 走代理', retry_control:'重试 · 直连对照', shift_pool:'首次 · 分流到代理', first_direct:'首次 · 直连', retry_fallback:'重试 · 代理不可用改直连'};
+  var EGRESS_STATUS_LABELS = {ok:'正常', cooling:'冷却中', full:'满载', disabled:'已停用'};
+  var egressState = {timer:null, controller:null, generation:0, charts:[], lastData:null, rows:[], dirty:false, saving:false};
+  function egressEl(id) { return document.getElementById('egress-' + id); }
+  function egressStatus(message, failed) { egressEl('status').textContent = message || ''; egressEl('status').className = 'text-xs ' + (failed ? 'text-red-600' : 'text-slate-500'); }
+  function egressPct(v) { return (100 * (v || 0)).toFixed(1) + '%'; }
+  function egressMs(v) { return v ? (v / 1000).toFixed(1) + ' s' : '—'; }
+  function egressRouteTotals(route) {
+    var t = {attempts:0, overload:0, conn429:0, ttft:[]};
+    ((route && route.points) || []).forEach(function (p) {
+      t.attempts += p.attempts || 0; t.overload += p.overload || 0; t.conn429 += p.connect_429 || 0;
+      if (p.ttft_p50_ms) t.ttft.push(p.ttft_p50_ms);
+    });
+    t.ttft.sort(function (a, b) { return a - b; });
+    t.ttftMid = t.ttft.length ? t.ttft[Math.floor((t.ttft.length - 1) / 2)] : 0;
+    return t;
+  }
+  function egressFillForm(c) {
+    egressEl('enable').checked = !!c.enable;
+    egressEl('shift-enable').checked = !!(c.shift && c.shift.enable);
+    egressEl('rollback-enable').checked = !!(c.rollback && c.rollback.enable);
+    egressEl('control').value = c['control-percent'];
+    egressEl('connect-timeout').value = c['connect-timeout-seconds'];
+    egressEl('cooldown-base').value = c['cooldown-base-seconds'];
+    egressEl('cooldown-max').value = c['cooldown-max-seconds'];
+    var sh = c.shift || {}, rb = c.rollback || {};
+    egressEl('shift-window').value = sh['window-minutes']; egressEl('shift-min').value = sh['min-samples'];
+    egressEl('shift-enter').value = sh['enter-overload-percent']; egressEl('shift-exit').value = sh['exit-overload-percent'];
+    egressEl('shift-steps').value = [sh['start-percent'], sh['step-percent'], sh['max-percent']].join('/');
+    egressEl('rb-window').value = rb['window-minutes']; egressEl('rb-min').value = rb['min-samples'];
+    egressEl('rb-fail').value = rb['failure-better-points']; egressEl('rb-ttft').value = rb['ttft-worse-percent'];
+    egressEl('rb-retry').value = rb['retry-minutes'];
+    egressState.rows = (c.proxies || []).map(function (p, i) { return {index:i, name:p.name || '', url:p.url, max:p['max-concurrency'], enabled:!p.disabled}; });
+  }
+  function egressCollectRows() {
+    var rows = [];
+    Array.prototype.forEach.call(document.querySelectorAll('#egress-rows tr[data-row]'), function (tr) {
+      var i = Number(tr.getAttribute('data-row'));
+      var row = egressState.rows[i];
+      if (!row) return;
+      row.name = tr.querySelector('[data-field=name]').value.trim();
+      row.url = tr.querySelector('[data-field=url]').value.trim();
+      row.max = Number(tr.querySelector('[data-field=max]').value) || 0;
+      row.enabled = tr.querySelector('[data-field=enabled]').checked;
+      rows.push(row);
+    });
+    return rows;
+  }
+  function egressRenderRows(data) {
+    var statusByIndex = {}, routeByIndex = {};
+    ((data && data.proxies) || []).forEach(function (p, i) { statusByIndex[p.index] = p; routeByIndex[p.index] = data.routes && data.routes[i + 1]; });
+    var direct = egressRouteTotals(data && data.routes && data.routes[0]);
+    var html = '<tr><td class="text-slate-500">直连</td><td class="text-slate-400">不经代理（对照）</td><td></td><td></td><td></td><td></td>' +
+      '<td>' + direct.attempts + '</td><td>' + (direct.attempts ? egressPct(direct.overload / direct.attempts) : '—') + '</td><td>—</td><td>' + egressMs(direct.ttftMid) + '</td><td></td></tr>';
+    html += egressState.rows.map(function (row, i) {
+      var st = row.index != null ? statusByIndex[row.index] : null, t = egressRouteTotals(row.index != null ? routeByIndex[row.index] : null);
+      var status = st ? (EGRESS_STATUS_LABELS[st.status] || st.status) : '未保存';
+      if (st && st.status === 'cooling' && st.cooldown_until) status += '（' + Math.max(0, Math.round((new Date(st.cooldown_until) - Date.now()) / 1000)) + ' 秒）';
+      var title = st && st.last_failure ? ' title="' + escapeHtml('最近失败：' + st.last_failure) + '"' : '';
+      return '<tr data-row="' + i + '">' +
+        '<td><input data-field="name" type="text" spellcheck="false" class="rounded-md border border-slate-300 px-2 py-1 text-sm w-28" value="' + escapeHtml(row.name) + '"></td>' +
+        '<td><input data-field="url" type="text" spellcheck="false" placeholder="http://user:pass@host:port" class="rounded-md border border-slate-300 px-2 py-1 text-sm w-full" value="' + escapeHtml(row.url || '') + '"></td>' +
+        '<td><input data-field="max" type="number" min="1" class="rounded-md border border-slate-300 px-2 py-1 text-sm w-20" value="' + escapeHtml(row.max || 30) + '"></td>' +
+        '<td><input data-field="enabled" type="checkbox"' + (row.enabled ? ' checked' : '') + '></td>' +
+        '<td' + title + '>' + escapeHtml(status) + '</td>' +
+        '<td>' + (st ? st.in_flight + ' / ' + st.max_concurrency : '—') + '</td>' +
+        '<td>' + t.attempts + '</td><td>' + (t.attempts ? egressPct(t.overload / t.attempts) : '—') + '</td><td>' + t.conn429 + '</td><td>' + egressMs(t.ttftMid) + '</td>' +
+        '<td class="whitespace-nowrap"><button type="button" data-action="test" data-row="' + i + '" class="text-indigo-600 text-sm">测试</button> <button type="button" data-action="remove" data-row="' + i + '" class="text-red-600 text-sm">删除</button>' +
+        '<div data-test-result="' + i + '" class="text-xs text-slate-500"></div></td></tr>';
+    }).join('');
+    egressEl('rows').innerHTML = html;
+  }
+  function egressRender(data) {
+    egressState.lastData = data;
+    if (!egressState.dirty && !egressState.saving) { egressFillForm(data.config || {}); }
+    else { egressCollectRows(); }
+    egressRenderRows(data);
+    var state = !data.enable ? '未启用' : (data.disabled_until ? '已回滚，' + new Date(data.disabled_until).toLocaleTimeString() + ' 后试探' : (data.trial ? '试探中（只有重试走代理）' : '运行中'));
+    var rbMsg = {'ok':'正常（代理组优于直连）', 'insufficient samples':'样本不足，暂不判断'}[data.rollback_message] || data.rollback_message || '—';
+    var shMsg = String(data.shift_message || '—').replace(/^direct samples (\d+) < (\d+)$/, '直连样本 $1 < $2，暂不调整').replace(/^direct overload ([\d.]+)% over (\d+) attempts$/, '直连 overload $1%（$2 次）');
+    var cards = [['状态', state], ['首次请求分流', (data.shift_percent || 0) + '%'], ['分流依据', shMsg], ['回滚检查', rbMsg]];
+    egressEl('cards').textContent = '';
+    cards.forEach(function (pair) {
+      var card = document.createElement('div'), label = document.createElement('div'), value = document.createElement('strong');
+      card.className = 'pool-metric'; label.textContent = pair[0]; value.textContent = pair[1]; value.style.fontSize = '16px';
+      card.appendChild(label); card.appendChild(value); egressEl('cards').appendChild(card);
+    });
+    var groups = data.groups || {};
+    egressEl('groups').innerHTML = ['retry_pool', 'retry_control', 'shift_pool', 'first_direct', 'retry_fallback'].map(function (g) {
+      var s = groups[g] || {};
+      return '<tr><td>' + escapeHtml(EGRESS_GROUP_LABELS[g]) + '</td><td>' + (s.attempts || 0) + '</td><td>' + (s.attempts ? egressPct(s.failure_rate) : '—') + '</td><td>' + (s.attempts ? egressPct(s.overload_rate) : '—') +
+        '</td><td>' + egressMs(s.small_ttft_p50_ms) + '</td><td>' + egressMs(s.small_ttft_p90_ms) + '</td><td>' + (s.small_ttft_samples || 0) + '</td></tr>';
+    }).join('');
+    egressEl('events').innerHTML = (data.events || []).slice(-12).reverse().map(function (e) {
+      return '<li>' + escapeHtml(new Date(e.time).toLocaleTimeString() + ' · ' + e.message) + '</li>';
+    }).join('') || '<li class="text-slate-400">暂无事件</li>';
+    egressRenderCharts(data);
+    egressEl('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
+  }
+  function egressRenderCharts(data) {
+    if (!window.echarts) { egressEl('charts-status').textContent = poolState.chartsFailed ? '图表资源加载失败，表格数值仍可查看。' : '图表加载中…'; return; }
+    egressEl('charts-status').textContent = '';
+    if (!egressState.charts.length) ['overload-chart', 'ttft-chart', 'attempts-chart', 'connect-chart'].forEach(function (id) { egressState.charts.push(chartInit(egressEl(id))); });
+    var routes = (data && data.routes) || [];
+    var times = routes.length ? routes[0].points.map(function (p) { return new Date(p.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }) : [];
+    function chart(series, unit) { return {animation:false, tooltip:{trigger:'axis', renderMode:'richText'}, legend:{bottom:0, type:'scroll'}, grid:{left:55, right:20, top:25, bottom:60}, xAxis:{type:'category', data:times}, yAxis:{type:'value', name:unit}, series:series}; }
+    function line(route, fn) { return {name:route.name, type:'line', showSymbol:false, connectNulls:false, data:route.points.map(fn)}; }
+    var proxies = routes.slice(1);
+    var options = [
+      chart(routes.map(function (r) { return line(r, function (p) { return p.attempts ? +(100 * p.overload / p.attempts).toFixed(1) : null; }); }), '%'),
+      chart(routes.map(function (r) { return line(r, function (p) { return p.ttft_p50_ms ? +(p.ttft_p50_ms / 1000).toFixed(2) : null; }); }), '秒'),
+      chart(routes.map(function (r) { return line(r, function (p) { return p.attempts || 0; }); }), '次'),
+      chart([].concat.apply([], proxies.map(function (r) {
+        return [{name:r.name + ' 429', type:'bar', stack:r.name, data:r.points.map(function (p) { return p.connect_429 || 0; })},
+                {name:r.name + ' 其他', type:'bar', stack:r.name, data:r.points.map(function (p) { return Math.max(0, (p.connect_failures || 0) - (p.connect_429 || 0)); })}];
+      })), '次')
+    ];
+    options.forEach(function (o, i) { egressState.charts[i].setOption(o, true); egressState.charts[i].resize(); });
+  }
+  function fetchEgress() {
+    var key = getStoredKey();
+    if (!key || currentTab !== 'proxy' || egressState.controller || egressState.saving) return;
+    var generation = egressState.generation, controller = new AbortController(); egressState.controller = controller;
+    fetch('/v0/management/codex-egress-pool', {headers:{Authorization:'Bearer ' + key}, signal:controller.signal})
+      .then(function (resp) {
+        if (generation !== egressState.generation) return null;
+        if (resp.status === 401 || resp.status === 403) { clearKey(); setStatus('管理访问已失效，请重新登录', 'err'); return null; }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      }).then(function (data) { if (data && generation === egressState.generation) egressRender(data); })
+      .catch(function (e) { if (e.name !== 'AbortError' && generation === egressState.generation) egressStatus('出口 IP 池数据加载失败：' + e.message, true); })
+      .finally(function () { if (egressState.controller === controller) egressState.controller = null; });
+  }
+  function startEgress() { loadPoolECharts(); stopEgress(); fetchEgress(); egressState.timer = setInterval(fetchEgress, 10000); }
+  function stopEgress() {
+    egressState.generation++;
+    if (egressState.timer) clearInterval(egressState.timer);
+    egressState.timer = null;
+    if (egressState.controller) egressState.controller.abort();
+    egressState.controller = null;
+  }
+  function clearEgress() {
+    stopEgress(); egressState.charts.forEach(function (c) { c.dispose(); }); egressState.charts = [];
+    egressState.lastData = null; egressState.rows = []; egressState.dirty = false; egressState.saving = false;
+    egressEl('rows').innerHTML = ''; egressEl('cards').textContent = ''; egressEl('groups').innerHTML = ''; egressEl('events').innerHTML = ''; egressEl('updated').textContent = ''; egressStatus('', false);
+  }
+  function egressNum(id) { return Number(egressEl(id).value) || 0; }
+  function saveEgress(event) {
+    event.preventDefault();
+    var key = getStoredKey(); if (!key || egressState.saving) return;
+    var steps = egressEl('shift-steps').value.split('/').map(function (v) { return Number(v.trim()) || 0; });
+    var proxies = egressCollectRows().filter(function (r) { return r.url; }).map(function (r) {
+      var p = {url:r.url, 'max-concurrency':r.max};
+      if (r.name) p.name = r.name;
+      if (!r.enabled) p.disabled = true;
+      return p;
+    });
+    var config = {
+      enable:egressEl('enable').checked, proxies:proxies,
+      'control-percent':egressNum('control'), 'connect-timeout-seconds':egressNum('connect-timeout'),
+      'cooldown-base-seconds':egressNum('cooldown-base'), 'cooldown-max-seconds':egressNum('cooldown-max'),
+      shift:{enable:egressEl('shift-enable').checked, 'window-minutes':egressNum('shift-window'), 'min-samples':egressNum('shift-min'),
+        'enter-overload-percent':egressNum('shift-enter'), 'exit-overload-percent':egressNum('shift-exit'),
+        'start-percent':steps[0] || 0, 'step-percent':steps[1] || 0, 'max-percent':steps[2] || 0},
+      rollback:{enable:egressEl('rollback-enable').checked, 'window-minutes':egressNum('rb-window'), 'min-samples':egressNum('rb-min'),
+        'failure-better-points':egressNum('rb-fail'), 'ttft-worse-percent':egressNum('rb-ttft'), 'retry-minutes':egressNum('rb-retry')}
+    };
+    egressState.saving = true; egressStatus('保存中…', false); egressEl('save').disabled = true;
+    fetch('/v0/management/codex-egress-pool/config', {method:'PUT', headers:{Authorization:'Bearer ' + key, 'Content-Type':'application/json'}, body:JSON.stringify(config)})
+      .then(function (resp) { if (resp.ok) return; return readError(resp).then(function (m) { throw new Error(m || 'HTTP ' + resp.status); }); })
+      .then(function () { egressState.dirty = false; egressStatus('已保存，约 10 秒内生效', false); })
+      .catch(function (e) { egressStatus('保存失败：' + e.message, true); })
+      .finally(function () { egressState.saving = false; egressEl('save').disabled = false; fetchEgress(); });
+  }
+  function testEgressRow(i) {
+    var key = getStoredKey(), row = egressState.rows[i], out = document.querySelector('[data-test-result="' + i + '"]');
+    if (!key || !row || !out) return;
+    if (row.index == null || egressState.dirty) { out.textContent = '请先保存再测试'; return; }
+    out.textContent = '测试中…';
+    fetch('/v0/management/codex-egress-pool/test', {method:'POST', headers:{Authorization:'Bearer ' + key, 'Content-Type':'application/json'}, body:JSON.stringify({index:row.index})})
+      .then(function (resp) { return resp.json(); })
+      .then(function (d) { out.textContent = d.ok ? (d.loc + ' · ' + d.colo + ' · ' + d.ip + ' · ' + d.latency_ms + 'ms') : ('失败：' + (d.error || ('HTTP ' + d.status))); })
+      .catch(function (e) { out.textContent = '失败：' + e; });
+  }
+  egressEl('config').addEventListener('submit', saveEgress);
+  egressEl('config').addEventListener('input', function () { egressState.dirty = true; egressStatus('有未保存的修改', false); });
+  egressEl('reload').addEventListener('click', function () { egressState.dirty = false; egressStatus('', false); if (egressState.lastData) egressRender(egressState.lastData); fetchEgress(); });
+  egressEl('add').addEventListener('click', function () { egressCollectRows(); egressState.rows.push({index:null, name:'', url:'', max:30, enabled:true}); egressState.dirty = true; egressRenderRows(egressState.lastData); egressStatus('有未保存的修改', false); });
+  egressEl('rows').addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
+    if (!btn) return;
+    var i = Number(btn.getAttribute('data-row'));
+    if (btn.getAttribute('data-action') === 'test') { testEgressRow(i); return; }
+    egressCollectRows(); egressState.rows.splice(i, 1); egressState.dirty = true; egressRenderRows(egressState.lastData); egressStatus('有未保存的修改', false);
+  });
+  window.addEventListener('resize', function () { egressState.charts.forEach(function (c) { c.resize(); }); });
 
   // ---- Per-provider proxy settings ----
   var DEFAULT_PROVIDERS = ['codex', 'antigravity', 'claude', 'gemini-cli'];
