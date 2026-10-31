@@ -106,6 +106,7 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+	codexQuotaCancel   context.CancelFunc
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
@@ -298,6 +299,10 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
 
+	quotaCtx, quotaCancel := context.WithCancel(context.Background())
+	s.codexQuotaCancel = quotaCancel
+	s.mgmt.StartCodexQuota(quotaCtx)
+
 	addr := s.server.Addr
 	listener, errListen := net.Listen("tcp", addr)
 	if errListen != nil {
@@ -402,6 +407,10 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+
+	if s.codexQuotaCancel != nil {
+		s.codexQuotaCancel()
+	}
 
 	if s.keepAliveEnabled {
 		select {

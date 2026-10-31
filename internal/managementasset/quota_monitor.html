@@ -391,6 +391,29 @@
   #egress-events { margin: 0; padding: 0; list-style: none; }
   #egress-events li { padding: 6px 0; border-bottom: 1px dashed var(--line); font-variant-numeric: tabular-nums; }
   #egress-events li:last-child { border-bottom: 0; }
+  .quota-cell { display: grid; gap: 4px; min-width: 164px; }
+  .quota-line { display: grid; grid-template-columns: 34px minmax(56px, 1fr) 38px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-3); }
+  .quota-line b { color: var(--text-2); font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+  .quota-track { display: block; height: 5px; overflow: hidden; background: var(--surface-3); border-radius: 3px; }
+  .quota-track span { display: block; height: 100%; border-radius: 3px; }
+  .quota-track .ok, .quota-dist .ok { background: var(--ok); }
+  .quota-track .warn, .quota-dist .warn { background: var(--warn); }
+  .quota-track .danger, .quota-dist .danger { background: var(--danger); }
+  .quota-dist .mid { background: var(--accent); }
+  .quota-meta { font-size: 11px; color: var(--text-3); }
+  .quota-tag { display: inline-block; margin-right: 4px; padding: 0 5px; font-size: 10.5px; line-height: 16px; color: var(--warn); background: var(--warn-soft); border-radius: 3px; }
+  .quota-tag.danger { color: var(--danger); background: var(--danger-soft); }
+  .quota-advice { display: flex; gap: 28px; align-items: center; margin: 18px 0; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line-2); border-left: 3px solid var(--off); border-radius: var(--radius); }
+  .quota-advice.ok { border-left-color: var(--ok); }
+  .quota-advice.danger { border-left-color: var(--danger); }
+  .quota-advice-count { flex: none; min-width: 112px; font-size: 12px; color: var(--text-3); }
+  .quota-advice-count strong { display: block; margin-top: 6px; font-size: 34px; font-weight: 600; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+  .quota-advice ul { margin: 0; padding: 0; list-style: none; font-size: 13px; line-height: 1.8; color: var(--text-2); }
+  .quota-dist { display: flex; width: 140px; height: 8px; overflow: hidden; background: var(--surface-3); border-radius: 4px; }
+  .quota-windows { display: grid; gap: 2px; font-size: 12px; }
+  .quota-plan-table { margin-bottom: 18px; }
+  .quota-scan-line { margin-top: 8px; }
+  @media (max-width: 760px) { .quota-advice { flex-direction: column; align-items: flex-start; gap: 12px; } }
   @media (max-width: 760px) { .pool-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pool-charts { grid-template-columns: 1fr; } }
 
   @media (prefers-reduced-motion: reduce) {
@@ -509,6 +532,8 @@
         <div class="account-filter"><label for="account-created-to">导入时间（到）</label><input id="account-created-to" type="date"></div>
         <div class="account-filter"><label for="account-status-filter">状态</label><select id="account-status-filter"><option value="">全部</option></select></div>
         <div class="account-filter"><label for="account-error-filter">错误</label><select id="account-error-filter"><option value="">全部</option></select></div>
+        <div class="account-filter"><label for="account-quota-filter">Codex 额度</label><select id="account-quota-filter"><option value="">全部</option><option value="low">低于 5%</option><option value="mid">5%–30%</option><option value="high">30% 以上</option><option value="unknown">未知</option></select></div>
+        <div class="account-filter"><label for="account-quota-sort">额度排序</label><select id="account-quota-sort"><option value="">默认</option><option value="asc">剩余从低到高</option><option value="desc">剩余从高到低</option></select></div>
       </div>
       <div id="account-bulk-bar" class="account-bulk-bar" hidden>
         <span id="account-bulk-count" class="text-xs text-slate-600"></span>
@@ -522,7 +547,7 @@
         <table id="table" class="data-table" hidden>
           <thead><tr>
             <th class="select-col"><input id="account-select-all" type="checkbox" data-tip="全选当前筛选结果" aria-label="全选当前筛选结果"></th>
-            <th>账号名称</th><th>provider</th><th>套餐</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>操作</th><th>状态</th><th>错误</th>
+            <th>账号名称</th><th>provider</th><th>套餐</th><th>额度</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>操作</th><th>状态</th><th>错误</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -702,6 +727,31 @@
 
     <section id="tab-pool" hidden>
       <div class="pool-heading"><div><h2 class="text-lg font-semibold text-slate-900">Codex 号池</h2><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
+      <section id="quota-panel" aria-label="额度与加号建议">
+        <div id="quota-advice" class="quota-advice">
+          <div class="quota-advice-count">建议加号<strong id="quota-advice-count">—</strong></div>
+          <ul id="quota-advice-lines"><li>加载中…</li></ul>
+        </div>
+        <div id="quota-cards" class="pool-cards"></div>
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto quota-plan-table">
+          <table class="data-table">
+            <thead><tr><th>套餐</th><th>账号</th><th>可用</th><th>未知</th><th>待确认</th><th>平均剩余</th><th>剩余分布</th><th>24h 恢复</th><th>窗口（平均剩余 · 消耗/小时 · 续航）</th><th>额度缺口</th></tr></thead>
+            <tbody id="quota-plan-rows"></tbody>
+          </table>
+        </div>
+        <form id="quota-settings" class="pool-settings">
+          <div class="pool-switches"><label><input id="quota-scan-enabled" type="checkbox"> 启用后台补扫（按 wham/usage 补齐缺失或过期的额度）</label></div>
+          <div class="pool-fields">
+            <label>补扫并发<input id="quota-concurrency" type="number" min="1" max="50" required></label>
+            <label>过期阈值（分钟）<input id="quota-stale" type="number" min="5" max="1440" required></label>
+            <label>RPM 余量（%）<input id="quota-headroom" type="number" min="0" max="200" required></label>
+            <label>推演时长（小时）<input id="quota-horizon" type="number" min="1" max="720" required></label>
+            <button id="quota-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+          </div>
+          <p id="quota-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
+          <p id="quota-scan-line" class="text-xs text-slate-500 quota-scan-line"></p>
+        </form>
+      </section>
       <form id="pool-config" class="pool-settings">
         <div class="pool-switches">
           <label><input id="pool-enabled" type="checkbox"> 启用速率上限算法</label>
@@ -723,6 +773,7 @@
         <div class="pool-chart-card"><h3>请求 RPM / 预测容量</h3><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="每分钟上游请求量与预测容量折线图"></div></div>
         <div class="pool-chart-card"><h3>成功请求首字延迟</h3><div id="pool-ttft-chart" class="pool-chart" role="img" aria-label="每分钟首字延迟 p50 与 p90 折线图"></div></div>
         <div class="pool-chart-card"><h3>每分钟失败构成</h3><div id="pool-failures-chart" class="pool-chart" role="img" aria-label="过载、限流、额度耗尽及其他错误堆叠柱状图"></div></div>
+        <div class="pool-chart-card"><h3>可用账号 / 平均剩余额度（24 小时）</h3><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时可用账号数与平均剩余额度折线图"></div></div>
         <div class="pool-chart-card"><h3>学到的单号上限分布</h3><div id="pool-limits-chart" class="pool-chart" role="img" aria-label="单号每分钟请求上限分布直方图"></div></div>
       </div>
       <p class="muted text-xs mt-4">过载请求也占用窗口；首字百分位由固定边界直方图估计。成功率、有效成功容量与首字卡片统计最近 5 个分钟桶，快速失败计数统计最近 60 个分钟桶。</p>
@@ -767,9 +818,11 @@
   var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
-  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
   var accountsData = []; // account rows currently rendered (raw auth-files entries)
   var accountPage = 1;
+  var quotaRows = {};    // Codex quota per account name, served from the background aggregate
+  var quotaRowsAt = 0;
   var selectedAccounts = []; // account names ticked for batch delete, kept across refreshes
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
   var firstSuccess = false;
@@ -826,7 +879,7 @@
   function clearRenderedData() {
     clearPool();
     clearEgress();
-    accountsData = []; modelRows = []; accountPage = 1; selectedAccounts = [];
+    accountsData = []; modelRows = []; accountPage = 1; selectedAccounts = []; quotaRows = {}; quotaRowsAt = 0;
     els['account-bulk-bar'].hidden = true;
     els['account-select-all'].checked = false;
     els['account-select-all'].indeterminate = false;
@@ -935,6 +988,7 @@
       showApp();
       render(data.files || []);
       fetchSummary(k);
+      fetchQuotaRows(k, reason === 'manual' || reason === 'login');
       if (currentTab === 'pool' && reason === 'manual') fetchPool();
       if (currentTab === 'stats') {
         if (reason === 'manual' || reason === 'login') requestModelStats();
@@ -1152,6 +1206,99 @@
     if (isNaN(d.getTime())) return String(v);
     return d.toLocaleString();
   }
+  /* CODEX_QUOTA_LOGIC_START */
+  var CodexQuotaLogic = (function () {
+    var STALE_MS = 30 * 60 * 1000;
+    function windowLabel(minutes) {
+      if (minutes === 300) return '5h';
+      if (minutes === 10080) return '周';
+      if (minutes >= 40320 && minutes <= 44640) return '月';
+      if (minutes % 1440 === 0) return (minutes / 1440) + '天';
+      if (minutes % 60 === 0) return (minutes / 60) + 'h';
+      return minutes + '分';
+    }
+    function tone(remaining) { return remaining < 5 ? 'danger' : (remaining < 30 ? 'warn' : 'ok'); }
+    function bucket(row) {
+      if (!row || row.remaining == null) return 'unknown';
+      return row.remaining < 5 ? 'low' : (row.remaining < 30 ? 'mid' : 'high');
+    }
+    function duration(ms) {
+      if (ms <= 0) return '即将';
+      var minutes = Math.round(ms / 60000);
+      if (minutes < 60) return minutes + ' 分钟';
+      if (minutes < 2880) return (Math.round(minutes / 6) / 10) + ' 小时';
+      return (Math.round(minutes / 144) / 10) + ' 天';
+    }
+    function hours(value) { return value == null ? '充足' : duration(value * 3600000); }
+    function isCodex(entry) { return String(entry && entry.provider || '').toLowerCase() === 'codex'; }
+    // Quota filters only make sense for Codex rows; sorting keeps the rest at the end.
+    function applyView(entries, rows, filter, order) {
+      var out = (entries || []).filter(function (entry) {
+        return !filter || (isCodex(entry) && bucket(rows[entry.name]) === filter);
+      });
+      if (!order) return out;
+      var direction = order === 'desc' ? -1 : 1;
+      function rank(entry) {
+        var row = rows[entry.name];
+        return isCodex(entry) && row && row.remaining != null ? row.remaining : null;
+      }
+      return out.map(function (entry, index) { return { entry: entry, index: index, value: rank(entry) }; }).sort(function (a, b) {
+        if (a.value == null || b.value == null) return a.value == null ? (b.value == null ? a.index - b.index : 1) : -1;
+        return a.value === b.value ? a.index - b.index : (a.value - b.value) * direction;
+      }).map(function (item) { return item.entry; });
+    }
+    function cellMarkup(row, now, escape) {
+      if (!row || !row.windows || !row.windows.length) {
+        if (row && row.invalid) return '<span class="quota-tag danger">失效</span>';
+        return '<span class="quota-meta">未知</span>' + (row && row.duplicate ? ' <span class="quota-tag">重复</span>' : '');
+      }
+      var lines = row.windows.map(function (window) {
+        var left = Math.max(0, Math.min(100, 100 - window.used_percent));
+        var label = windowLabel(window.minutes);
+        var tip = label + ' 窗口：已用 ' + (Math.round(window.used_percent * 10) / 10) + '%' +
+          (window.pending ? '，已过恢复时间，待确认' : (window.reset_at ? '，' + duration(new Date(window.reset_at).getTime() - now) + '后恢复' : ''));
+        return '<div class="quota-line" tabindex="0" data-tip="' + escape(tip) + '"><span>' + escape(label) + '</span>' +
+          '<span class="quota-track"><span class="' + tone(left) + '" style="width:' + left + '%"></span></span>' +
+          '<b>' + Math.round(left) + '%</b></div>';
+      }).join('');
+      var age = row.observed_at ? now - new Date(row.observed_at).getTime() : null;
+      var tags = '';
+      if (row.invalid) tags += '<span class="quota-tag danger">失效</span>';
+      if (row.windows.some(function (window) { return window.pending; })) tags += '<span class="quota-tag">待确认</span>';
+      if (row.duplicate) tags += '<span class="quota-tag">重复</span>';
+      var freshness = age != null && age >= STALE_MS ? '<span class="quota-meta">' + duration(age) + '前</span>' : '';
+      return '<div class="quota-cell">' + lines + (tags || freshness ? '<div>' + tags + freshness + '</div>' : '') + '</div>';
+    }
+    function advice(data) {
+      var a = data.advice || {};
+      var lines = [
+        'RPM：可用容量 ' + a.usable_capacity + ' / 目标 ' + a.target_rpm + '（24 小时峰值 ' + a.peak_rpm + ' + ' + (data.settings || {}).headroom_percent + '% 余量），' +
+          (a.rpm_shortfall > 0 ? '缺 ' + a.rpm_shortfall + ' 个账号' : '余量 ' + a.rpm_remaining),
+        '额度：' + (a.runway_hours == null ? '推演范围内不会耗尽' : '预计 ' + hours(a.runway_hours) + '后额度不足') +
+          (a.quota_shortfall > 0 ? '，' + (data.settings || {}).horizon_hours + ' 小时内缺 ' + a.quota_shortfall + ' 个账号' : '')
+      ];
+      if (a.warming_up) lines.push('数据积累中：消耗速度和峰值 RPM 不足 24 小时，结果仅供粗略参考');
+      if (a.low_confidence) lines.push(data.unknown + ' 个账号额度未知，结果可能偏乐观，建议打开后台补扫');
+      return { count: a.recommended_accounts || 0, lines: lines };
+    }
+    function cards(data) {
+      return [['去重后账号', data.unique_accounts], ['可用账号（≥5%）', data.usable], ['额度未知', data.unknown], ['重复文件', data.duplicate_files], ['已失效', data.invalid], ['已禁用', data.disabled]];
+    }
+    function trendOption(trend) {
+      var points = trend || [];
+      return {
+        animation: false, tooltip: { trigger: 'axis', renderMode: 'richText' }, legend: { bottom: 0, type: 'scroll' }, grid: { left: 55, right: 50, top: 25, bottom: 60 },
+        xAxis: { type: 'category', data: points.map(function (p) { return new Date(p.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }) },
+        yAxis: [{ type: 'value', name: '账号数' }, { type: 'value', name: '%', min: 0, max: 100 }],
+        series: [
+          { name: '可用账号', type: 'line', showSymbol: false, data: points.map(function (p) { return p.usable; }) },
+          { name: '平均剩余额度', type: 'line', yAxisIndex: 1, showSymbol: false, data: points.map(function (p) { return p.avg_remaining; }) }
+        ]
+      };
+    }
+    return { windowLabel: windowLabel, bucket: bucket, duration: duration, hours: hours, applyView: applyView, cellMarkup: cellMarkup, advice: advice, cards: cards, trendOption: trendOption };
+  })();
+  /* CODEX_QUOTA_LOGIC_END */
   /* ACCOUNT_VIEW_LOGIC_START */
   var AccountViewLogic = (function () {
     function accountPlan(a) {
@@ -1494,7 +1641,7 @@
     if (options.rebuildOptions) rebuildAccountFilterOptions(!!options.preserveMissingPlan);
     if (options.resetPage) accountPage = 1;
     selectedAccounts = AccountViewLogic.pruneSelection(selectedAccounts, accountsData);
-    var filtered = AccountViewLogic.filterAccounts(accountsData, currentAccountFilters());
+    var filtered = CodexQuotaLogic.applyView(AccountViewLogic.filterAccounts(accountsData, currentAccountFilters()), quotaRows, els['account-quota-filter'].value, els['account-quota-sort'].value);
     var page = AccountViewLogic.paginate(filtered, accountPage, els['account-page-size'].value);
     accountPage = page.page;
     paint(page.items);
@@ -1539,6 +1686,11 @@
       '<td>' + escapeHtml(AccountViewLogic.formatSuccessRate(stats)) + '</td>';
   }
 
+  function quotaCell(a) {
+    if (String(a.provider || '').toLowerCase() !== 'codex') return '<td></td>';
+    return '<td>' + CodexQuotaLogic.cellMarkup(quotaRows[a.name], Date.now(), escapeHtml) + '</td>';
+  }
+
   function selectCell(a) {
     var name = AccountViewLogic.accountKey(a);
     var checked = selectedAccounts.indexOf(name) >= 0 ? ' checked' : '';
@@ -1550,7 +1702,7 @@
     els.rows.innerHTML = rows.map(function (a) {
       return '<tr>' + selectCell(a) +
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
-        td(a.provider) + planCell(a) +
+        td(a.provider) + planCell(a) + quotaCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
         requestCells(a) +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
@@ -1849,6 +2001,115 @@
     script.onerror=function(){poolState.chartsLoading=false;poolState.chartsFailed=true;script.remove();if(currentTab==='pool' && poolState.lastData)renderPoolCharts(poolState.lastData);};
     document.head.appendChild(script);
   }
+  function quotaEl(id) {return document.getElementById('quota-' + id);}
+  var quotaState = {controller:null, data:null, dirty:false, saving:false, loaded:false, chart:null};
+  function quotaStatus(message, failed) {quotaEl('status').textContent=message;quotaEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  // Accounts tab: the server aggregates once a minute, so polling every refresh adds nothing.
+  function fetchQuotaRows(key, force) {
+    if (!force && Date.now() - quotaRowsAt < 30000) return;
+    quotaRowsAt = Date.now();
+    fetch('/v0/management/codex-quota/accounts', { headers: { 'Authorization': 'Bearer ' + key } })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (!data || key !== getStoredKey()) return;
+        quotaRows = data.accounts || {};
+        renderAccountView({ resetPage: false, rebuildOptions: false });
+      })
+      .catch(function () { quotaRowsAt = 0; });
+  }
+  function renderQuotaTrend() {
+    if (!window.echarts || !quotaState.data || currentTab !== 'pool') return;
+    if (!quotaState.chart) quotaState.chart = chartInit(quotaEl('trend-chart'));
+    quotaState.chart.setOption(CodexQuotaLogic.trendOption(quotaState.data.trend), true);
+    quotaState.chart.resize();
+  }
+  function quotaPlanRow(plan) {
+    var total = plan.distribution.reduce(function (sum, n) { return sum + n; }, 0) || 1;
+    var labels = ['danger', 'warn', 'mid', 'ok'], ranges = ['0–10%', '10–30%', '30–60%', '60–100%'];
+    var dist = plan.distribution.map(function (n, i) { return '<span class="' + labels[i] + '" style="width:' + (100 * n / total) + '%"></span>'; }).join('');
+    var tip = plan.distribution.map(function (n, i) { return ranges[i] + '：' + n; }).join(' · ');
+    var windows = plan.windows.map(function (w) {
+      var burn = Math.max(w.burn_per_hour_1h || 0, w.burn_per_hour_24h || 0);
+      return '<div>' + escapeHtml(CodexQuotaLogic.windowLabel(w.minutes)) + ' ' + w.avg_remaining + '% · ' + (w.burn_per_hour_1h == null && w.burn_per_hour_24h == null ? '—' : burn) + ' · ' + escapeHtml(CodexQuotaLogic.hours(w.runway_hours)) + '</div>';
+    }).join('');
+    return '<tr>' + td(plan.plan) + td(plan.accounts) + td(plan.usable) + td(plan.unknown) + td(plan.pending) + td(plan.known ? plan.avg_remaining + '%' : '—') +
+      '<td><div class="quota-dist" tabindex="0" data-tip="' + escapeHtml(tip) + '">' + dist + '</div></td>' + td(plan.recover_24h) +
+      '<td><div class="quota-windows">' + (windows || '—') + '</div></td>' + td(plan.shortfall_accounts) + '</tr>';
+  }
+  function renderQuota(data) {
+    quotaState.data = data;
+    if (data.settings && !quotaState.dirty && !quotaState.saving) {
+      var s = data.settings;
+      quotaEl('scan-enabled').checked = s.scan_enabled;
+      quotaEl('concurrency').value = s.scan_concurrency;
+      quotaEl('stale').value = s.stale_minutes;
+      quotaEl('headroom').value = s.headroom_percent;
+      quotaEl('horizon').value = s.horizon_hours;
+    }
+    quotaState.loaded = !!data.settings;
+    quotaEl('save').disabled = !quotaState.loaded || quotaState.saving;
+    if (data.home_mode || !data.available) {
+      quotaEl('advice-count').textContent = '—';
+      quotaEl('advice').className = 'quota-advice';
+      quotaEl('advice-lines').innerHTML = '<li>' + (data.home_mode ? 'Home 模式：账号由 Home 调度端管理，本机不统计额度。' : '额度数据首次汇总中，约 1 分钟后可用。') + '</li>';
+      return;
+    }
+    var advice = CodexQuotaLogic.advice(data);
+    quotaEl('advice-count').textContent = advice.count;
+    quotaEl('advice').className = 'quota-advice ' + (advice.count > 0 ? 'danger' : 'ok');
+    quotaEl('advice-lines').innerHTML = advice.lines.map(function (line) { return '<li>' + escapeHtml(line) + '</li>'; }).join('');
+    quotaEl('cards').innerHTML = CodexQuotaLogic.cards(data).map(function (pair) {
+      return '<div class="pool-metric">' + escapeHtml(pair[0]) + '<strong>' + escapeHtml(pair[1]) + '</strong></div>';
+    }).join('');
+    quotaEl('plan-rows').innerHTML = data.plans.map(quotaPlanRow).join('');
+    var scan = data.scan || {};
+    quotaEl('scan-line').textContent = scan.running
+      ? '补扫进行中：剩余 ' + scan.queued + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed
+      : (scan.finished_at && new Date(scan.finished_at).getFullYear() > 1 ? '上次补扫：' + new Date(scan.finished_at).toLocaleString() + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed + (scan.last_error ? ' · 最后错误 ' + scan.last_error : '') : '尚未执行补扫');
+    renderQuotaTrend();
+  }
+  function fetchQuota() {
+    var key = getStoredKey();
+    if (!key || currentTab !== 'pool' || !firstSuccess || quotaState.controller) return;
+    var controller = new AbortController();
+    quotaState.controller = controller;
+    fetch('/v0/management/codex-quota', { headers: { Authorization: 'Bearer ' + key }, signal: controller.signal })
+      .then(function (resp) { if (!resp.ok) throw new Error('HTTP ' + resp.status); return resp.json(); })
+      .then(function (data) { if (key === getStoredKey()) renderQuota(data); })
+      .catch(function (e) { if (e.name !== 'AbortError') quotaStatus('额度数据加载失败：' + e.message + '；稍后自动重试', true); })
+      .finally(function () { if (quotaState.controller === controller) quotaState.controller = null; });
+  }
+  function clearQuota() {
+    if (quotaState.controller) quotaState.controller.abort();
+    if (quotaState.chart) quotaState.chart.dispose();
+    quotaState = { controller: null, data: null, dirty: false, saving: false, loaded: false, chart: null };
+    quotaEl('settings').reset();
+    quotaEl('save').disabled = true;
+    quotaEl('advice-count').textContent = '—';
+    quotaEl('advice').className = 'quota-advice';
+    quotaEl('advice-lines').innerHTML = '<li>加载中…</li>';
+    quotaEl('cards').textContent = '';
+    quotaEl('plan-rows').textContent = '';
+    quotaEl('scan-line').textContent = '';
+    quotaStatus('', false);
+  }
+  // Settings live outside config.yaml, so saving takes effect without a config reload.
+  function saveQuotaSettings(event) {
+    if (event) event.preventDefault();
+    var key = getStoredKey();
+    if (!key || !quotaState.loaded || quotaState.saving || !quotaEl('settings').reportValidity()) return;
+    quotaState.saving = true;
+    quotaEl('save').disabled = true;
+    quotaStatus('保存中…', false);
+    fetch('/v0/management/codex-quota/settings', {
+      method: 'PUT', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scan_enabled: quotaEl('scan-enabled').checked, scan_concurrency: Number(quotaEl('concurrency').value), stale_minutes: Number(quotaEl('stale').value), headroom_percent: Number(quotaEl('headroom').value), horizon_hours: Number(quotaEl('horizon').value) })
+    }).then(function (resp) {
+      return resp.json().catch(function () { return {}; }).then(function (body) { if (!resp.ok) throw new Error(body.error || 'HTTP ' + resp.status); });
+    }).then(function () { quotaState.dirty = false; quotaStatus('已保存，立即生效', false); })
+      .catch(function (e) { quotaStatus('保存失败：' + e.message, true); })
+      .finally(function () { quotaState.saving = false; quotaEl('save').disabled = !quotaState.loaded; });
+  }
   function poolEl(id) {return document.getElementById('pool-' + id);}
   function poolStatus(message, failed) {poolEl('status').textContent=message;poolEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
   function stopPool() {
@@ -1857,9 +2118,10 @@
     poolState.timer=null;
     if (poolState.controller) poolState.controller.abort();
     poolState.controller=null;
+    if (quotaState.controller) quotaState.controller.abort();
   }
   function clearPool() {
-    stopPool();poolState.saveToken++;if(poolState.saveController)poolState.saveController.abort();poolState.saveController=null;poolState.charts.forEach(function(c){c.dispose();});poolState.charts=[];
+    stopPool();clearQuota();poolState.saveToken++;if(poolState.saveController)poolState.saveController.abort();poolState.saveController=null;poolState.charts.forEach(function(c){c.dispose();});poolState.charts=[];
     poolState.loaded=false;poolState.prevCards=null;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
     poolEl('config').reset();setPoolSaving(false);poolEl('save').disabled=true;poolEl('fail-fast').disabled=true;
     poolEl('cards').textContent='';poolEl('updated').textContent='';poolEl('charts-status').textContent='';poolStatus('',false);
@@ -1894,11 +2156,13 @@
       if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
       CodexPoolLogic.chartOptions(data).forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
     }
+    renderQuotaTrend();
     var failed=!window.echarts && poolState.chartsFailed;
     poolEl('charts-status').textContent=window.echarts?'':(failed?'图表资源加载失败，数值统计仍可查看；重新进入本页签会再次加载。':'图表加载中…');
     poolEl('charts-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');
   }
   function fetchPool() {
+    fetchQuota();
     var key=getStoredKey();
     if (!key || currentTab!=='pool' || !firstSuccess || poolState.controller || poolState.saving) return;
     var generation=poolState.generation,controller=new AbortController();poolState.controller=controller;
@@ -1932,6 +2196,9 @@
       .catch(function(e){if(saveToken===poolState.saveToken && e.name!=='AbortError')poolStatus('保存失败：'+e.message,true);})
       .finally(function(){if(saveToken===poolState.saveToken){poolState.saveController=null;setPoolSaving(false);if(currentTab==='pool')poolState.timer=setInterval(fetchPool,10000);}});
   }
+  quotaEl('settings').addEventListener('submit', saveQuotaSettings);
+  quotaEl('settings').addEventListener('input', function () { quotaState.dirty = true; quotaStatus('有未保存的修改', false); });
+  quotaEl('scan-enabled').addEventListener('change', function () { saveQuotaSettings(); });
   poolEl('config').addEventListener('submit',savePool);
   poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});
   poolEl('enabled').addEventListener('change',function(){poolEl('fail-fast').disabled=!this.checked;if(!this.checked)poolEl('fail-fast').checked=false;});
@@ -2442,7 +2709,7 @@
       renderAccountView({ resetPage: true, rebuildOptions: false });
     });
   });
-  ['account-plan-filter', 'account-status-filter', 'account-error-filter'].forEach(function (id) {
+  ['account-plan-filter', 'account-status-filter', 'account-error-filter', 'account-quota-filter', 'account-quota-sort'].forEach(function (id) {
     els[id].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   });
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });

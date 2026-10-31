@@ -383,3 +383,59 @@ for (const success of [true,false]) {
     assert.equal(element('pool-status').textContent,'已保存，等待配置热更新');
   });
 }
+
+vm.runInContext(logicBlock('CODEX_QUOTA_LOGIC'), context);
+const quotaLogic = context.CodexQuotaLogic;
+const identity = (value) => String(value);
+
+test('windowLabel follows the actual window length', () => {
+  assert.equal(quotaLogic.windowLabel(300), '5h');
+  assert.equal(quotaLogic.windowLabel(10080), '周');
+  assert.equal(quotaLogic.windowLabel(43200), '月');
+  assert.equal(quotaLogic.windowLabel(1440), '1天');
+  assert.equal(quotaLogic.windowLabel(90), '90分');
+});
+
+test('applyView filters only Codex rows and sorts unknown quota last', () => {
+  const entries = [
+    { name: 'gem', provider: 'gemini' },
+    { name: 'empty', provider: 'codex' },
+    { name: 'high', provider: 'codex' },
+    { name: 'low', provider: 'codex' },
+  ];
+  const rows = { high: { remaining: 80 }, low: { remaining: 2 } };
+  assert.deepEqual(Array.from(quotaLogic.applyView(entries, rows, 'low', ''), (row) => row.name), ['low']);
+  assert.deepEqual(Array.from(quotaLogic.applyView(entries, rows, 'unknown', ''), (row) => row.name), ['empty']);
+  assert.deepEqual(Array.from(quotaLogic.applyView(entries, rows, '', 'asc'), (row) => row.name), ['low', 'high', 'gem', 'empty']);
+  assert.deepEqual(Array.from(quotaLogic.applyView(entries, rows, '', 'desc'), (row) => row.name), ['high', 'low', 'gem', 'empty']);
+});
+
+test('cellMarkup shows bars, reset, pending, duplicate and staleness', () => {
+  const now = Date.parse('2026-10-31T00:00:00Z');
+  const html = quotaLogic.cellMarkup({
+    remaining: 5, duplicate: true, observed_at: '2026-10-30T22:00:00Z',
+    windows: [
+      { minutes: 300, used_percent: 95, reset_at: '2026-10-31T01:00:00Z' },
+      { minutes: 10080, used_percent: 0, pending: true },
+    ],
+  }, now, identity);
+  assert.match(html, /5h 窗口：已用 95%，1 小时后恢复/);
+  assert.match(html, /width:5%/);
+  assert.match(html, /待确认/);
+  assert.match(html, /重复/);
+  assert.match(html, /2 小时前/);
+  assert.match(quotaLogic.cellMarkup(undefined, now, identity), /未知/);
+  assert.match(quotaLogic.cellMarkup({ invalid: true, windows: [] }, now, identity), /失效/);
+});
+
+test('advice explains both gaps and low confidence', () => {
+  const advice = quotaLogic.advice({
+    unknown: 30, settings: { headroom_percent: 20, horizon_hours: 24 },
+    advice: { recommended_accounts: 7, rpm_shortfall: 3, quota_shortfall: 7, usable_capacity: 60, target_rpm: 120, peak_rpm: 100, runway_hours: 3, warming_up: true, low_confidence: true },
+  });
+  assert.equal(advice.count, 7);
+  assert.match(advice.lines[0], /缺 3 个账号/);
+  assert.match(advice.lines[1], /预计 3 小时后额度不足，24 小时内缺 7 个账号/);
+  assert.match(advice.lines[2], /数据积累中/);
+  assert.match(advice.lines[3], /30 个账号额度未知/);
+});

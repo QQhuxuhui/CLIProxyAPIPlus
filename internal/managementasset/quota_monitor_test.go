@@ -392,3 +392,20 @@ func TestQuotaMonitorHTMLHasNoRemoteScripts(t *testing.T) {
 		t.Fatalf("unexpected dynamic script sources: %v", dynamic)
 	}
 }
+
+func TestQuotaMonitorHTMLHasCodexQuotaViews(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		"/v0/management/codex-quota/accounts",
+		"/v0/management/codex-quota/settings",
+		`id="account-quota-filter"`,
+		`id="account-quota-sort"`,
+		`id="quota-advice-count"`,
+		`id="quota-scan-enabled"`,
+		`id="quota-trend-chart"`,
+	} {
+		if !strings.Contains(s, marker) {
+			t.Errorf("missing %q", marker)
+		}
+	}
+}
