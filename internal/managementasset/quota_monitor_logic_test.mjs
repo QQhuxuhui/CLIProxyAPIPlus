@@ -147,6 +147,26 @@ test('statusError falls back to status when the structured body carries no code'
   });
 });
 
+test('accountProvider normalizes case, whitespace and missing values', () => {
+  assert.equal(logic.accountProvider({ provider: ' Codex ' }), 'codex');
+  for (const entry of [{ provider: '   ' }, { provider: null }, {}, null]) assert.equal(logic.accountProvider(entry), '—');
+});
+
+test('filterAccounts narrows by provider and combines with other filters', () => {
+  const fixtures = [
+    { name: 'alpha', provider: 'codex', status: 'active' },
+    { name: 'beta', provider: 'CODEX', status: 'error' },
+    { name: 'gamma', provider: 'gemini', status: 'active' },
+    { name: 'empty', provider: ' ', status: 'active' },
+  ];
+  const names = (filters) => Array.from(logic.filterAccounts(fixtures, filters), (row) => row.name);
+  assert.deepEqual(names({ provider: 'codex' }), ['alpha', 'beta']);
+  assert.deepEqual(names({ provider: '—' }), ['empty']);
+  assert.deepEqual(names({ provider: 'codex', status: 'error' }), ['beta']);
+  assert.deepEqual(names({ provider: 'claude' }), []);
+  assert.equal(names({}).length, 4);
+});
+
 test('filterAccounts narrows to one parsed error label', () => {
   const quota = JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } });
   const fixtures = [

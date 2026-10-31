@@ -573,6 +573,7 @@
       <h2 class="section-title">账号列表</h2>
       <div class="account-filters">
         <div class="account-filter"><label for="account-name-filter">账号名称</label><input id="account-name-filter" type="search" placeholder="搜索账号名称"></div>
+        <div class="account-filter"><label for="account-provider-filter">账号类型</label><select id="account-provider-filter"><option value="">全部</option></select></div>
         <div class="account-filter"><label for="account-plan-filter">套餐</label><select id="account-plan-filter"><option value="">全部</option></select></div>
         <div class="account-filter"><label for="account-created-from">导入时间（从）</label><input id="account-created-from" type="date"></div>
         <div class="account-filter"><label for="account-created-to">导入时间（到）</label><input id="account-created-to" type="date"></div>
@@ -886,7 +887,7 @@
   var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
-  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-reset','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-provider-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-reset','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
   var accountsData = []; // account rows currently rendered (raw auth-files entries)
   var accountPage = 1;
   var quotaRows = {};    // Codex quota per account name, served from the background aggregate
@@ -1538,9 +1539,13 @@
       function pad(value) { return value < 10 ? '0' + value : String(value); }
       return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
     }
+    function accountProvider(entry) {
+      return String(entry && entry.provider || '').trim().toLowerCase() || '—';
+    }
     function filterAccounts(entries, filters) {
       filters = filters || {};
       var name = String(filters.name || '').toLowerCase();
+      var provider = String(filters.provider || '');
       var plan = String(filters.plan || '');
       var status = String(filters.status || '');
       var error = String(filters.error || '');
@@ -1548,6 +1553,7 @@
       var to = String(filters.to || '');
       return (entries || []).filter(function (entry) {
         if (name && String(entry && entry.name || '').toLowerCase().indexOf(name) === -1) return false;
+        if (provider && accountProvider(entry) !== provider) return false;
         if (plan && accountPlan(entry) !== plan) return false;
         if (status && String(entry && entry.status || '') !== status) return false;
         if (error && statusError(entry).text !== error) return false;
@@ -1695,7 +1701,7 @@
       return { emails: emails, missing: missing };
     }
     return {
-      accountPlan: accountPlan, authFailures: authFailures, localDateKey: localDateKey, filterAccounts: filterAccounts,
+      accountPlan: accountPlan, accountProvider: accountProvider, authFailures: authFailures, localDateKey: localDateKey, filterAccounts: filterAccounts,
       paginate: paginate, preserveSelectedOption: preserveSelectedOption,
       statusError: statusError, requestStats: requestStats, formatSuccessRate: formatSuccessRate,
       accountKey: accountKey, pruneSelection: pruneSelection, selectionState: selectionState,
@@ -1803,6 +1809,7 @@
   function currentAccountFilters() {
     return {
       name: els['account-name-filter'].value.trim(),
+      provider: els['account-provider-filter'].value,
       plan: els['account-plan-filter'].value,
       from: els['account-created-from'].value,
       to: els['account-created-to'].value,
@@ -1826,20 +1833,25 @@
   }
 
   function rebuildAccountFilterOptions(preserveMissingPlan) {
+    var providers = [];
     var plans = [];
     var statuses = [];
     var errors = [];
     accountsData.forEach(function (entry) {
+      var provider = AccountViewLogic.accountProvider(entry);
       var plan = accountPlan(entry);
       var status = String(entry && entry.status || '');
       var error = AccountViewLogic.statusError(entry).text;
+      if (providers.indexOf(provider) < 0) providers.push(provider);
       if (plans.indexOf(plan) < 0) plans.push(plan);
       if (status && statuses.indexOf(status) < 0) statuses.push(status);
       if (error && errors.indexOf(error) < 0) errors.push(error);
     });
     plans = AccountViewLogic.preserveSelectedOption(plans, els['account-plan-filter'].value, preserveMissingPlan);
+    providers.sort();
     statuses.sort();
     errors.sort();
+    replaceFilterOptions(els['account-provider-filter'], providers, function (value) { return value === '—' ? '— / 未知' : value; });
     replaceFilterOptions(els['account-plan-filter'], plans, function (value) { return value === '—' ? '— / 未知' : value; });
     replaceFilterOptions(els['account-status-filter'], statuses);
     replaceFilterOptions(els['account-error-filter'], errors);
@@ -2521,6 +2533,7 @@
   quotaEl('scan-enabled').addEventListener('change', saveQuotaSettings);
   quotaEl('details').addEventListener('toggle', renderQuotaTrend);
   quotaEl('reset-link').addEventListener('click', function () {
+    els['account-provider-filter'].value = '';
     els['account-quota-filter'].value = 'resettable';
     switchTab('accounts');
     renderAccountView({ resetPage: true, rebuildOptions: false });
@@ -3036,7 +3049,7 @@
       renderAccountView({ resetPage: true, rebuildOptions: false });
     });
   });
-  ['account-plan-filter', 'account-status-filter', 'account-error-filter', 'account-quota-filter', 'account-quota-sort'].forEach(function (id) {
+  ['account-provider-filter', 'account-plan-filter', 'account-status-filter', 'account-error-filter', 'account-quota-filter', 'account-quota-sort'].forEach(function (id) {
     els[id].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   });
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });

@@ -123,6 +123,7 @@ func TestQuotaMonitorHTMLHasAccountFiltersAndPagination(t *testing.T) {
 	s := string(QuotaMonitorHTML())
 	for _, marker := range []string{
 		`id="account-name-filter"`,
+		`id="account-provider-filter"`,
 		`id="account-plan-filter"`,
 		`id="account-created-from"`,
 		`id="account-created-to"`,
