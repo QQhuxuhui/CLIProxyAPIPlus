@@ -33,6 +33,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/codex-quota", s.mgmt.GetCodexQuota)
 		mgmt.GET("/codex-quota/accounts", s.mgmt.GetCodexQuotaAccounts)
 		mgmt.PUT("/codex-quota/settings", s.mgmt.PutCodexQuotaSettings)
+		mgmt.GET("/codex-quota/reset-check", s.mgmt.GetCodexQuotaResetCheck)
+		mgmt.POST("/codex-quota/reset", s.mgmt.PostCodexQuotaReset)
 		mgmt.GET("/codex-fast-session", s.mgmt.GetCodexFastSession)
 		mgmt.GET("/codex-egress-pool", s.mgmt.GetCodexEgressPool)
 		mgmt.PUT("/codex-egress-pool/config", s.mgmt.PutCodexEgressPoolConfig)

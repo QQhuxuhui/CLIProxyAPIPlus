@@ -428,14 +428,116 @@ test('cellMarkup shows bars, reset, pending, duplicate and staleness', () => {
   assert.match(quotaLogic.cellMarkup({ invalid: true, windows: [] }, now, identity), /失效/);
 });
 
-test('advice explains both gaps and low confidence', () => {
-  const advice = quotaLogic.advice({
-    unknown: 30, settings: { headroom_percent: 20, horizon_hours: 24 },
-    advice: { recommended_accounts: 7, rpm_shortfall: 3, quota_shortfall: 7, usable_capacity: 60, target_rpm: 120, peak_rpm: 100, runway_hours: 3, warming_up: true, low_confidence: true },
-  });
-  assert.equal(advice.count, 7);
-  assert.match(advice.lines[0], /缺 3 个账号/);
-  assert.match(advice.lines[1], /预计 3 小时后额度不足，24 小时内缺 7 个账号/);
-  assert.match(advice.lines[2], /数据积累中/);
-  assert.match(advice.lines[3], /30 个账号额度未知/);
+const quotaSummary = (overrides = {}) => ({
+  files: 860, unique_accounts: 646, duplicate_files: 201, invalid: 21, disabled: 0, usable: 94, unknown: 66,
+  settings: { headroom_percent: 20, horizon_hours: 24 },
+  plans: [
+    { plan: 'plus', accounts: 633, usable: 94, recover_24h: 111, windows: [{ minutes: 300, accounts: 573, avg_remaining: 70.7 }, { minutes: 10080, accounts: 579, avg_remaining: 11.6 }] },
+    { plan: 'unknown', accounts: 8, usable: 0, recover_24h: 0, windows: [] },
+  ],
+  advice: { recommended_accounts: 0, rpm_shortfall: 0, peak_rpm: 410, target_rpm: 492, usable_capacity: 6400, runway_hours: null, warming_up: true, low_confidence: false },
+  ...overrides,
+});
+
+test('overview flags a low window even when no accounts are needed', () => {
+  const view = quotaLogic.overview(quotaSummary());
+  assert.equal(view.tone, 'warn');
+  assert.equal(view.count, 0);
+  assert.equal(view.headline, '暂时不用加号，但周额度偏低');
+  assert.match(view.detail, /多数账号已用完额度/);
+  assert.deepEqual(Array.from(view.tiles, (tile) => tile.value), ['94', '收集中', '+111']);
+  assert.match(view.tiles[2].note, /约 205 个可用/);
+  assert.deepEqual(Array.from(view.states, (state) => state.count), [94, 486, 66]);
+  assert.match(view.stateExtra, /21 个文件已失效/);
+  assert.deepEqual(Array.from(view.meters, (meter) => `${meter.label}|${meter.value}|${meter.status}`), ['5 小时额度|剩 71%|充足', '周额度|剩 12%|偏低', '请求容量|峰值 410 / 分钟|够用']);
+  assert.equal(view.plans[0].remaining, '5 小时 71% · 周 12%');
+  assert.equal(view.plans[1].plan, '未识别');
+  assert.equal(view.plans[1].remaining, '暂无数据');
+});
+
+test('overview reports the add-account recommendation and its cause', () => {
+  const quota = quotaLogic.overview(quotaSummary({ advice: { recommended_accounts: 120, usable_capacity: 1520, peak_rpm: 410, target_rpm: 492, runway_hours: 6 } }));
+  assert.equal(quota.tone, 'danger');
+  assert.equal(quota.headline, '建议今天加 120 个号');
+  assert.match(quota.detail, /约 6 小时后可用账号撑不住高峰/);
+  assert.equal(quota.tiles[1].value, '约 6 小时');
+  const rough = quotaLogic.overview(quotaSummary({ advice: { recommended_accounts: 70, runway_hours: 12, warming_up: true } }));
+  assert.match(rough.detail, /用量数据不足 24 小时，仅供参考/);
+  const rpm = quotaLogic.overview(quotaSummary({ advice: { recommended_accounts: 5, rpm_shortfall: 5, usable_capacity: 400, peak_rpm: 410, target_rpm: 492, runway_hours: null } }));
+  assert.match(rpm.detail, /高峰需要 492 \/ 分钟，现在只能承载 400 \/ 分钟/);
+  assert.equal(rpm.meters.at(-1).status, '不够用');
+});
+
+test('overview weighs plan windows and covers the healthy states', () => {
+  const plans = [
+    { plan: 'free', accounts: 90, usable: 90, recover_24h: 0, windows: [{ minutes: 43200, accounts: 90, avg_remaining: 80 }] },
+    { plan: 'plus', accounts: 10, usable: 10, recover_24h: 0, windows: [{ minutes: 43200, accounts: 10, avg_remaining: 60 }] },
+  ];
+  const base = { unique_accounts: 100, usable: 100, unknown: 0, invalid: 0, plans };
+  const healthy = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 90, usable_capacity: 4000, warming_up: false } }));
+  assert.equal(healthy.headline, '额度充足，不用加号');
+  assert.equal(healthy.meters[0].value, '剩 78%');
+  assert.equal(healthy.meters.length, 2);
+  assert.equal(healthy.tiles[1].value, '24 小时以上');
+  assert.equal(healthy.tiles[2].note, '暂无账号恢复');
+  assert.equal(healthy.stateExtra, '');
+  const warming = quotaLogic.overview(quotaSummary({ ...base, advice: { warming_up: true } }));
+  assert.equal(warming.headline, '暂时不用加号');
+  const unknown = quotaLogic.overview(quotaSummary({ ...base, unknown: 30, advice: { low_confidence: true } }));
+  assert.equal(unknown.headline, '暂时不用加号，但有账号还没查到额度');
+  assert.match(unknown.detail, /30 个账号暂无额度数据/);
+});
+
+const NOW = Date.parse('2026-10-31T00:00:00Z');
+const resetRow = (overrides = {}) => ({ remaining: 0, reset_count: 1, account_key: 'a', windows: [], ...overrides });
+
+test('resettable filter keeps credits and leads with the soonest expiry', () => {
+  const entries = [
+    { name: 'none', provider: 'codex' }, { name: 'later', provider: 'codex' }, { name: 'soon', provider: 'codex' },
+    { name: 'open', provider: 'codex' }, { name: 'dead', provider: 'codex' }, { name: 'gem', provider: 'gemini' },
+  ];
+  const rows = {
+    none: resetRow({ reset_count: 0 }), later: resetRow({ reset_expires_at: '2026-11-20T00:00:00Z' }), soon: resetRow({ reset_expires_at: '2026-11-02T00:00:00Z' }),
+    open: resetRow(), dead: resetRow({ invalid: true }), gem: resetRow(),
+  };
+  assert.deepEqual(Array.from(quotaLogic.applyView(entries, rows, 'resettable', ''), (row) => row.name), ['soon', 'later', 'open']);
+  assert.deepEqual(Array.from(quotaLogic.applyView(entries, { ...rows, soon: resetRow({ remaining: 50, reset_expires_at: '2026-11-02T00:00:00Z' }) }, 'resettable', 'desc'), (row) => row.name), ['soon', 'later', 'open']);
+});
+
+test('cellMarkup offers reset only when a credit exists', () => {
+  const windows = [{ minutes: 10080, used_percent: 100 }];
+  const html = quotaLogic.cellMarkup(resetRow({ windows, reset_expires_at: '2026-11-06T00:00:00Z' }), NOW, identity, 'a.json');
+  assert.match(html, /1 次可重置 · 6 天后过期/);
+  assert.match(html, /quota-reset-button" data-name="a\.json"/);
+  assert.doesNotMatch(quotaLogic.cellMarkup(resetRow({ windows, reset_count: 0 }), NOW, identity, 'a.json'), /quota-reset/);
+  assert.doesNotMatch(quotaLogic.cellMarkup(resetRow({ windows, reset_count: null }), NOW, identity, 'a.json'), /quota-reset/);
+  assert.doesNotMatch(quotaLogic.cellMarkup(resetRow({ windows, invalid: true }), NOW, identity, 'a.json'), /quota-reset/);
+  assert.match(quotaLogic.cellMarkup(resetRow(), NOW, identity, 'a.json'), /quota-reset-button/);
+});
+
+test('resetPlan spends one credit per exhausted account and reports skips', () => {
+  const rows = {
+    one: resetRow({ account_key: '1' }), oneDup: resetRow({ account_key: '1' }), live: resetRow({ account_key: '2', remaining: 40 }),
+    none: resetRow({ account_key: '3', reset_count: 0 }), two: resetRow({ account_key: '4', remaining: null }),
+  };
+  const plan = quotaLogic.resetPlan(['one', 'oneDup', 'live', 'none', 'two', 'gone'], rows);
+  assert.deepEqual(Array.from(plan.targets), ['one', 'two']);
+  assert.deepEqual([plan.live, plan.none, plan.duplicates], [1, 2, 1]);
+  const message = quotaLogic.resetPlanMessage(plan);
+  assert.match(message, /将消耗 2 次主动重置/);
+  assert.match(message, /1 个额度未用完，2 个没有重置次数，1 个重复文件/);
+});
+
+test('reset confirmation warns before wasting quota', () => {
+  const wasteful = quotaLogic.resetConfirmMessage({ name: 'a.json', count: 2, remaining: 62.4, expires_at: '2026-11-06T00:00:00Z' }, NOW);
+  assert.match(wasteful, /剩余次数：2/);
+  assert.match(wasteful, /最早过期：6 天后过期/);
+  assert.match(wasteful, /当前还剩 62%，现在重置会浪费/);
+  assert.doesNotMatch(quotaLogic.resetConfirmMessage({ name: 'a.json', count: 1, remaining: 0 }, NOW), /浪费/);
+});
+
+test('overview links to resettable accounts only when some exist', () => {
+  const later = new Date(Date.now() + 6 * 86400000).toISOString();
+  assert.match(quotaLogic.overview(quotaSummary({ reset: { accounts: 5, exhausted: 4, expires_at: later } })).resetText, /5 个账号可重置，其中 4 个额度已用完，最早 .*天后过期/);
+  assert.equal(quotaLogic.overview(quotaSummary({ reset: { accounts: 0, exhausted: 0 } })).resetText, '');
 });

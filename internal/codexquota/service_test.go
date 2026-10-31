@@ -233,8 +233,10 @@ func TestCandidatesSkipExhaustedFreshAndDuplicate(t *testing.T) {
 	s.accounts = map[string]*Account{
 		"never":     {ID: "never", AccountID: "1"},
 		"stale":     {ID: "stale", AccountID: "2", ObservedAt: old, Windows: []Window{{Minutes: 300, UsedPercent: 10, ResetAt: now.Add(time.Hour)}}},
-		"fresh":     {ID: "fresh", AccountID: "3", ObservedAt: now, Windows: []Window{{Minutes: 300, UsedPercent: 10, ResetAt: now.Add(time.Hour)}}},
-		"exhausted": {ID: "exhausted", AccountID: "4", ObservedAt: old, Windows: []Window{{Minutes: 10080, UsedPercent: 100, ResetAt: now.Add(time.Hour)}}},
+		"fresh":     {ID: "fresh", AccountID: "3", ObservedAt: now, ScanAt: old, Windows: []Window{{Minutes: 300, UsedPercent: 10, ResetAt: now.Add(time.Hour)}}},
+		"exhausted": {ID: "exhausted", AccountID: "4", ObservedAt: old, ScanAt: old, Windows: []Window{{Minutes: 10080, UsedPercent: 100, ResetAt: now.Add(time.Hour)}}},
+		"reset-due": {ID: "reset-due", AccountID: "9", ObservedAt: old, ScanAt: now.Add(-resetRecheck), Windows: []Window{{Minutes: 10080, UsedPercent: 100, ResetAt: now.Add(time.Hour)}}},
+		"busy":      {ID: "busy", AccountID: "10", ObservedAt: now, Windows: []Window{{Minutes: 300, UsedPercent: 10, ResetAt: now.Add(time.Hour)}}},
 		"recovered": {ID: "recovered", AccountID: "5", ObservedAt: now, Windows: []Window{{Minutes: 10080, UsedPercent: 100, ResetAt: now.Add(-time.Minute)}}},
 		"disabled":  {ID: "disabled", AccountID: "6", Disabled: true},
 		"denied":    {ID: "denied", AccountID: "7", ScanDenied: true, ScanAt: now.Add(-time.Hour)},
@@ -245,7 +247,7 @@ func TestCandidatesSkipExhaustedFreshAndDuplicate(t *testing.T) {
 	for _, id := range s.candidatesLocked(now) {
 		got[id] = true
 	}
-	want := []string{"never", "stale", "recovered", "dup-a"}
+	want := []string{"never", "stale", "recovered", "dup-a", "reset-due", "busy"}
 	if len(got) != len(want) {
 		t.Fatalf("candidates = %v", got)
 	}

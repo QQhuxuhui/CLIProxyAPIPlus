@@ -78,6 +78,7 @@ type Summary struct {
 	Unknown        int          `json:"unknown"`
 	Plans          []PlanStat   `json:"plans"`
 	Advice         Advice       `json:"advice"`
+	Reset          ResetSummary `json:"reset"`
 	Trend          []TrendPoint `json:"trend"`
 	Settings       Settings     `json:"settings"`
 	Scan           ScanStatus   `json:"scan"`
@@ -92,6 +93,17 @@ type AccountRow struct {
 	Source     string      `json:"source,omitempty"`
 	Duplicate  bool        `json:"duplicate"`
 	Invalid    bool        `json:"invalid"`
+	// AccountKey groups files sharing one upstream account and its reset credits.
+	AccountKey     string    `json:"account_key"`
+	ResetCount     *int      `json:"reset_count"`
+	ResetExpiresAt time.Time `json:"reset_expires_at,omitempty"`
+}
+
+// ResetSummary counts redeemable resets across unique accounts.
+type ResetSummary struct {
+	Accounts  int       `json:"accounts"`
+	Exhausted int       `json:"exhausted"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 // RowWindow is a window with its reset rolled forward to now.
@@ -246,6 +258,8 @@ func buildSummary(accounts map[string]*Account, history *history, capacity capac
 		}
 	}
 
+	out.Reset = buildResetSummary(accounts, now)
+
 	covered := history.covered(now)
 	warming := covered < 24*time.Hour
 	var runway *float64
@@ -329,7 +343,25 @@ func distributionBucket(remaining float64) int {
 
 func round1(value float64) float64 { return math.Round(value*10) / 10 }
 
+func buildResetSummary(accounts map[string]*Account, now time.Time) ResetSummary {
+	out := ResetSummary{}
+	for _, account := range resetSources(accounts, now) {
+		if *account.ResetCount <= 0 {
+			continue
+		}
+		out.Accounts++
+		if remaining, _ := remainingOf(account.Windows, now); remaining < usableFloorPercent {
+			out.Exhausted++
+		}
+		if expires := account.ResetExpiresAt; !expires.IsZero() && (out.ExpiresAt.IsZero() || expires.Before(out.ExpiresAt)) {
+			out.ExpiresAt = expires
+		}
+	}
+	return out
+}
+
 func buildRows(accounts map[string]*Account, now time.Time) map[string]AccountRow {
+	resets := resetSources(accounts, now)
 	counts := map[string]int{}
 	newest := map[string]*Account{}
 	for _, account := range accounts {
@@ -343,7 +375,12 @@ func buildRows(accounts map[string]*Account, now time.Time) map[string]AccountRo
 	for _, account := range accounts {
 		// Files of one account share a quota, so each shows the newest reading.
 		source := newest[account.key()]
-		row := AccountRow{Plan: source.Plan, ObservedAt: source.ObservedAt, Source: source.Source, Duplicate: counts[account.key()] > 1, Invalid: account.isInvalid(), Windows: []RowWindow{}}
+		row := AccountRow{Plan: source.Plan, ObservedAt: source.ObservedAt, Source: source.Source, Duplicate: counts[account.key()] > 1, Invalid: account.isInvalid(), Windows: []RowWindow{}, AccountKey: account.key()}
+		if reset, ok := resets[account.key()]; ok {
+			count := *reset.ResetCount
+			row.ResetCount = &count
+			row.ResetExpiresAt = reset.ResetExpiresAt
+		}
 		if len(source.Windows) > 0 {
 			remaining, _ := remainingOf(source.Windows, now)
 			row.Remaining = &remaining

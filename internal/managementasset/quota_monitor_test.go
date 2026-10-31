@@ -403,6 +403,11 @@ func TestQuotaMonitorHTMLHasCodexQuotaViews(t *testing.T) {
 		`id="quota-advice-count"`,
 		`id="quota-scan-enabled"`,
 		`id="quota-trend-chart"`,
+		`id="account-bulk-reset"`,
+		`id="quota-reset-link"`,
+		`value="resettable"`,
+		"/v0/management/codex-quota/reset-check",
+		"/v0/management/codex-quota/reset",
 	} {
 		if !strings.Contains(s, marker) {
 			t.Errorf("missing %q", marker)

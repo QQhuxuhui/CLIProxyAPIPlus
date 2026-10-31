@@ -403,17 +403,63 @@
   .quota-meta { font-size: 11px; color: var(--text-3); }
   .quota-tag { display: inline-block; margin-right: 4px; padding: 0 5px; font-size: 10.5px; line-height: 16px; color: var(--warn); background: var(--warn-soft); border-radius: 3px; }
   .quota-tag.danger { color: var(--danger); background: var(--danger-soft); }
-  .quota-advice { display: flex; gap: 28px; align-items: center; margin: 18px 0; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line-2); border-left: 3px solid var(--off); border-radius: var(--radius); }
-  .quota-advice.ok { border-left-color: var(--ok); }
-  .quota-advice.danger { border-left-color: var(--danger); }
-  .quota-advice-count { flex: none; min-width: 112px; font-size: 12px; color: var(--text-3); }
-  .quota-advice-count strong { display: block; margin-top: 6px; font-size: 34px; font-weight: 600; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
-  .quota-advice ul { margin: 0; padding: 0; list-style: none; font-size: 13px; line-height: 1.8; color: var(--text-2); }
-  .quota-dist { display: flex; width: 140px; height: 8px; overflow: hidden; background: var(--surface-3); border-radius: 4px; }
-  .quota-windows { display: grid; gap: 2px; font-size: 12px; }
-  .quota-plan-table { margin-bottom: 18px; }
+  .quota-heading { align-items: flex-start; }
+  .quota-heading-side { display: grid; justify-items: end; gap: 2px; }
+  .quota-switch { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; color: var(--text-2); cursor: pointer; }
+  .quota-switch input { position: absolute; opacity: 0; width: 38px; height: 22px; margin: 0; cursor: pointer; }
+  .quota-switch i { position: relative; display: block; width: 38px; height: 22px; background: var(--surface-3); border-radius: 11px; }
+  .quota-switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: var(--text); border-radius: 50%; }
+  .quota-switch input:checked + i { background: var(--accent-strong); }
+  .quota-switch input:checked + i::after { left: 19px; }
+  .quota-switch input:disabled + i { opacity: .55; }
+  .quota-switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .quota-tone-ok { --tone: var(--ok); }
+  .quota-tone-warn { --tone: var(--warn); }
+  .quota-tone-danger { --tone: var(--danger); }
+  .quota-tone-off { --tone: var(--off); }
+  .quota-verdict { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 16px; padding: 28px; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+  .quota-verdict-main { flex: 999 1 460px; min-width: 0; }
+  .quota-verdict-tone { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--tone); }
+  .quota-verdict-tone::before { content: ""; width: 8px; height: 8px; background: var(--tone); border-radius: 50%; }
+  .quota-verdict-tone:empty { display: none; }
+  .quota-verdict h3 { margin: 10px 0 8px; font-size: 32px; line-height: 1.25; font-weight: 650; color: var(--text); }
+  .quota-verdict-detail { max-width: 620px; font-size: 15px; color: var(--text-2); }
+  .quota-verdict-count { flex: 1 1 130px; font-size: 13px; color: var(--text-3); text-align: right; }
+  .quota-verdict-count strong { display: block; font-size: 56px; line-height: 1.1; font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+  .quota-verdict.quota-tone-danger .quota-verdict-count strong { color: var(--danger); }
+  .quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .quota-card { padding: 20px 22px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .quota-card-label { font-size: 13px; color: var(--text-3); }
+  .quota-card-value { margin-top: 6px; font-size: 30px; line-height: 1.2; font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+  .quota-card-note { margin-top: 4px; font-size: 13px; color: var(--text-3); }
+  .quota-states { margin-bottom: 16px; }
+  .quota-reset { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--accent); }
+  .quota-reset-button { padding: 2px 8px; font-size: 11px; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 5px; cursor: pointer; white-space: nowrap; }
+  .quota-reset-button:disabled { opacity: .5; cursor: default; }
+  .quota-reset-link { display: block; width: 100%; min-height: 44px; margin-bottom: 16px; padding: 10px 22px; font-size: 14px; color: var(--accent); text-align: left; background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: var(--radius); cursor: pointer; }
+  .quota-states h3 { margin-bottom: 14px; font-size: 15px; font-weight: 600; color: var(--text); }
+  .quota-state-bar { display: flex; gap: 3px; height: 28px; }
+  .quota-state-bar span { min-width: 6px; background: var(--tone); border-radius: 4px; }
+  .quota-state-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 16px; }
+  .quota-state-name { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+  .quota-state-name::before { content: ""; width: 10px; height: 10px; background: var(--tone); border-radius: 3px; }
+  .quota-state-count { margin-top: 2px; font-size: 22px; font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+  .quota-state-note { font-size: 12px; color: var(--text-3); }
+  .quota-state-extra { margin-top: 14px; font-size: 13px; color: var(--text-3); }
+  .quota-state-extra:empty { display: none; }
+  .quota-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 14px; font-weight: 600; color: var(--text); }
+  .quota-meter-head span:last-child { font-size: 13px; color: var(--tone); }
+  .quota-meter-value { margin-top: 8px; font-size: 26px; line-height: 1.3; font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+  .quota-meter-track { height: 8px; margin-top: 10px; overflow: hidden; background: var(--surface-3); border-radius: 4px; }
+  .quota-meter-track span { display: block; height: 100%; background: var(--tone); border-radius: 4px; }
+  .quota-details { margin-bottom: 24px; }
+  .quota-details summary { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); cursor: pointer; }
+  .quota-plan-table { margin: 6px 0 16px; }
+  .quota-detail-note { margin-bottom: 16px; font-size: 12px; color: var(--text-3); }
   .quota-scan-line { margin-top: 8px; }
-  @media (max-width: 760px) { .quota-advice { flex-direction: column; align-items: flex-start; gap: 12px; } }
+  .pool-monitor-heading { margin-top: 8px; }
+  .pool-monitor-heading h3 { font-size: 15px; font-weight: 600; color: var(--text); }
+  @media (max-width: 760px) { .quota-verdict { padding: 22px; } .quota-verdict h3 { font-size: 26px; } .quota-verdict-count { text-align: left; } .quota-heading { flex-wrap: wrap; } .quota-heading-side { justify-items: start; } }
   @media (max-width: 760px) { .pool-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pool-charts { grid-template-columns: 1fr; } }
 
   @media (prefers-reduced-motion: reduce) {
@@ -532,7 +578,7 @@
         <div class="account-filter"><label for="account-created-to">导入时间（到）</label><input id="account-created-to" type="date"></div>
         <div class="account-filter"><label for="account-status-filter">状态</label><select id="account-status-filter"><option value="">全部</option></select></div>
         <div class="account-filter"><label for="account-error-filter">错误</label><select id="account-error-filter"><option value="">全部</option></select></div>
-        <div class="account-filter"><label for="account-quota-filter">Codex 额度</label><select id="account-quota-filter"><option value="">全部</option><option value="low">低于 5%</option><option value="mid">5%–30%</option><option value="high">30% 以上</option><option value="unknown">未知</option></select></div>
+        <div class="account-filter"><label for="account-quota-filter">Codex 额度</label><select id="account-quota-filter"><option value="">全部</option><option value="low">低于 5%</option><option value="mid">5%–30%</option><option value="high">30% 以上</option><option value="unknown">未知</option><option value="resettable">可重置</option></select></div>
         <div class="account-filter"><label for="account-quota-sort">额度排序</label><select id="account-quota-sort"><option value="">默认</option><option value="asc">剩余从低到高</option><option value="desc">剩余从高到低</option></select></div>
       </div>
       <div id="account-bulk-bar" class="account-bulk-bar" hidden>
@@ -540,6 +586,7 @@
         <div class="account-bulk-actions">
           <button id="account-bulk-clear" type="button" class="account-bulk-button">清除选择</button>
           <button id="account-bulk-export" type="button" class="account-bulk-button" data-tip="导出选中账号的邮箱，每行一个">导出邮箱</button>
+          <button id="account-bulk-reset" type="button" class="account-bulk-button" data-tip="只重置已用完额度的账号，同一账号只消耗一次">批量重置</button>
           <button id="account-bulk-delete" type="button" class="account-bulk-button danger">批量删除</button>
         </div>
       </div>
@@ -726,32 +773,54 @@
     </section>
 
     <section id="tab-pool" hidden>
-      <div class="pool-heading"><div><h2 class="text-lg font-semibold text-slate-900">Codex 号池</h2><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
-      <section id="quota-panel" aria-label="额度与加号建议">
-        <div id="quota-advice" class="quota-advice">
-          <div class="quota-advice-count">建议加号<strong id="quota-advice-count">—</strong></div>
-          <ul id="quota-advice-lines"><li>加载中…</li></ul>
-        </div>
-        <div id="quota-cards" class="pool-cards"></div>
-        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto quota-plan-table">
-          <table class="data-table">
-            <thead><tr><th>套餐</th><th>账号</th><th>可用</th><th>未知</th><th>待确认</th><th>平均剩余</th><th>剩余分布</th><th>24h 恢复</th><th>窗口（平均剩余 · 消耗/小时 · 续航）</th><th>额度缺口</th></tr></thead>
-            <tbody id="quota-plan-rows"></tbody>
-          </table>
-        </div>
-        <form id="quota-settings" class="pool-settings">
-          <div class="pool-switches"><label><input id="quota-scan-enabled" type="checkbox"> 启用后台补扫（按 wham/usage 补齐缺失或过期的额度）</label></div>
-          <div class="pool-fields">
-            <label>补扫并发<input id="quota-concurrency" type="number" min="1" max="50" required></label>
-            <label>过期阈值（分钟）<input id="quota-stale" type="number" min="5" max="1440" required></label>
-            <label>RPM 余量（%）<input id="quota-headroom" type="number" min="0" max="200" required></label>
-            <label>推演时长（小时）<input id="quota-horizon" type="number" min="1" max="720" required></label>
-            <button id="quota-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
-          </div>
+      <div class="pool-heading quota-heading">
+        <div><h2 class="text-lg font-semibold text-slate-900">Codex 号池</h2><p id="quota-updated" class="muted text-xs"></p></div>
+        <div class="quota-heading-side">
+          <label class="quota-switch"><span>自动刷新额度</span><input id="quota-scan-enabled" type="checkbox" role="switch" form="quota-settings" disabled><i aria-hidden="true"></i></label>
           <p id="quota-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
-          <p id="quota-scan-line" class="text-xs text-slate-500 quota-scan-line"></p>
-        </form>
+        </div>
+      </div>
+      <section id="quota-panel" aria-label="额度与加号建议">
+        <div id="quota-advice" class="quota-verdict quota-tone-off">
+          <div class="quota-verdict-main">
+            <p id="quota-verdict-tone" class="quota-verdict-tone"></p>
+            <h3 id="quota-headline">加载中…</h3>
+            <p id="quota-detail" class="quota-verdict-detail"></p>
+          </div>
+          <div class="quota-verdict-count">建议加号<strong id="quota-advice-count">—</strong>个账号</div>
+        </div>
+        <div id="quota-tiles" class="quota-grid"></div>
+        <button id="quota-reset-link" type="button" class="quota-reset-link" hidden></button>
+        <div id="quota-states" class="quota-card quota-states" hidden>
+          <h3 id="quota-state-title"></h3>
+          <div id="quota-state-bar" class="quota-state-bar" role="img"></div>
+          <div id="quota-state-legend" class="quota-state-legend"></div>
+          <p id="quota-state-extra" class="quota-state-extra"></p>
+        </div>
+        <div id="quota-meters" class="quota-grid"></div>
+        <details id="quota-details" class="quota-details">
+          <summary>查看明细和设置</summary>
+          <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto quota-plan-table">
+            <table class="data-table">
+              <thead><tr><th>套餐</th><th>账号</th><th>可用</th><th>平均剩余</th></tr></thead>
+              <tbody id="quota-plan-rows"></tbody>
+            </table>
+          </div>
+          <p id="quota-detail-note" class="quota-detail-note"></p>
+          <div class="pool-chart-card"><h3>近 24 小时可用账号</h3><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时可用账号数折线图"></div></div>
+          <form id="quota-settings" class="pool-settings">
+            <div class="pool-fields">
+              <label>刷新并发<input id="quota-concurrency" type="number" min="1" max="50" required></label>
+              <label>数据过期（分钟）<input id="quota-stale" type="number" min="5" max="1440" required></label>
+              <label>请求量余量（%）<input id="quota-headroom" type="number" min="0" max="200" required></label>
+              <label>预测时长（小时）<input id="quota-horizon" type="number" min="1" max="720" required></label>
+              <button id="quota-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+            </div>
+            <p id="quota-scan-line" class="text-xs text-slate-500 quota-scan-line"></p>
+          </form>
+        </details>
       </section>
+      <div class="pool-heading pool-monitor-heading"><div><h3>请求监控</h3><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
       <form id="pool-config" class="pool-settings">
         <div class="pool-switches">
           <label><input id="pool-enabled" type="checkbox"> 启用速率上限算法</label>
@@ -773,7 +842,6 @@
         <div class="pool-chart-card"><h3>请求 RPM / 预测容量</h3><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="每分钟上游请求量与预测容量折线图"></div></div>
         <div class="pool-chart-card"><h3>成功请求首字延迟</h3><div id="pool-ttft-chart" class="pool-chart" role="img" aria-label="每分钟首字延迟 p50 与 p90 折线图"></div></div>
         <div class="pool-chart-card"><h3>每分钟失败构成</h3><div id="pool-failures-chart" class="pool-chart" role="img" aria-label="过载、限流、额度耗尽及其他错误堆叠柱状图"></div></div>
-        <div class="pool-chart-card"><h3>可用账号 / 平均剩余额度（24 小时）</h3><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时可用账号数与平均剩余额度折线图"></div></div>
         <div class="pool-chart-card"><h3>学到的单号上限分布</h3><div id="pool-limits-chart" class="pool-chart" role="img" aria-label="单号每分钟请求上限分布直方图"></div></div>
       </div>
       <p class="muted text-xs mt-4">过载请求也占用窗口；首字百分位由固定边界直方图估计。成功率、有效成功容量与首字卡片统计最近 5 个分钟桶，快速失败计数统计最近 60 个分钟桶。</p>
@@ -818,7 +886,7 @@
   var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
-  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-reset','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
   var accountsData = []; // account rows currently rendered (raw auth-files entries)
   var accountPage = 1;
   var quotaRows = {};    // Codex quota per account name, served from the background aggregate
@@ -1232,10 +1300,20 @@
     function hours(value) { return value == null ? '充足' : duration(value * 3600000); }
     function isCodex(entry) { return String(entry && entry.provider || '').toLowerCase() === 'codex'; }
     // Quota filters only make sense for Codex rows; sorting keeps the rest at the end.
+    function resetCount(row) { return row && !row.invalid && row.reset_count != null ? row.reset_count : 0; }
+    function resetExpiry(row) { return row && row.reset_expires_at ? new Date(row.reset_expires_at).getTime() : Infinity; }
     function applyView(entries, rows, filter, order) {
       var out = (entries || []).filter(function (entry) {
-        return !filter || (isCodex(entry) && bucket(rows[entry.name]) === filter);
+        if (!filter) return true;
+        if (!isCodex(entry)) return false;
+        return filter === 'resettable' ? resetCount(rows[entry.name]) > 0 : bucket(rows[entry.name]) === filter;
       });
+      // Credits expire unused, so the soonest one leads unless a sort was chosen.
+      if (filter === 'resettable' && !order) {
+        return out.map(function (entry, index) { return { entry: entry, index: index, value: resetExpiry(rows[entry.name]) }; }).sort(function (a, b) {
+          return a.value === b.value ? a.index - b.index : (a.value < b.value ? -1 : 1);
+        }).map(function (item) { return item.entry; });
+      }
       if (!order) return out;
       var direction = order === 'desc' ? -1 : 1;
       function rank(entry) {
@@ -1247,10 +1325,51 @@
         return a.value === b.value ? a.index - b.index : (a.value - b.value) * direction;
       }).map(function (item) { return item.entry; });
     }
-    function cellMarkup(row, now, escape) {
+    function expiryText(value, now) {
+      var at = new Date(value).getTime();
+      return value && at > now ? duration(at - now) + '后过期' : '';
+    }
+    function resetMarkup(row, now, escape, name) {
+      var count = resetCount(row);
+      if (!count) return '';
+      var expiry = expiryText(row.reset_expires_at, now);
+      return '<div class="quota-reset"><span>' + count + ' 次可重置' + (expiry ? ' · ' + expiry : '') + '</span>' +
+        (name ? '<button type="button" class="quota-reset-button" data-name="' + escape(name) + '">重置</button>' : '') + '</div>';
+    }
+    // Batch resets spend one credit per account, so duplicates collapse and
+    // accounts that still have quota stay out unless reset one at a time.
+    function resetPlan(names, rows) {
+      var plan = { targets: [], live: 0, none: 0, duplicates: 0 }, seen = {};
+      names.forEach(function (name) {
+        var row = rows[name];
+        if (!resetCount(row)) { plan.none++; return; }
+        if (seen[row.account_key]) { plan.duplicates++; return; }
+        if (row.remaining != null && row.remaining >= 5) { plan.live++; return; }
+        seen[row.account_key] = true;
+        plan.targets.push(name);
+      });
+      return plan;
+    }
+    function resetPlanMessage(plan) {
+      var skipped = [];
+      if (plan.live) skipped.push(plan.live + ' 个额度未用完');
+      if (plan.none) skipped.push(plan.none + ' 个没有重置次数');
+      if (plan.duplicates) skipped.push(plan.duplicates + ' 个重复文件');
+      return '将消耗 ' + plan.targets.length + ' 次主动重置，重置后不可撤销。' + (skipped.length ? '\n已跳过：' + skipped.join('，') + '。' : '') + '\n\n' +
+        plan.targets.slice(0, 10).join('\n') + (plan.targets.length > 10 ? '\n… 等 ' + plan.targets.length + ' 个' : '');
+    }
+    function resetConfirmMessage(status, now) {
+      var lines = ['将消耗 1 次主动重置，重置后不可撤销。', '账号：' + status.name, '剩余次数：' + status.count];
+      var expiry = expiryText(status.expires_at, now);
+      if (expiry) lines.push('最早过期：' + expiry);
+      if (status.remaining != null && status.remaining >= 5) lines.push('', '当前还剩 ' + Math.round(status.remaining) + '%，现在重置会浪费。');
+      return lines.join('\n');
+    }
+    function cellMarkup(row, now, escape, name) {
+      var reset = resetMarkup(row, now, escape, name);
       if (!row || !row.windows || !row.windows.length) {
         if (row && row.invalid) return '<span class="quota-tag danger">失效</span>';
-        return '<span class="quota-meta">未知</span>' + (row && row.duplicate ? ' <span class="quota-tag">重复</span>' : '');
+        return '<div class="quota-cell"><div><span class="quota-meta">未知</span>' + (row && row.duplicate ? ' <span class="quota-tag">重复</span>' : '') + '</div>' + reset + '</div>';
       }
       var lines = row.windows.map(function (window) {
         var left = Math.max(0, Math.min(100, 100 - window.used_percent));
@@ -1267,36 +1386,144 @@
       if (row.windows.some(function (window) { return window.pending; })) tags += '<span class="quota-tag">待确认</span>';
       if (row.duplicate) tags += '<span class="quota-tag">重复</span>';
       var freshness = age != null && age >= STALE_MS ? '<span class="quota-meta">' + duration(age) + '前</span>' : '';
-      return '<div class="quota-cell">' + lines + (tags || freshness ? '<div>' + tags + freshness + '</div>' : '') + '</div>';
+      return '<div class="quota-cell">' + lines + (tags || freshness ? '<div>' + tags + freshness + '</div>' : '') + reset + '</div>';
     }
-    function advice(data) {
+    function number(value) { return Number(value || 0).toLocaleString('en-US'); }
+    function planName(plan) {
+      var names = { plus: 'Plus', free: 'Free', pro: 'Pro', prolite: 'Pro Lite', team: 'Team', unknown: '未识别' };
+      return names[plan] || plan;
+    }
+    function windowName(minutes) {
+      var label = windowLabel(minutes);
+      return (label === '5h' ? '5 小时' : label) + '额度';
+    }
+    function level(remaining) {
+      if (remaining >= 50) return { status: '充足', tone: 'ok' };
+      if (remaining >= 20) return { status: '一般', tone: 'warn' };
+      if (remaining >= 5) return { status: '偏低', tone: 'warn' };
+      return { status: '快用完', tone: 'danger' };
+    }
+    // Plans report windows separately, so pool-wide averages weigh them by account count.
+    function mergedWindows(plans) {
+      var byMinutes = {};
+      plans.forEach(function (plan) {
+        (plan.windows || []).forEach(function (window) {
+          var item = byMinutes[window.minutes] || (byMinutes[window.minutes] = { minutes: window.minutes, accounts: 0, total: 0 });
+          item.accounts += window.accounts;
+          item.total += window.avg_remaining * window.accounts;
+        });
+      });
+      return Object.keys(byMinutes).map(function (key) {
+        var item = byMinutes[key];
+        return { minutes: item.minutes, remaining: item.accounts ? item.total / item.accounts : 0 };
+      }).sort(function (a, b) { return a.minutes - b.minutes; });
+    }
+    function windowMeter(window) {
+      var state = level(window.remaining);
+      return { label: windowName(window.minutes), value: '剩 ' + Math.round(window.remaining) + '%', percent: window.remaining, status: state.status, tone: state.tone, note: '账号平均剩余' };
+    }
+    function capacityMeter(a) {
+      var capacity = a.usable_capacity || 0, peak = a.peak_rpm || 0;
+      var percent = capacity > 0 ? Math.min(100, peak / capacity * 100) : (peak > 0 ? 100 : 0);
+      var state = a.rpm_shortfall > 0 || percent >= 100 ? { status: '不够用', tone: 'danger' } : (percent >= 80 ? { status: '偏紧', tone: 'warn' } : { status: '够用', tone: 'ok' });
+      return { label: '请求容量', value: peak > 0 ? '峰值 ' + number(peak) + ' / 分钟' : '暂无峰值', percent: percent, status: state.status, tone: state.tone, note: '可承载 ' + number(capacity) + ' / 分钟' };
+    }
+    function verdict(data, windows, waiting) {
+      var a = data.advice || {}, settings = data.settings || {};
+      var count = a.recommended_accounts || 0;
+      if (count > 0) {
+        return {
+          tone: 'danger', label: '需要加号',
+          headline: (settings.horizon_hours > 24 ? '建议加 ' : '建议今天加 ') + number(count) + ' 个号',
+          detail: (a.runway_hours != null
+            ? '按现在的用量，约 ' + hours(a.runway_hours) + '后可用账号撑不住高峰。'
+            : '高峰需要 ' + number(a.target_rpm) + ' / 分钟，现在只能承载 ' + number(a.usable_capacity) + ' / 分钟。') +
+            (a.warming_up ? '用量数据不足 24 小时，仅供参考。' : '')
+        };
+      }
+      var lowest = windows.reduce(function (min, window) { return !min || window.remaining < min.remaining ? window : min; }, null);
+      if (lowest && lowest.remaining < 20) {
+        var name = windowName(lowest.minutes);
+        return {
+          tone: 'warn', label: '需要留意', headline: '暂时不用加号，但' + name + '偏低',
+          detail: waiting * 2 >= data.unique_accounts
+            ? '现在的请求量还撑得住。多数账号已用完额度，要靠接下来陆续恢复。'
+            : '现在的请求量还撑得住，' + name + '平均只剩 ' + Math.round(lowest.remaining) + '%，留意接下来的恢复。'
+        };
+      }
+      if (a.low_confidence) {
+        return {
+          tone: 'warn', label: '需要留意', headline: '暂时不用加号，但有账号还没查到额度',
+          detail: number(data.unknown) + ' 个账号暂无额度数据，结果可能偏乐观。打开“自动刷新额度”可以补齐。'
+        };
+      }
+      if (a.warming_up) return { tone: 'ok', label: '状态良好', headline: '暂时不用加号', detail: '用量数据还在积累，满 24 小时后结果更准确。' };
+      return { tone: 'ok', label: '状态良好', headline: '额度充足，不用加号', detail: '按现在的用量，' + number(settings.horizon_hours) + ' 小时内额度不会用完。' };
+    }
+    function runwayTile(data) {
       var a = data.advice || {};
-      var lines = [
-        'RPM：可用容量 ' + a.usable_capacity + ' / 目标 ' + a.target_rpm + '（24 小时峰值 ' + a.peak_rpm + ' + ' + (data.settings || {}).headroom_percent + '% 余量），' +
-          (a.rpm_shortfall > 0 ? '缺 ' + a.rpm_shortfall + ' 个账号' : '余量 ' + a.rpm_remaining),
-        '额度：' + (a.runway_hours == null ? '推演范围内不会耗尽' : '预计 ' + hours(a.runway_hours) + '后额度不足') +
-          (a.quota_shortfall > 0 ? '，' + (data.settings || {}).horizon_hours + ' 小时内缺 ' + a.quota_shortfall + ' 个账号' : '')
-      ];
-      if (a.warming_up) lines.push('数据积累中：消耗速度和峰值 RPM 不足 24 小时，结果仅供粗略参考');
-      if (a.low_confidence) lines.push(data.unknown + ' 个账号额度未知，结果可能偏乐观，建议打开后台补扫');
-      return { count: a.recommended_accounts || 0, lines: lines };
+      var tile = { label: '还能撑多久' };
+      if (a.runway_hours != null) {
+        tile.value = '约 ' + hours(a.runway_hours);
+        tile.note = a.warming_up ? '数据还在积累，仅供参考' : '之后高峰可能不够用';
+      } else if (a.warming_up) {
+        tile.value = '收集中';
+        tile.note = '需要 24 小时用量数据';
+      } else {
+        tile.value = number((data.settings || {}).horizon_hours) + ' 小时以上';
+        tile.note = '预测时长内不会用完';
+      }
+      return tile;
     }
-    function cards(data) {
-      return [['去重后账号', data.unique_accounts], ['可用账号（≥5%）', data.usable], ['额度未知', data.unknown], ['重复文件', data.duplicate_files], ['已失效', data.invalid], ['已禁用', data.disabled]];
+    function planRow(plan) {
+      var windows = (plan.windows || []).map(function (window) {
+        return windowLabel(window.minutes).replace('5h', '5 小时') + ' ' + Math.round(window.avg_remaining) + '%';
+      });
+      return { plan: planName(plan.plan), accounts: number(plan.accounts), usable: number(plan.usable), remaining: windows.length ? windows.join(' · ') : '暂无数据' };
+    }
+    // Disabled and invalid credentials are counted per file and excluded from
+    // unique_accounts, so the state bar only splits the accounts that can serve.
+    function overview(data) {
+      var plans = data.plans || [], a = data.advice || {};
+      var waiting = Math.max(0, data.unique_accounts - data.usable - data.unknown);
+      var recover = plans.reduce(function (sum, plan) { return sum + (plan.recover_24h || 0); }, 0);
+      var windows = mergedWindows(plans);
+      var extra = [];
+      if (data.invalid) extra.push(number(data.invalid) + ' 个文件已失效，需要重新登录或移除');
+      if (data.disabled) extra.push(number(data.disabled) + ' 个文件已停用');
+      var result = verdict(data, windows, waiting);
+      result.count = a.recommended_accounts || 0;
+      result.tiles = [
+        { label: '现在能用', value: number(data.usable), note: '共 ' + number(data.unique_accounts) + ' 个账号' },
+        runwayTile(data),
+        { label: '24 小时内恢复', value: '+' + number(recover), note: recover === 0 ? '暂无账号恢复' : (result.count > 0 ? '个账号恢复，不足以补上缺口' : '个账号恢复后约 ' + number(data.usable + recover) + ' 个可用') }
+      ];
+      result.states = [
+        { label: '现在能用', count: data.usable, note: '可以接收请求', tone: 'ok' },
+        { label: '等待恢复', count: waiting, note: '额度用完，到时间自动恢复', tone: 'warn' },
+        { label: '还没查到', count: data.unknown, note: '暂无额度数据', tone: 'off' }
+      ];
+      result.stateTitle = number(data.unique_accounts) + ' 个账号现在的状态';
+      result.stateExtra = extra.length ? '另有 ' + extra.join('，') + '。' : '';
+      result.meters = windows.map(windowMeter).concat([capacityMeter(a)]);
+      result.plans = plans.map(planRow);
+      var credits = data.reset || {};
+      result.resetText = credits.accounts > 0
+        ? credits.accounts + ' 个账号可重置，其中 ' + credits.exhausted + ' 个额度已用完' + (expiryText(credits.expires_at, Date.now()) ? '，最早 ' + expiryText(credits.expires_at, Date.now()) : '') + '，去处理'
+        : '';
+      result.detailNote = '共 ' + number(data.files) + ' 个账号文件，其中 ' + number(data.duplicate_files) + ' 个重复，去重后按账号统计。';
+      return result;
     }
     function trendOption(trend) {
       var points = trend || [];
       return {
-        animation: false, tooltip: { trigger: 'axis', renderMode: 'richText' }, legend: { bottom: 0, type: 'scroll' }, grid: { left: 55, right: 50, top: 25, bottom: 60 },
+        animation: false, tooltip: { trigger: 'axis', renderMode: 'richText' }, grid: { left: 55, right: 24, top: 20, bottom: 32 },
         xAxis: { type: 'category', data: points.map(function (p) { return new Date(p.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }) },
-        yAxis: [{ type: 'value', name: '账号数' }, { type: 'value', name: '%', min: 0, max: 100 }],
-        series: [
-          { name: '可用账号', type: 'line', showSymbol: false, data: points.map(function (p) { return p.usable; }) },
-          { name: '平均剩余额度', type: 'line', yAxisIndex: 1, showSymbol: false, data: points.map(function (p) { return p.avg_remaining; }) }
-        ]
+        yAxis: { type: 'value', name: '账号数' },
+        series: [{ name: '可用账号', type: 'line', showSymbol: false, areaStyle: { opacity: .12 }, data: points.map(function (p) { return p.usable; }) }]
       };
     }
-    return { windowLabel: windowLabel, bucket: bucket, duration: duration, hours: hours, applyView: applyView, cellMarkup: cellMarkup, advice: advice, cards: cards, trendOption: trendOption };
+    return { windowLabel: windowLabel, bucket: bucket, duration: duration, hours: hours, applyView: applyView, cellMarkup: cellMarkup, resetPlan: resetPlan, resetPlanMessage: resetPlanMessage, resetConfirmMessage: resetConfirmMessage, overview: overview, trendOption: trendOption };
   })();
   /* CODEX_QUOTA_LOGIC_END */
   /* ACCOUNT_VIEW_LOGIC_START */
@@ -1631,17 +1858,22 @@
     els['account-bulk-bar'].hidden = count === 0;
     els['account-bulk-export'].disabled = count === 0;
     els['account-bulk-delete'].disabled = count === 0;
+    els['account-bulk-reset'].disabled = count === 0;
     els['account-bulk-count'].textContent = hidden > 0
       ? '已选 ' + count + ' 个账号（其中 ' + hidden + ' 个不在当前筛选结果中）'
       : '已选 ' + count + ' 个账号';
   }
 
+  // Selection must follow the quota filter too, or select-all reaches hidden rows.
+  function visibleAccounts() {
+    return CodexQuotaLogic.applyView(AccountViewLogic.filterAccounts(accountsData, currentAccountFilters()), quotaRows, els['account-quota-filter'].value, els['account-quota-sort'].value);
+  }
   function renderAccountView(options) {
     options = options || {};
     if (options.rebuildOptions) rebuildAccountFilterOptions(!!options.preserveMissingPlan);
     if (options.resetPage) accountPage = 1;
     selectedAccounts = AccountViewLogic.pruneSelection(selectedAccounts, accountsData);
-    var filtered = CodexQuotaLogic.applyView(AccountViewLogic.filterAccounts(accountsData, currentAccountFilters()), quotaRows, els['account-quota-filter'].value, els['account-quota-sort'].value);
+    var filtered = visibleAccounts();
     var page = AccountViewLogic.paginate(filtered, accountPage, els['account-page-size'].value);
     accountPage = page.page;
     paint(page.items);
@@ -1688,7 +1920,7 @@
 
   function quotaCell(a) {
     if (String(a.provider || '').toLowerCase() !== 'codex') return '<td></td>';
-    return '<td>' + CodexQuotaLogic.cellMarkup(quotaRows[a.name], Date.now(), escapeHtml) + '</td>';
+    return '<td>' + CodexQuotaLogic.cellMarkup(quotaRows[a.name], Date.now(), escapeHtml, a.name) + '</td>';
   }
 
   function selectCell(a) {
@@ -1873,6 +2105,53 @@
       .catch(function (e) { setStatus('删除失败：网络错误 ' + e, 'err'); });
   }
 
+  function codexReset(name) {
+    return fetch('/v0/management/codex-quota/reset', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + getStoredKey(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name })
+    }).then(function (resp) {
+      if (!resp.ok) return readError(resp).then(function (msg) { throw new Error(msg || 'HTTP ' + resp.status); });
+      return resp.json();
+    });
+  }
+  // The server refreshes its aggregate just after answering, so reload a moment later.
+  function reloadQuotaRowsSoon() { setTimeout(function () { fetchQuotaRows(getStoredKey(), true); }, 1000); }
+  function resetAccount(name, button) {
+    button.disabled = true;
+    setStatus('正在确认 "' + name + '" 的重置次数…', '');
+    fetch('/v0/management/codex-quota/reset-check?name=' + encodeURIComponent(name), { headers: { 'Authorization': 'Bearer ' + getStoredKey() } })
+      .then(function (resp) {
+        if (!resp.ok) return readError(resp).then(function (msg) { throw new Error(msg || 'HTTP ' + resp.status); });
+        return resp.json();
+      })
+      .then(function (status) {
+        if (status.count <= 0) { setStatus('"' + name + '" 已没有可用的重置次数', 'err'); return null; }
+        if (!window.confirm(CodexQuotaLogic.resetConfirmMessage(status, Date.now()))) { setStatus('已取消重置', ''); return null; }
+        setStatus('正在重置 "' + name + '"…', '');
+        return codexReset(name);
+      })
+      .then(function (result) {
+        if (result) setStatus('已重置 "' + name + '"' + (result.cooldown_kept ? '，但本地冷却未清除，请查看日志' : ''), result.cooldown_kept ? 'err' : 'ok');
+      })
+      .catch(function (e) { setStatus('重置失败：' + e.message, 'err'); })
+      .finally(function () { button.disabled = false; reloadQuotaRowsSoon(); });
+  }
+  function resetSelectedAccounts(names) {
+    var failed = [], done = 0, kept = 0;
+    els['account-bulk-reset'].disabled = true;
+    names.reduce(function (chain, name, index) {
+      return chain.then(function () {
+        setStatus('正在重置 ' + (index + 1) + ' / ' + names.length + '…', '');
+        return codexReset(name).then(function (result) { done++; if (result.cooldown_kept) kept++; }).catch(function (e) { failed.push(name + '（' + e.message + '）'); });
+      });
+    }, Promise.resolve()).then(function () {
+      selectedAccounts = [];
+      renderAccountView({ resetPage: false, rebuildOptions: false });
+      var problems = failed.length ? '，' + failed.length + ' 个失败：' + failed.slice(0, 3).join('、') + (failed.length > 3 ? ' 等' : '') : '';
+      setStatus('已重置 ' + done + ' 个账号' + problems + (kept ? '，' + kept + ' 个本地冷却未清除' : ''), failed.length || kept ? 'err' : 'ok');
+      reloadQuotaRowsSoon();
+    });
+  }
+
   // Batch delete posts every name in one request: the management API accepts a
   // names array and answers 207 with a per-name failure list when only some go.
   function fileStamp() {
@@ -2018,23 +2297,61 @@
       .catch(function () { quotaRowsAt = 0; });
   }
   function renderQuotaTrend() {
-    if (!window.echarts || !quotaState.data || currentTab !== 'pool') return;
+    if (!window.echarts || !quotaState.data || currentTab !== 'pool' || !quotaEl('details').open) return;
     if (!quotaState.chart) quotaState.chart = chartInit(quotaEl('trend-chart'));
     quotaState.chart.setOption(CodexQuotaLogic.trendOption(quotaState.data.trend), true);
     quotaState.chart.resize();
   }
-  function quotaPlanRow(plan) {
-    var total = plan.distribution.reduce(function (sum, n) { return sum + n; }, 0) || 1;
-    var labels = ['danger', 'warn', 'mid', 'ok'], ranges = ['0–10%', '10–30%', '30–60%', '60–100%'];
-    var dist = plan.distribution.map(function (n, i) { return '<span class="' + labels[i] + '" style="width:' + (100 * n / total) + '%"></span>'; }).join('');
-    var tip = plan.distribution.map(function (n, i) { return ranges[i] + '：' + n; }).join(' · ');
-    var windows = plan.windows.map(function (w) {
-      var burn = Math.max(w.burn_per_hour_1h || 0, w.burn_per_hour_24h || 0);
-      return '<div>' + escapeHtml(CodexQuotaLogic.windowLabel(w.minutes)) + ' ' + w.avg_remaining + '% · ' + (w.burn_per_hour_1h == null && w.burn_per_hour_24h == null ? '—' : burn) + ' · ' + escapeHtml(CodexQuotaLogic.hours(w.runway_hours)) + '</div>';
+  function quotaSyncControls() {
+    var busy = !quotaState.loaded || quotaState.saving;
+    quotaEl('save').disabled = busy;
+    quotaEl('scan-enabled').disabled = busy;
+  }
+  function renderQuotaVerdict(tone, label, headline, detail, count) {
+    quotaEl('advice').className = 'quota-verdict quota-tone-' + tone;
+    quotaEl('verdict-tone').textContent = label;
+    quotaEl('headline').textContent = headline;
+    quotaEl('detail').textContent = detail;
+    quotaEl('advice-count').textContent = count;
+  }
+  function quotaUpdatedText(generatedAt) {
+    var age = Date.now() - new Date(generatedAt).getTime();
+    return age < 60000 ? '刚刚更新' : CodexQuotaLogic.duration(age) + '前更新';
+  }
+  function quotaCardsMarkup(tiles) {
+    return tiles.map(function (tile) {
+      return '<div class="quota-card"><div class="quota-card-label">' + escapeHtml(tile.label) + '</div><div class="quota-card-value">' + escapeHtml(tile.value) + '</div><div class="quota-card-note">' + escapeHtml(tile.note) + '</div></div>';
     }).join('');
-    return '<tr>' + td(plan.plan) + td(plan.accounts) + td(plan.usable) + td(plan.unknown) + td(plan.pending) + td(plan.known ? plan.avg_remaining + '%' : '—') +
-      '<td><div class="quota-dist" tabindex="0" data-tip="' + escapeHtml(tip) + '">' + dist + '</div></td>' + td(plan.recover_24h) +
-      '<td><div class="quota-windows">' + (windows || '—') + '</div></td>' + td(plan.shortfall_accounts) + '</tr>';
+  }
+  function quotaMetersMarkup(meters) {
+    return meters.map(function (meter) {
+      return '<div class="quota-card quota-tone-' + meter.tone + '"><div class="quota-meter-head"><span>' + escapeHtml(meter.label) + '</span><span>' + escapeHtml(meter.status) + '</span></div>' +
+        '<div class="quota-meter-value">' + escapeHtml(meter.value) + '</div><div class="quota-meter-track"><span style="width:' + meter.percent + '%"></span></div>' +
+        '<div class="quota-card-note">' + escapeHtml(meter.note) + '</div></div>';
+    }).join('');
+  }
+  function renderQuotaStates(view) {
+    var bar = quotaEl('state-bar');
+    quotaEl('state-title').textContent = view.stateTitle;
+    bar.innerHTML = view.states.filter(function (state) { return state.count > 0; }).map(function (state) {
+      return '<span class="quota-tone-' + state.tone + '" style="flex:' + state.count + ' 1 0"></span>';
+    }).join('');
+    bar.setAttribute('aria-label', view.states.map(function (state) { return state.label + ' ' + state.count; }).join('，'));
+    quotaEl('state-legend').innerHTML = view.states.map(function (state) {
+      return '<div class="quota-tone-' + state.tone + '"><div class="quota-state-name">' + escapeHtml(state.label) + '</div><div class="quota-state-count">' + state.count.toLocaleString('en-US') + '</div><div class="quota-state-note">' + escapeHtml(state.note) + '</div></div>';
+    }).join('');
+    quotaEl('state-extra').textContent = view.stateExtra;
+    quotaEl('states').hidden = false;
+  }
+  function clearQuotaOverview() {
+    quotaEl('updated').textContent = '';
+    quotaEl('tiles').textContent = '';
+    quotaEl('reset-link').hidden = true;
+    quotaEl('meters').textContent = '';
+    quotaEl('states').hidden = true;
+    quotaEl('plan-rows').textContent = '';
+    quotaEl('detail-note').textContent = '';
+    quotaEl('scan-line').textContent = '';
   }
   function renderQuota(data) {
     quotaState.data = data;
@@ -2047,25 +2364,28 @@
       quotaEl('horizon').value = s.horizon_hours;
     }
     quotaState.loaded = !!data.settings;
-    quotaEl('save').disabled = !quotaState.loaded || quotaState.saving;
+    quotaSyncControls();
     if (data.home_mode || !data.available) {
-      quotaEl('advice-count').textContent = '—';
-      quotaEl('advice').className = 'quota-advice';
-      quotaEl('advice-lines').innerHTML = '<li>' + (data.home_mode ? 'Home 模式：账号由 Home 调度端管理，本机不统计额度。' : '额度数据首次汇总中，约 1 分钟后可用。') + '</li>';
+      clearQuotaOverview();
+      renderQuotaVerdict('off', '', data.home_mode ? 'Home 模式下不统计额度' : '额度数据汇总中', data.home_mode ? '账号由 Home 调度端管理，本机不统计额度。' : '约 1 分钟后可用。', '—');
       return;
     }
-    var advice = CodexQuotaLogic.advice(data);
-    quotaEl('advice-count').textContent = advice.count;
-    quotaEl('advice').className = 'quota-advice ' + (advice.count > 0 ? 'danger' : 'ok');
-    quotaEl('advice-lines').innerHTML = advice.lines.map(function (line) { return '<li>' + escapeHtml(line) + '</li>'; }).join('');
-    quotaEl('cards').innerHTML = CodexQuotaLogic.cards(data).map(function (pair) {
-      return '<div class="pool-metric">' + escapeHtml(pair[0]) + '<strong>' + escapeHtml(pair[1]) + '</strong></div>';
+    var view = CodexQuotaLogic.overview(data);
+    quotaEl('updated').textContent = quotaUpdatedText(data.generated_at);
+    renderQuotaVerdict(view.tone, view.label, view.headline, view.detail, view.count);
+    quotaEl('tiles').innerHTML = quotaCardsMarkup(view.tiles);
+    quotaEl('reset-link').textContent = view.resetText;
+    quotaEl('reset-link').hidden = !view.resetText;
+    renderQuotaStates(view);
+    quotaEl('meters').innerHTML = quotaMetersMarkup(view.meters);
+    quotaEl('plan-rows').innerHTML = view.plans.map(function (plan) {
+      return '<tr>' + td(plan.plan) + td(plan.accounts) + td(plan.usable) + td(plan.remaining) + '</tr>';
     }).join('');
-    quotaEl('plan-rows').innerHTML = data.plans.map(quotaPlanRow).join('');
+    quotaEl('detail-note').textContent = view.detailNote;
     var scan = data.scan || {};
     quotaEl('scan-line').textContent = scan.running
-      ? '补扫进行中：剩余 ' + scan.queued + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed
-      : (scan.finished_at && new Date(scan.finished_at).getFullYear() > 1 ? '上次补扫：' + new Date(scan.finished_at).toLocaleString() + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed + (scan.last_error ? ' · 最后错误 ' + scan.last_error : '') : '尚未执行补扫');
+      ? '刷新进行中：剩余 ' + scan.queued + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed
+      : (scan.finished_at && new Date(scan.finished_at).getFullYear() > 1 ? '上次刷新：' + new Date(scan.finished_at).toLocaleString() + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed + (scan.last_error ? ' · 最后错误 ' + scan.last_error : '') : '尚未自动刷新');
     renderQuotaTrend();
   }
   function fetchQuota() {
@@ -2084,13 +2404,9 @@
     if (quotaState.chart) quotaState.chart.dispose();
     quotaState = { controller: null, data: null, dirty: false, saving: false, loaded: false, chart: null };
     quotaEl('settings').reset();
-    quotaEl('save').disabled = true;
-    quotaEl('advice-count').textContent = '—';
-    quotaEl('advice').className = 'quota-advice';
-    quotaEl('advice-lines').innerHTML = '<li>加载中…</li>';
-    quotaEl('cards').textContent = '';
-    quotaEl('plan-rows').textContent = '';
-    quotaEl('scan-line').textContent = '';
+    quotaSyncControls();
+    clearQuotaOverview();
+    renderQuotaVerdict('off', '', '加载中…', '', '—');
     quotaStatus('', false);
   }
   // Settings live outside config.yaml, so saving takes effect without a config reload.
@@ -2099,7 +2415,7 @@
     var key = getStoredKey();
     if (!key || !quotaState.loaded || quotaState.saving || !quotaEl('settings').reportValidity()) return;
     quotaState.saving = true;
-    quotaEl('save').disabled = true;
+    quotaSyncControls();
     quotaStatus('保存中…', false);
     fetch('/v0/management/codex-quota/settings', {
       method: 'PUT', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
@@ -2107,8 +2423,11 @@
     }).then(function (resp) {
       return resp.json().catch(function () { return {}; }).then(function (body) { if (!resp.ok) throw new Error(body.error || 'HTTP ' + resp.status); });
     }).then(function () { quotaState.dirty = false; quotaStatus('已保存，立即生效', false); })
-      .catch(function (e) { quotaStatus('保存失败：' + e.message, true); })
-      .finally(function () { quotaState.saving = false; quotaEl('save').disabled = !quotaState.loaded; });
+      .catch(function (e) {
+        if (quotaState.data && quotaState.data.settings) quotaEl('scan-enabled').checked = quotaState.data.settings.scan_enabled;
+        quotaStatus('保存失败：' + e.message, true);
+      })
+      .finally(function () { quotaState.saving = false; quotaSyncControls(); });
   }
   function poolEl(id) {return document.getElementById('pool-' + id);}
   function poolStatus(message, failed) {poolEl('status').textContent=message;poolEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
@@ -2198,6 +2517,14 @@
   }
   quotaEl('settings').addEventListener('submit', saveQuotaSettings);
   quotaEl('settings').addEventListener('input', function () { quotaState.dirty = true; quotaStatus('有未保存的修改', false); });
+  // The switch sits outside the form, so it saves directly instead of waiting for the form button.
+  quotaEl('scan-enabled').addEventListener('change', saveQuotaSettings);
+  quotaEl('details').addEventListener('toggle', renderQuotaTrend);
+  quotaEl('reset-link').addEventListener('click', function () {
+    els['account-quota-filter'].value = 'resettable';
+    switchTab('accounts');
+    renderAccountView({ resetPage: true, rebuildOptions: false });
+  });
   quotaEl('scan-enabled').addEventListener('change', function () { saveQuotaSettings(); });
   poolEl('config').addEventListener('submit',savePool);
   poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});
@@ -2744,12 +3071,12 @@
     var index = selectedAccounts.indexOf(name);
     if (box.checked && index < 0) selectedAccounts.push(name);
     if (!box.checked && index >= 0) selectedAccounts.splice(index, 1);
-    paintSelectionControls(AccountViewLogic.filterAccounts(accountsData, currentAccountFilters()));
+    paintSelectionControls(visibleAccounts());
   });
   // Header checkbox spans every filtered row, not just the visible page, so a
   // filter-then-select-all-then-delete pass does not need paging through.
   els['account-select-all'].addEventListener('change', function () {
-    var filtered = AccountViewLogic.filterAccounts(accountsData, currentAccountFilters());
+    var filtered = visibleAccounts();
     selectedAccounts = AccountViewLogic.toggleSelection(selectedAccounts, filtered, els['account-select-all'].checked);
     renderAccountView({ resetPage: false, rebuildOptions: false });
   });
@@ -2767,6 +3094,11 @@
     var note = result.missing > 0 ? '（' + result.missing + ' 个账号无邮箱已跳过）' : '';
     setStatus('已导出 ' + result.emails.length + ' 个邮箱' + note, 'ok');
   });
+  els['account-bulk-reset'].addEventListener('click', function () {
+    var plan = CodexQuotaLogic.resetPlan(selectedAccounts, quotaRows);
+    if (!plan.targets.length) { setStatus('选中的账号没有需要重置的：未用完额度的账号请单独重置', 'err'); return; }
+    if (window.confirm(CodexQuotaLogic.resetPlanMessage(plan))) resetSelectedAccounts(plan.targets);
+  });
   els['account-bulk-delete'].addEventListener('click', function () {
     var names = selectedAccounts.slice();
     if (!names.length) return;
@@ -2782,6 +3114,8 @@
       if (window.confirm('确定删除认证文件 "' + name + '" 吗？此操作不可恢复。')) { deleteAccount(name); }
       return;
     }
+    var resetBtn = e.target && e.target.closest ? e.target.closest('.quota-reset-button') : null;
+    if (resetBtn) { resetAccount(resetBtn.getAttribute('data-name'), resetBtn); return; }
     var creditBtn = e.target && e.target.closest ? e.target.closest('.refresh-credits') : null;
     if (creditBtn) { refreshCredits(creditBtn.getAttribute('data-index'), false); return; }
     var nameBtn = e.target && e.target.closest ? e.target.closest('.acct-name') : null;

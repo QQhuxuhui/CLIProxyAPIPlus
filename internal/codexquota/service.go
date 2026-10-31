@@ -91,6 +91,10 @@ type Account struct {
 	ScanAt     time.Time `json:"scan_at,omitempty"`
 	ScanDenied bool      `json:"scan_denied,omitempty"`
 
+	ResetCount     *int      `json:"reset_count,omitempty"`
+	ResetExpiresAt time.Time `json:"reset_expires_at,omitempty"`
+	ResetCheckedAt time.Time `json:"reset_checked_at,omitempty"`
+
 	credentialInvalid bool
 }
 
@@ -118,6 +122,7 @@ type Service struct {
 	dir    string
 	source func() Source
 	probe  ProbeFunc
+	hooks  ResetHooks
 	now    func() time.Time
 
 	mu            sync.Mutex
@@ -131,6 +136,7 @@ type Service struct {
 	lastCompactAt time.Time
 	scan          ScanStatus
 	startedAt     time.Time
+	resetting     map[string]struct{}
 
 	summary  atomic.Pointer[Summary]
 	rows     atomic.Pointer[map[string]AccountRow]
@@ -151,6 +157,8 @@ func New(dir string, source func() Source, probe ProbeFunc) *Service {
 		history:  &history{},
 		burn:     map[string]float64{},
 		wake:     make(chan struct{}, 1),
+
+		resetting: map[string]struct{}{},
 	}
 	s.startedAt = s.now()
 	if errMkdir := os.MkdirAll(dir, 0o700); errMkdir != nil {
@@ -433,15 +441,13 @@ func (s *Service) UpdateSettings(next Settings) error {
 	s.mu.Lock()
 	s.settings = next
 	s.mu.Unlock()
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
+	s.notify()
 	return nil
 }
 
-// candidatesLocked picks accounts lacking fresh data, oldest first. Accounts
-// exhausted until a known reset cannot change, so they are skipped until then.
+// candidatesLocked picks accounts lacking fresh data, oldest first. Windows of an
+// exhausted account cannot change until its reset, but its reset credits can, so
+// every account is still read once per resetRecheck.
 func (s *Service) candidatesLocked(now time.Time) []string {
 	stale := time.Duration(s.settings.StaleMinutes) * time.Minute
 	type candidate struct {
@@ -456,7 +462,11 @@ func (s *Service) candidatesLocked(now time.Time) []string {
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	for _, account := range ordered {
-		if account.Disabled || account.credentialInvalid || s.isExhaustedUntilReset(account, now) {
+		if account.Disabled || account.credentialInvalid {
+			continue
+		}
+		resetDue := account.ScanAt.IsZero() || now.Sub(account.ScanAt) >= resetRecheck
+		if s.isExhaustedUntilReset(account, now) && !resetDue {
 			continue
 		}
 		if _, duplicate := seen[account.key()]; duplicate {
@@ -474,7 +484,7 @@ func (s *Service) candidatesLocked(now time.Time) []string {
 		for _, window := range account.Windows {
 			pending = pending || window.rolledOver(now)
 		}
-		if !pending && !last.IsZero() && now.Sub(last) < stale {
+		if !pending && !resetDue && !last.IsZero() && now.Sub(last) < stale {
 			continue
 		}
 		picked = append(picked, candidate{id: account.ID, last: last})
@@ -560,13 +570,8 @@ feed:
 }
 
 func (s *Service) scanOne(ctx context.Context, id string) {
-	status, body, errProbe := s.probe(ctx, id)
+	reading, status, errRead := s.readUsage(ctx, id)
 	now := s.now()
-	var windows []Window
-	plan := ""
-	if errProbe == nil && status == http.StatusOK {
-		windows, plan, errProbe = ParseUsage(body, now)
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.scan.Queued > 0 {
@@ -577,11 +582,8 @@ func (s *Service) scanOne(ctx context.Context, id string) {
 		return
 	}
 	account.ScanAt = now
-	if errProbe == nil && status == http.StatusOK {
-		// A response that raced ahead of this probe keeps the newer passive data.
-		if now.After(account.ObservedAt) {
-			s.applyLocked(account, windows, plan, now, sourceScan)
-		}
+	if errRead == nil {
+		s.applyReadingLocked(account, reading, now)
 		s.scan.Succeeded++
 		return
 	}
@@ -589,11 +591,7 @@ func (s *Service) scanOne(ctx context.Context, id string) {
 	if status == http.StatusUnauthorized {
 		account.ScanDenied = true
 	}
-	if errProbe != nil {
-		s.scan.LastError = errProbe.Error()
-	} else {
-		s.scan.LastError = fmt.Sprintf("HTTP %d", status)
-	}
+	s.scan.LastError = errRead.Error()
 }
 
 func writeFileAtomic(path string, data []byte) error {
