@@ -451,3 +451,45 @@ func TestFileTokenStoreImportTimeSurvivesRewrite(t *testing.T) {
 		t.Errorf("UpdatedAt = %v, want the new mtime %v", reloaded[0].UpdatedAt, refreshed)
 	}
 }
+
+func TestFileTokenStoreListSkipsHiddenSubdirectories(t *testing.T) {
+	// The root is hidden on purpose: the default auth dir is ~/.cli-proxy-api.
+	dir := filepath.Join(t.TempDir(), ".cli-proxy-api")
+	files := map[string]string{
+		"codex-root.json":                                                                `{"type":"codex"}`,
+		filepath.Join("team", "codex-team.json"):                                         `{"type":"codex"}`,
+		filepath.Join(".cpa-account-config-manager", "results.json"):                     `{"version":1}`,
+		filepath.Join(".cpa-account-config-manager", "runtime-instances", "a", "b.json"): `{"version":1}`,
+		filepath.Join(".latency-tier", "state.json"):                                     `{"version":1}`,
+	}
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if errMkdir := os.MkdirAll(filepath.Dir(path), 0o700); errMkdir != nil {
+			t.Fatalf("create dir for %s: %v", name, errMkdir)
+		}
+		if errWrite := os.WriteFile(path, []byte(content), 0o600); errWrite != nil {
+			t.Fatalf("write %s: %v", name, errWrite)
+		}
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+
+	got := make(map[string]bool, len(auths))
+	for _, auth := range auths {
+		got[auth.ID] = true
+	}
+	want := []string{"codex-root.json", filepath.Join("team", "codex-team.json")}
+	if len(got) != len(want) {
+		t.Fatalf("List() ids = %v, want %v", got, want)
+	}
+	for _, id := range want {
+		if !got[id] {
+			t.Errorf("List() ids = %v, missing %s", got, id)
+		}
+	}
+}

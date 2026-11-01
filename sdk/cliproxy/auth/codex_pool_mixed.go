@@ -12,7 +12,21 @@ import (
 
 type poolPreviewKey struct{}
 
+// Mixed selection preserves plugin failures from legacy providers until fallback is decided.
+type poolPluginErrorContextKey struct{}
+
+func preservePoolPluginError(ctx context.Context, err error) error {
+	if preserve, _ := nonNilContext(ctx).Value(poolPluginErrorContextKey{}).(bool); preserve && err != nil && !isPoolPluginError(err) {
+		return &poolPluginError{cause: err}
+	}
+	return err
+}
+
 const poolStickyMetadataKey = "cliproxy.codex_pool_sticky"
+
+// poolPluginHandledMetadataKey follows the selected candidate through mixed routing.
+// Plugin decisions bypass built-in affinity even when no binding existed at selection time.
+const poolPluginHandledMetadataKey = "cliproxy.codex_pool_plugin_handled"
 
 func (m *Manager) legacyPoolPriority(ctx context.Context, providers []string, model string, opts exec.Options, tried map[string]struct{}) int {
 	best := math.MinInt
@@ -71,12 +85,16 @@ func (m *Manager) pickPoolMixed(ctx context.Context, providers []string, model s
 	priority := m.legacyPoolPriority(ctx, others, model, opts, tried)
 	pooledOpts := opts
 	pooledOpts.Metadata = cloneRequestMetadata(opts.Metadata)
-	a, e, pooledErr := m.pickCodexPool(context.WithValue(nonNilContext(ctx), poolPreviewKey{}, true), model, pooledOpts, tried)
+	a, e, pooledErr := m.pickCodexPoolWithPluginError(context.WithValue(nonNilContext(ctx), poolPreviewKey{}, true), model, pooledOpts, tried)
+	if isPoolPluginError(pooledErr) {
+		return nil, nil, "codex", unwrapPoolPluginError(pooledErr)
+	}
 	finish := func() (*Auth, ProviderExecutor, string, error) {
 		if saturated, _ := pooledOpts.Metadata[poolSaturatedMetadataKey].(bool); saturated {
 			ctx = context.WithValue(nonNilContext(ctx), poolAllowSaturatedKey{}, true)
 		}
-		if affinity, ok := m.shared.Load().selector.(*SessionAffinitySelector); ok {
+		handled, _ := pooledOpts.Metadata[poolPluginHandledMetadataKey].(bool)
+		if affinity, ok := m.shared.Load().selector.(*SessionAffinitySelector); ok && !handled {
 			key, _ := m.poolSessionKey(model, pooledOpts)
 			selectedID := a.ID
 			var err error
@@ -97,7 +115,11 @@ func (m *Manager) pickPoolMixed(ctx context.Context, providers []string, model s
 	}
 	legacyOpts := opts
 	legacyOpts.Metadata = cloneRequestMetadata(opts.Metadata)
-	other, otherExec, provider, err := m.pickNextMixed(ctx, others, model, legacyOpts, tried)
+	legacyCtx := context.WithValue(nonNilContext(ctx), poolPluginErrorContextKey{}, true)
+	other, otherExec, provider, err := m.pickNextMixed(legacyCtx, others, model, legacyOpts, tried)
+	if isPoolPluginError(err) {
+		return nil, nil, provider, unwrapPoolPluginError(err)
+	}
 	if err == nil {
 		copyPoolMetadata(opts.Metadata, legacyOpts.Metadata)
 		return other, otherExec, provider, nil
