@@ -112,6 +112,8 @@ type Auth struct {
 	lastFailureAt time.Time
 	// codexProbeAttempt belongs only to the clone reserved for a background probe.
 	codexProbeAttempt *rateAttemptRef
+	// codexProbeLease is the concurrency slot held by that background probe.
+	codexProbeLease *accountConcurrencyLease
 }
 
 const (

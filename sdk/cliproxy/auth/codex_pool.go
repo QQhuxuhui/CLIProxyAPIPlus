@@ -93,6 +93,13 @@ type CodexPoolSnapshot struct {
 	FastFailures                int                                 `json:"fast_failures"`
 	Limits                      []PoolLimitBucket                   `json:"limits"`
 	Points                      []PoolPoint                         `json:"points"`
+	ConcurrencyEnabled          bool                                `json:"concurrency_enabled"`
+	InFlight                    int                                 `json:"in_flight"`
+	ConcurrencyCapacity         int                                 `json:"concurrency_capacity"`
+	ConcurrencyFullAccounts     int                                 `json:"concurrency_full_accounts"`
+	ConcurrencyRemaining        int                                 `json:"concurrency_remaining"`
+	UnlimitedAccounts           int                                 `json:"unlimited_accounts"`
+	ConcurrencyPoints           []CodexConcurrencyPoint             `json:"concurrency_points"`
 }
 
 func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
@@ -106,6 +113,7 @@ func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
 	out.LogicalRequestUpstreamCalls = cliproxyexecutor.CodexLogicalCallMetrics()
 	out.UpstreamOverloads = m.codexOverloadSnapshot()
 	out.BootstrapReleases = cliproxyexecutor.CodexBootstrapMetrics()
+	m.fillCodexConcurrencySnapshot(&out)
 	return out
 }
 func (m *Manager) legacyCodexPoolSnapshot() CodexPoolSnapshot {
@@ -292,6 +300,7 @@ func (m *Manager) StartCodexPoolMetrics(ctx context.Context) {
 	}
 	usage.RegisterNamedPlugin("codex-pool", codexPoolUsagePlugin{manager: m, ctx: ctx, cap: m.rateCap})
 	m.CodexPoolSnapshot()
+	m.startCodexConcurrencySampler(ctx)
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()

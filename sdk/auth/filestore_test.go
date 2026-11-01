@@ -461,6 +461,7 @@ func TestFileTokenStoreListSkipsHiddenSubdirectories(t *testing.T) {
 		filepath.Join(".cpa-account-config-manager", "results.json"):                     `{"version":1}`,
 		filepath.Join(".cpa-account-config-manager", "runtime-instances", "a", "b.json"): `{"version":1}`,
 		filepath.Join(".latency-tier", "state.json"):                                     `{"version":1}`,
+		filepath.Join(".codex-account-concurrency", "limits.json"):                       `{"version":1,"limits":{}}`,
 	}
 	for name, content := range files {
 		path := filepath.Join(dir, name)

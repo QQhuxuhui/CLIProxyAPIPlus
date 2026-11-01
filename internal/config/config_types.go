@@ -200,9 +200,11 @@ type CodexRetryBudgetConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
-	Pools           CodexPoolsConfig       `yaml:"pools" json:"pools"`
-	RetryBudget     CodexRetryBudgetConfig `yaml:"retry-budget" json:"retry-budget"`
-	IdentityConfuse bool                   `yaml:"identity-confuse" json:"identity-confuse"`
+	Pools       CodexPoolsConfig       `yaml:"pools" json:"pools"`
+	RetryBudget CodexRetryBudgetConfig `yaml:"retry-budget" json:"retry-budget"`
+	// AccountConcurrency limits in-flight requests per Codex OAuth account.
+	AccountConcurrency CodexAccountConcurrencyConfig `yaml:"account-concurrency" json:"account-concurrency"`
+	IdentityConfuse    bool                          `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// CloakingUserAgent replaces the built-in Codex User-Agent forced by cloaking; the Originator
@@ -249,6 +251,34 @@ type CodexConfig struct {
 	// proxies: retries after upstream overloads, and a share of first attempts while the direct
 	// route is overloaded.
 	EgressPool CodexEgressPoolConfig `yaml:"egress-pool" json:"egress-pool"`
+}
+
+// DefaultCodexAccountConcurrencyLimit is the per-account limit used when default-limit is omitted.
+const DefaultCodexAccountConcurrencyLimit = 2
+
+// CodexAccountConcurrencyConfig configures the per-account in-flight limit of Codex OAuth accounts.
+// Accounts are always counted; the limit only applies while Enabled is true and Home is off.
+type CodexAccountConcurrencyConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// DefaultLimit applies to accounts without an override. It is a pointer so an explicit 0
+	// (accounts inheriting it are unlimited) survives a config round trip. Omitted means 2.
+	DefaultLimit *int `yaml:"default-limit,omitempty" json:"default-limit,omitempty"`
+}
+
+// EffectiveDefaultLimit resolves an omitted default-limit to its documented default.
+func (c CodexAccountConcurrencyConfig) EffectiveDefaultLimit() int {
+	if c.DefaultLimit == nil {
+		return DefaultCodexAccountConcurrencyLimit
+	}
+	return *c.DefaultLimit
+}
+
+// Validate rejects negative limits.
+func (c CodexAccountConcurrencyConfig) Validate() error {
+	if c.DefaultLimit != nil && *c.DefaultLimit < 0 {
+		return fmt.Errorf("codex.account-concurrency.default-limit must not be negative")
+	}
+	return nil
 }
 
 // CodexFastSessionIDsConfig configures the Codex fast Session-Id pool.

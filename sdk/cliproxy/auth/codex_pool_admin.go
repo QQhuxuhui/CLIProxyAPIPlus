@@ -13,6 +13,9 @@ import (
 
 type CodexPoolPartitionSnapshot struct {
 	FullFallbacks       uint64 `json:"full_fallbacks"`
+	InFlight            int    `json:"in_flight"`
+	ConcurrencyCapacity int    `json:"concurrency_capacity"`
+	ConcurrencyFull     int    `json:"concurrency_full_accounts"`
 	ProjectionLagMillis int64  `json:"projection_lag_ms"`
 	LockWaits           uint64 `json:"lock_waits"`
 	ID                  uint64 `json:"id"`
@@ -47,6 +50,8 @@ func (m *Manager) CodexPoolsSnapshot() CodexPoolsState {
 	out.UnattributedCapacityFailures = pools.fastFailures.Load()
 	table := pools.table.Load()
 	out.Version = table.version
+	concurrency := m.accountConcurrency.view()
+	now := time.Now()
 	for _, p := range append(append([]*codexAccountPool{}, table.pools...), pools.side) {
 		p.lock()
 		item := CodexPoolPartitionSnapshot{ID: p.id, Side: p == pools.side, Accounts: len(p.auths), LockWaitNanos: p.lockWait.Load(), LockWaits: p.lockWaits.Load(), Fallbacks: p.fallback.Load(), FullFallbacks: p.fullFallback.Load(), CapacityFailures: p.fastFailures.Load(), PendingProjections: len(p.dirty)}
@@ -73,13 +78,19 @@ func (m *Manager) CodexPoolsSnapshot() CodexPoolsState {
 				item.Slots++
 			}
 		}
+		var totals accountConcurrencyTotals
 		for _, a := range p.auths {
 			if blocked, _, _ := isAuthBlockedForModel(a, "", time.Now()); !blocked {
 				if ready, _ := m.pooledRateAvailableLocked(p, a, context.Background()); ready {
 					item.Available++
 				}
 			}
+			if entry, ok := concurrency.Entry(a); ok {
+				item.InFlight += entry.InFlight
+			}
+			concurrency.add(&totals, a, now)
 		}
+		item.ConcurrencyCapacity, item.ConcurrencyFull = totals.capacity, totals.full
 		p.mu.Unlock()
 		p.results.mu.Lock()
 		item.SuccessQueue = len(p.results.queue)
@@ -177,7 +188,7 @@ func (m *Manager) recordPoolFailureWithOptions(err error, opts exec.Options) {
 		m.recordPoolFailure(err)
 		return
 	}
-	if !isPoolCapacityError(err) {
+	if !isPoolCapacityError(err) || isConcurrencyCapacityError(err) {
 		return
 	}
 	slot, hasSlot := opts.Metadata[poolHintMetadataKey].(uint16)
@@ -212,13 +223,28 @@ func (m *Manager) pooledUsage(ctx context.Context, record usage.Record) {
 	}
 }
 func (m *Manager) acquirePooledProbeAuth(model string) (*Auth, string) {
+	raced := make(map[string]struct{})
+	for {
+		probe, reason, retry := m.acquirePooledProbeAuthOnce(model, raced)
+		if !retry {
+			return probe, reason
+		}
+	}
+}
+
+// acquirePooledProbeAuthOnce reports retry after losing a concurrency race for the chosen account.
+func (m *Manager) acquirePooledProbeAuthOnce(model string, raced map[string]struct{}) (*Auth, string, bool) {
 	pools := m.codexPools.Load()
 	var best *Auth
 	bestRemaining := 0
+	sawFull := len(raced) > 0
 	for _, p := range pools.table.Load().pools {
 		p.lock()
 		for _, a := range p.auths {
 			if a.AuthKind() == AuthKindAPIKey || strings.TrimSpace(authAttribute(a, AttributeAPIKey)) != "" {
+				continue
+			}
+			if _, lost := raced[a.ID]; lost {
 				continue
 			}
 			if token, _ := a.Metadata["access_token"].(string); token == "" {
@@ -230,6 +256,10 @@ func (m *Manager) acquirePooledProbeAuth(model string) (*Auth, string) {
 			if !m.authSupportsRouteModel(registry.GetGlobalRegistry(), a, model) {
 				continue
 			}
+			if m.accountConcurrency.full(a) {
+				sawFull = true
+				continue
+			}
 			count, limit, _ := p.rate.accountLocked(a.ID, p.rate.nowFunc())
 			if limit-count > bestRemaining {
 				best = a.Clone()
@@ -239,26 +269,36 @@ func (m *Manager) acquirePooledProbeAuth(model string) (*Auth, string) {
 		p.mu.Unlock()
 	}
 	if best == nil {
-		return nil, "no schedulable codex oauth credential"
+		if sawFull {
+			return nil, CodexProbeConcurrencyFull, false
+		}
+		return nil, "no schedulable codex oauth credential", false
 	}
 	guard, err := m.lockAuth(context.Background(), best.ID)
 	if err != nil {
-		return nil, "credential changed"
+		return nil, "credential changed", false
 	}
 	defer guard.unlock()
 	current := guard.auths[best.ID]
 	if guard.pool == nil || current == nil || current.RegistrationEpoch != best.RegistrationEpoch {
-		return nil, "credential changed"
+		return nil, "credential changed", false
 	}
 	r := guard.pool.rate
 	count, limit, _ := r.accountLocked(best.ID, r.nowFunc())
 	if count >= limit {
-		return nil, "all codex oauth credentials at rate window limit"
+		return nil, "all codex oauth credentials at rate window limit", false
+	}
+	// The probe's RPM attempt is counted only after its concurrency slot is held.
+	lease, ok := m.accountConcurrency.tryAcquire(current)
+	if !ok {
+		raced[best.ID] = struct{}{}
+		return nil, "", true
 	}
 	token := codexPoolRateSequence.Add(1)
 	r.getLocked(best.ID, r.nowFunc()).attempts = append(r.getLocked(best.ID, r.nowFunc()).attempts, rateAttempt{id: token, at: r.nowFunc()})
 	best = current.Clone()
 	best.codexProbeAttempt = &rateAttemptRef{authID: best.ID, epoch: best.RegistrationEpoch}
 	best.codexProbeAttempt.token.Store(token)
-	return best, ""
+	best.codexProbeLease = lease
+	return best, "", false
 }

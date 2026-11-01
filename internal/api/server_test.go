@@ -972,6 +972,61 @@ func TestCodexAlphaSearchForwardsRequest(t *testing.T) {
 	}
 }
 
+func TestCodexAlphaSearchHoldsConcurrencyLeaseAndRejectsWhenFull(t *testing.T) {
+	server := newTestServer(t)
+	limit := 1
+	cfg := &proxyconfig.Config{}
+	cfg.Codex.AccountConcurrency = proxyconfig.CodexAccountConcurrencyConfig{Enabled: true, DefaultLimit: &limit}
+	server.handlers.AuthManager.SetConfig(cfg)
+	executor := &codexSearchCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(executor)
+	credential := &auth.Auth{ID: "codex-auth", Provider: "codex", Status: auth.StatusActive, Metadata: map[string]any{"access_token": "codex-token"}}
+	if _, err := server.handlers.AuthManager.Register(context.Background(), credential); err != nil {
+		t.Fatalf("register Codex auth: %v", err)
+	}
+	search := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"query":"q"}`))
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		return rr
+	}
+	inFlight := func() int {
+		entry, ok := server.handlers.AuthManager.CodexAccountConcurrencyView().Entry(credential)
+		if !ok {
+			t.Fatal("account not applicable")
+		}
+		return entry.InFlight
+	}
+	during := -1
+	executor.beforeReturn = func() { during = inFlight() }
+	if rr := search(); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if during != 1 || inFlight() != 0 {
+		t.Fatalf("in-flight during=%d after=%d", during, inFlight())
+	}
+
+	_, release, err := server.handlers.AuthManager.AcquireAuthWithCredentialPolicy(context.Background(), "codex", "", auth.CredentialPolicyCodexAlphaSearchV1, coreexecutor.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	calls := executor.httpCalls
+	rr := search()
+	if rr.Code != 529 || rr.Header().Get("Retry-After") != "1" || !strings.Contains(rr.Body.String(), "concurrency_limit_exceeded") {
+		t.Fatalf("status = %d headers=%v body=%s", rr.Code, rr.Header(), rr.Body.String())
+	}
+	if executor.httpCalls != calls {
+		t.Fatal("a full account reached upstream")
+	}
+	points := server.handlers.AuthManager.CodexPoolSnapshot().ConcurrencyPoints
+	if got := points[len(points)-1].ConcurrencyRejections; got != 1 {
+		t.Fatalf("rejections = %d", got)
+	}
+}
+
 func TestCodexAlphaSearchUsesPluginProviderTargetModel(t *testing.T) {
 	server := newTestServer(t)
 	executor := &codexSearchCaptureExecutor{}

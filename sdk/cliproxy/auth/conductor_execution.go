@@ -99,6 +99,9 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 	if isPoolCapacityError(fallback) {
 		return fallback
 	}
+	if isConcurrencyCapacityError(upstream) {
+		return upstream
+	}
 	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
 		return fallback
 	}
@@ -127,6 +130,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	ctx = m.codexRequestContext(ctx, providers)
 	defer func() {
 		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
+		m.recordConcurrencyRejection(resultErr)
 	}()
 	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
@@ -197,6 +201,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	ctx = m.codexRequestContext(ctx, providers)
 	defer func() {
 		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
+		m.recordConcurrencyRejection(resultErr)
 	}()
 	if ctx == nil {
 		ctx = context.Background()
@@ -263,6 +268,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	ctx = m.codexRequestContext(ctx, providers)
 	defer func() {
 		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
+		m.recordConcurrencyRejection(resultErr)
 	}()
 	defer func() { m.recordPoolFailureWithOptions(resultErr, opts) }()
 	req, opts = cliproxysession.Enrich(req, opts)
@@ -532,7 +538,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	var lastErr error
 	var upstreamErr error
 	var busyErr error
+	var concurrencyBusy error
+	var lease *accountConcurrencyLease
+	defer func() { lease.release() }()
 	for {
+		lease.release()
+		lease = nil
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -550,6 +561,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		if errPick != nil {
+			if capacity := concurrencyPickError(errPick, concurrencyBusy); capacity != nil {
+				return cliproxyexecutor.Response{}, capacity
+			}
 			if isPoolCapacityError(busyErr) {
 				return cliproxyexecutor.Response{}, busyErr
 			}
@@ -564,6 +578,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			return cliproxyexecutor.Response{}, errPick
 		}
 
+		if !homeMode {
+			var reserved bool
+			if lease, reserved = m.accountConcurrency.tryAcquire(auth); !reserved {
+				tried[auth.ID] = struct{}{}
+				concurrencyBusy = newConcurrencyCapacityError()
+				continue
+			}
+		}
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth)
@@ -1053,7 +1075,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
+	var concurrencyBusy error
+	var lease *accountConcurrencyLease
+	defer func() { lease.release() }()
 	for {
+		lease.release()
+		lease = nil
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
 			if lastErr != nil {
@@ -1088,6 +1115,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			auth, executor, provider, errPick = m.pickNextMixedProbed(ctx, codexEligibleProviders(ctx, providers), routeModel, pickOpts, tried, probe)
 		}
 		if errPick != nil {
+			if capacity := concurrencyPickError(errPick, concurrencyBusy); capacity != nil {
+				return nil, capacity
+			}
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if homeMode && lastErr != nil && errors.As(errPick, &homeCooldown) && homeCooldown != nil {
@@ -1153,6 +1183,14 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 		}
 
+		if !homeMode {
+			var reserved bool
+			if lease, reserved = m.accountConcurrency.tryAcquire(auth); !reserved {
+				tried[auth.ID] = struct{}{}
+				concurrencyBusy = newConcurrencyCapacityError()
+				continue
+			}
+		}
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		if selection != nil {
@@ -1298,7 +1336,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			models = models[:1]
 			pooled = false
 		}
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
+		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil, lease)
+		if errStream == nil {
+			// The forwarding goroutine now owns the slot until the stream ends.
+			lease = nil
+		}
 		if isPoolCapacityError(errStream) && !cliproxyexecutor.UpstreamAttempted(execCtx) {
 			delete(attempted, auth.ID)
 		}

@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestCreateClientSecretMapsStandardRealtimeModel(t *testing.T) {
@@ -259,4 +261,52 @@ func TestApplyClientSecretCallSession(t *testing.T) {
 	if payload.SDP != "v=0\r\n" || payload.Session.Instructions != "help" {
 		t.Fatalf("payload = %+v", payload)
 	}
+}
+
+func TestSelectOAuthIgnoresAccountConcurrency(t *testing.T) {
+	limit := 1
+	cfg := &internalconfig.Config{}
+	cfg.Codex.AccountConcurrency = internalconfig.CodexAccountConcurrencyConfig{Enabled: true, DefaultLimit: &limit}
+	manager := auth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	manager.RegisterExecutor(&liveConcurrencyExecutor{})
+	credential := &auth.Auth{ID: "live-oauth", Provider: "codex", Status: auth.StatusActive, Metadata: map[string]any{"access_token": "t"}}
+	if _, err := manager.Register(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := manager.AcquireAuthWithCredentialPolicy(context.Background(), "codex", "", auth.CredentialPolicyCodexAlphaSearchV1, coreexecutor.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, errSelect := manager.SelectAuthByKind(context.Background(), "codex", "", auth.AuthKindOAuth, coreexecutor.Options{}); errSelect == nil {
+		t.Fatal("generic selection must see the full account")
+	}
+	_, selected, errSelect := NewHandler(manager, nil).selectOAuth(context.Background(), "", coreexecutor.Options{})
+	if errSelect != nil || selected == nil || selected.ID != credential.ID {
+		t.Fatalf("selected %v err=%v", selected, errSelect)
+	}
+	entry, _ := manager.CodexAccountConcurrencyView().Entry(credential)
+	if entry.InFlight != 1 {
+		t.Fatalf("Live selection must not count: %d", entry.InFlight)
+	}
+}
+
+type liveConcurrencyExecutor struct{}
+
+func (*liveConcurrencyExecutor) Identifier() string { return "codex" }
+func (*liveConcurrencyExecutor) Execute(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+func (*liveConcurrencyExecutor) ExecuteStream(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, nil
+}
+func (*liveConcurrencyExecutor) Refresh(_ context.Context, a *auth.Auth) (*auth.Auth, error) {
+	return a, nil
+}
+func (*liveConcurrencyExecutor) CountTokens(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+func (*liveConcurrencyExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
 }

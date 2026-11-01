@@ -242,6 +242,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	m.rateCap.mu.Lock()
 	m.rateCap.home = cfg.Home.Enabled
 	m.rateCap.mu.Unlock()
+	m.configureAccountConcurrency(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if clearedCooldowns && oldCooldownStore != nil {
 		m.mu.Lock()

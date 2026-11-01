@@ -111,6 +111,9 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 	var rateReady []*Auth
 	var earliest time.Time
 	rateBlocked := false
+	concurrencyActive := concurrencyFilterActive(ctx, m.accountConcurrency)
+	concurrencyFull, concurrencyReady := false, false
+	pickTime := time.Now()
 	for id, a := range p.auths {
 		if a == nil || a.Provider != "codex" || a.Disabled || a.Status == StatusDisabled || !eligibility.allows(a) || (pinned != "" && id != pinned) {
 			continue
@@ -127,6 +130,16 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 		if !m.authSupportsRouteModel(registry.GetGlobalRegistry(), a, model) {
 			continue
 		}
+		// Eligibility, model and cooldown come first, then concurrency, then RPM.
+		if concurrencyActive {
+			if blocked, _, _ := isAuthBlockedForModel(a, m.selectionModelForAuth(a, model), pickTime); !blocked {
+				if m.accountConcurrency.full(a) {
+					concurrencyFull = true
+					continue
+				}
+				concurrencyReady = true
+			}
+		}
 		candidates = append(candidates, a)
 		ready, next := m.pooledRateAvailableLocked(p, a, ctx)
 		if ready {
@@ -137,6 +150,10 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 				earliest = next
 			}
 		}
+	}
+	if concurrencyFull && !concurrencyReady {
+		p.mu.Unlock()
+		return nil, nil, newConcurrencyCapacityError()
 	}
 	var available []*Auth
 	var err error
@@ -273,6 +290,9 @@ func (m *Manager) poolBoundAuth(ctx context.Context, binding codexPoolBinding, m
 	if blocked, _, _ := isAuthBlockedForModel(a, m.selectionModelForAuth(a, model), time.Now()); blocked {
 		return nil, nil, stale
 	}
+	if m.accountConcurrencyFull(ctx, a) {
+		return nil, nil, stale
+	}
 	if ready, _ := m.pooledRateAvailableLocked(guard.pool, a, ctx); !ready {
 		return nil, nil, stale
 	}
@@ -396,6 +416,9 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		a := guard.auths[pinned]
 		if a == nil || guard.pool == nil || a.Disabled || a.Status == StatusDisabled || !authSelectionEligibilityForRequest(ctx, opts).allows(a) || !m.authSupportsRouteModel(registry.GetGlobalRegistry(), a, model) || (rateCapRequiresPositiveWeight(m.shared.Load().selector) && authWeight(a) <= 0) {
 			return nil, nil, &Error{Code: "auth_not_found", Message: "pinned credential unavailable"}
+		}
+		if blocked, _, _ := isAuthBlockedForModel(a, m.selectionModelForAuth(a, model), time.Now()); !blocked && m.accountConcurrencyFull(ctx, a) {
+			return nil, nil, newConcurrencyCapacityError()
 		}
 		if ready, next := m.pooledRateAvailableLocked(guard.pool, a, ctx); !ready && guard.pool.rate.config.FailFast {
 			return nil, nil, newPoolCapacityError(next.Sub(guard.pool.rate.nowFunc()))
@@ -538,6 +561,12 @@ func preferPoolError(previous, next error) error {
 		return previous
 	}
 	if previous == nil {
+		return next
+	}
+	if isConcurrencyCapacityError(previous) {
+		return previous
+	}
+	if isConcurrencyCapacityError(next) {
 		return next
 	}
 	a, b := retryAfterFromError(previous), retryAfterFromError(next)

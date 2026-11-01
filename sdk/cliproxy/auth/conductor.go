@@ -147,6 +147,7 @@ type Manager struct {
 	codexPools                atomic.Pointer[codexPoolSet]
 	codexOverloads            sync.Map
 	rateCap                   *requestRateCap
+	accountConcurrency        *accountConcurrency
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
@@ -223,6 +224,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	manager := &Manager{
 		rateCap:               newRequestRateCap(),
+		accountConcurrency:    newAccountConcurrency(),
 		store:                 store,
 		executors:             make(map[string]ProviderExecutor),
 		selector:              selector,
@@ -244,6 +246,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	manager.scheduler = newAuthScheduler(selector)
 	manager.scheduler.rateCap = manager.rateCap
+	manager.scheduler.accountConcurrency = manager.accountConcurrency
 	manager.publishSharedLocked()
 	return manager
 }

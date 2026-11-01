@@ -30,6 +30,7 @@ func (s *Service) startCodexFastSessionProber(ctx context.Context) {
 		HomeMode:    s.coreManager.HomeEnabled,
 		AcquireAuth: s.coreManager.AcquireCodexProbeAuth,
 		Probe: func(ctx context.Context, auth *coreauth.Auth, model, sessionID string) (helps.CodexFastSessionProbeTiming, error) {
+			defer s.coreManager.ReleaseCodexProbeAuth(auth)
 			timing, err := executor.NewCodexExecutor(currentConfig()).ProbeFastSession(ctx, auth, model, sessionID)
 			s.coreManager.MarkCodexProbeResult(ctx, auth, model, err)
 			return timing, err

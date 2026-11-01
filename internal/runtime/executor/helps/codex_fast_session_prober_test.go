@@ -275,6 +275,44 @@ func TestCodexFastSessionProberSkipsRoundWithoutAuth(t *testing.T) {
 	}
 }
 
+func TestCodexFastSessionProberConcurrencySkipIsNotAFailure(t *testing.T) {
+	cfg := codexFastSessionProberConfig("m1")
+	cfg.ProbeCandidates = 1
+	upstream := newFakeCodexFastSessionUpstream()
+	pool, prober := newTestCodexFastSessionProber(cfg, upstream)
+	calls := 0
+	acquire := prober.deps.AcquireAuth
+	prober.deps.AcquireAuth = func(model string) (*cliproxyauth.Auth, string) {
+		calls++
+		if calls > 1 {
+			return nil, cliproxyauth.CodexProbeConcurrencyFull
+		}
+		return acquire(model)
+	}
+	prober.RunRound(context.Background(), *cfg)
+	status := prober.Status()
+	if status.ProbeFailures != 0 || status.Rounds != 1 || len(status.LastRound.Results) != 1 {
+		t.Fatalf("status = %+v", status)
+	}
+	if status.LastRound.Results[0].Error != "" {
+		t.Fatalf("result = %+v", status.LastRound.Results[0])
+	}
+	if got := pool.Members(); !slices.Equal(got, []string{"m1"}) {
+		t.Fatalf("members = %v", got)
+	}
+}
+
+func TestCodexFastSessionProberConcurrencySkipOnFirstProbeSkipsRound(t *testing.T) {
+	cfg := codexFastSessionProberConfig("m1")
+	upstream := newFakeCodexFastSessionUpstream()
+	upstream.noAuth = cliproxyauth.CodexProbeConcurrencyFull
+	_, prober := newTestCodexFastSessionProber(cfg, upstream)
+	prober.RunRound(context.Background(), *cfg)
+	if status := prober.Status(); status.ProbeFailures != 0 || status.LastRound.Judged || len(upstream.probed) != 0 {
+		t.Fatalf("status = %+v probed = %v", status, upstream.probed)
+	}
+}
+
 func TestCodexFastSessionProberSkipsTickWhileRoundRunning(t *testing.T) {
 	cfg := codexFastSessionProberConfig()
 	upstream := newFakeCodexFastSessionUpstream()

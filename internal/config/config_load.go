@@ -114,6 +114,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
+	if errValidate := cfg.Codex.AccountConcurrency.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
 	cfg.Codex.FastSessionIDs.Normalize()
 	cfg.Codex.EgressPool.Normalize()
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {

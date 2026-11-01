@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -334,6 +335,11 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		return false
 	}
 
+	// default-limit is pointer-backed too, and its zero must also keep the parents that hold it.
+	if holdsCodexAccountConcurrencyDefaultLimit(path, node) {
+		return false
+	}
+
 	// First check if it's a zero value
 	if isZeroValueNode(node) {
 		return true
@@ -369,6 +375,26 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 	}
 
 	return false
+}
+
+// holdsCodexAccountConcurrencyDefaultLimit reports whether node is
+// codex.account-concurrency.default-limit or a parent mapping containing it.
+func holdsCodexAccountConcurrencyDefaultLimit(path []string, node *yaml.Node) bool {
+	target := []string{"codex", "account-concurrency", "default-limit"}
+	if len(path) == 0 || len(path) > len(target) || !slices.Equal(path, target[:len(path)]) {
+		return false
+	}
+	for _, key := range target[len(path):] {
+		if node == nil || node.Kind != yaml.MappingNode {
+			return false
+		}
+		index := findMapKeyIndex(node, key)
+		if index < 0 || index+1 >= len(node.Content) {
+			return false
+		}
+		node = node.Content[index+1]
+	}
+	return node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!int"
 }
 
 // pruneKnownDefaultsInNewNode removes default-valued descendants from a new node

@@ -44,6 +44,7 @@ type scheduledGenerationMeta struct {
 // authScheduler keeps the incremental provider/model scheduling state used by Manager.
 type authScheduler struct {
 	rateCap             *requestRateCap
+	accountConcurrency  *accountConcurrency
 	mu                  sync.Mutex
 	strategy            schedulerStrategy
 	providers           map[string]*providerScheduler
@@ -328,6 +329,10 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+	predicate, errConcurrency := s.concurrencyPredicateLocked(ctx, []string{providerKey}, modelKey, predicate)
+	if errConcurrency != nil {
+		return nil, errConcurrency
+	}
 	predicate, errRate := s.ratePredicateLocked(ctx, []string{providerKey}, modelKey, predicate)
 	if errRate != nil {
 		return nil, errRate
@@ -393,6 +398,10 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+		predicate, errConcurrency := s.concurrencyPredicateLocked(ctx, []string{providerKey}, modelKey, predicate)
+		if errConcurrency != nil {
+			return nil, "", errConcurrency
+		}
 		predicate, errRate := s.ratePredicateLocked(ctx, []string{providerKey}, modelKey, predicate)
 		if errRate != nil {
 			return nil, "", errRate
@@ -404,6 +413,10 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 
 	predicate := scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin)
+	predicate, errConcurrency := s.concurrencyPredicateLocked(ctx, normalized, modelKey, predicate)
+	if errConcurrency != nil {
+		return nil, "", errConcurrency
+	}
 	predicate, errRate := s.ratePredicateLocked(ctx, normalized, modelKey, predicate)
 	if errRate != nil {
 		return nil, "", errRate

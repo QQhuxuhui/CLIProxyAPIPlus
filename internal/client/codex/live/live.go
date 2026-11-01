@@ -496,7 +496,8 @@ func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecut
 			selected = selection.CloneAuth()
 		}
 	} else {
-		selected, errSelect = h.authManager.SelectAuthByKind(ctx, "codex", "", auth.AuthKindOAuth, opts)
+		// Media sessions hold an account for a whole call and are not counted against its limit.
+		selected, errSelect = h.authManager.SelectAuthByKind(auth.WithConcurrencyExempt(ctx), "codex", "", auth.AuthKindOAuth, opts)
 	}
 	if errSelect != nil && selection != nil {
 		selection.End("selection_failed")

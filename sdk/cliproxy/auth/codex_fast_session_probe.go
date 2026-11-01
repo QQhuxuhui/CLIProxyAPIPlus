@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
@@ -31,9 +32,22 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.nowFunc()
+	raced := make(map[string]struct{})
+	for {
+		probe, reason, retry := m.pickCodexProbeLocked(model, r, registryRef, now, raced)
+		if !retry {
+			return probe, reason
+		}
+	}
+}
+
+// pickCodexProbeLocked reserves the best candidate, reporting retry when it lost a concurrency
+// race. A slot is held before the probe's attempt is counted against the rate window.
+func (m *Manager) pickCodexProbeLocked(model string, r *requestRateCap, registryRef *registry.ModelRegistry, now time.Time, raced map[string]struct{}) (*Auth, string, bool) {
 	oauth, schedulable := 0, 0
 	var best *Auth
 	bestRemaining := 0
+	sawFull := len(raced) > 0
 	for _, a := range m.auths {
 		if a == nil || a.Provider != "codex" || a.AuthKind() == AuthKindAPIKey || strings.TrimSpace(authAttribute(a, AttributeAPIKey)) != "" {
 			continue
@@ -55,6 +69,13 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 			continue
 		}
 		schedulable++
+		if _, lost := raced[a.ID]; lost {
+			continue
+		}
+		if m.accountConcurrency.full(a) {
+			sawFull = true
+			continue
+		}
 		count, limit, _ := r.accountLocked(a.ID, now)
 		remaining := limit - count
 		if remaining <= 0 {
@@ -67,11 +88,18 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 	}
 	switch {
 	case oauth == 0:
-		return nil, "no codex oauth credential"
+		return nil, "no codex oauth credential", false
 	case schedulable == 0:
-		return nil, "no schedulable codex oauth credential"
+		return nil, "no schedulable codex oauth credential", false
+	case best == nil && sawFull:
+		return nil, CodexProbeConcurrencyFull, false
 	case best == nil:
-		return nil, "all codex oauth credentials at rate window limit"
+		return nil, "all codex oauth credentials at rate window limit", false
+	}
+	lease, ok := m.accountConcurrency.tryAcquire(best)
+	if !ok {
+		raced[best.ID] = struct{}{}
+		return nil, "", true
 	}
 	account := r.getLocked(best.ID, now)
 	r.sequence++
@@ -79,13 +107,23 @@ func (m *Manager) AcquireCodexProbeAuth(model string) (*Auth, string) {
 	probe := best.Clone()
 	probe.codexProbeAttempt = &rateAttemptRef{authID: best.ID}
 	probe.codexProbeAttempt.token.Store(r.sequence)
-	return probe, ""
+	probe.codexProbeLease = lease
+	return probe, "", false
+}
+
+// ReleaseCodexProbeAuth returns the concurrency slot of a probe clone. It is idempotent, so the
+// probe runner can defer it to cover cancellation and panics.
+func (m *Manager) ReleaseCodexProbeAuth(auth *Auth) {
+	if auth != nil {
+		auth.codexProbeLease.release()
+	}
 }
 
 // MarkCodexProbeResult feeds probe failures into normal credential cooling and rate
 // learning without publishing business results or recording business request metrics.
 // The reservation is consumed once, including successful or canceled probes.
 func (m *Manager) MarkCodexProbeResult(ctx context.Context, auth *Auth, model string, err error) {
+	m.ReleaseCodexProbeAuth(auth)
 	if m == nil || auth == nil || auth.codexProbeAttempt == nil {
 		return
 	}

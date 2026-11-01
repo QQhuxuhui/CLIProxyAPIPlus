@@ -971,6 +971,32 @@ func TestHandleEventIgnoresUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestHandleEventIgnoresConcurrencyLimitsFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	limitsDir := filepath.Join(authDir, ".codex-account-concurrency")
+	if err := os.MkdirAll(limitsDir, 0o755); err != nil {
+		t.Fatalf("failed to create limits dir: %v", err)
+	}
+	limits := filepath.Join(limitsDir, "limits.json")
+	if err := os.WriteFile(limits, []byte(`{"version":1,"limits":{}}`), 0o600); err != nil {
+		t.Fatalf("failed to write limits file: %v", err)
+	}
+	var reloads int32
+	w := &Watcher{
+		authDir:        authDir,
+		configPath:     filepath.Join(tmpDir, "config.yaml"),
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
+	}
+	w.SetConfig(&config.Config{AuthDir: authDir})
+	w.handleEvent(fsnotify.Event{Name: limits, Op: fsnotify.Write})
+	w.handleEvent(fsnotify.Event{Name: limits, Op: fsnotify.Rename})
+	if atomic.LoadInt32(&reloads) != 0 || len(w.lastAuthHashes) != 0 {
+		t.Fatalf("limits file treated as an auth: reloads=%d hashes=%v", reloads, w.lastAuthHashes)
+	}
+}
+
 func TestHandleEventConfigChangeSchedulesReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")

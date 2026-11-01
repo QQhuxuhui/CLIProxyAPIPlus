@@ -294,6 +294,11 @@ func (p *CodexFastSessionProber) RunRound(ctx context.Context, cfg config.CodexF
 		result := CodexFastSessionProbeResult{Kind: target.kind, Value: target.value}
 		auth, reason := p.deps.AcquireAuth(cfg.ProbeModel)
 		if auth == nil {
+			// A probe skipped because every account is full never ran, so it is neither a
+			// failure nor evidence about its target.
+			if i > 0 && reason == cliproxyauth.CodexProbeConcurrencyFull {
+				continue
+			}
 			if i == 0 {
 				p.finishSkippedRound(start, "no codex credential available: "+reason)
 				return

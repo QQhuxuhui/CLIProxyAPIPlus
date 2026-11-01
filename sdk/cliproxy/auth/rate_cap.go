@@ -226,12 +226,17 @@ func (m *Manager) observeRateResult(ctx context.Context, result Result) {
 type poolCapacityError struct {
 	base  *Error
 	delay time.Duration
+	// reason distinguishes the account concurrency limit from RPM exhaustion.
+	reason string
 }
 
 func newPoolCapacityError(delay time.Duration) *poolCapacityError {
 	return &poolCapacityError{base: &Error{Code: "pool_at_capacity", Message: "codex pool at capacity, retry later", HTTPStatus: 529}, delay: max(time.Second, delay)}
 }
 func (e *poolCapacityError) Error() string {
+	if e.reason == concurrencyLimitExceededReason {
+		return `{"error":{"type":"upstream_pool_busy","code":"pool_at_capacity","reason":"concurrency_limit_exceeded","message":"codex accounts at concurrency limit, retry later"}}`
+	}
 	return `{"error":{"type":"upstream_pool_busy","code":"pool_at_capacity","message":"codex pool at capacity, retry later"}}`
 }
 func (e *poolCapacityError) Headers() http.Header {
@@ -374,7 +379,7 @@ func (r *requestRateCap) refundLocked(id string, token uint64) {
 	}
 }
 func (m *Manager) recordPoolFailure(err error) {
-	if !isPoolCapacityError(err) {
+	if !isPoolCapacityError(err) || isConcurrencyCapacityError(err) {
 		return
 	}
 	if pools := m.codexPools.Load(); pools != nil {

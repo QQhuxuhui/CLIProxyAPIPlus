@@ -235,6 +235,10 @@ func (m *Manager) codexFinalError(b *codexRetryBudget, model string, fallback er
 	if isRequestInvalidError(fallback) || isRequestStopError(fallback) || isRequestTerminatedError(fallback) {
 		return fallback
 	}
+	// Scoped to the concurrency reason: RPM rejections keep the quota and overload precedence.
+	if isConcurrencyCapacityError(fallback) {
+		return fallback
+	}
 	b.mu.Lock()
 	quota, overloads, other, last, quotaErr := b.quota, b.overloads, b.otherFailures, b.last, b.quotaError
 	b.mu.Unlock()
@@ -281,6 +285,7 @@ func (m *Manager) codexRetryWait(ctx context.Context, model string, opts exec.Op
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	requireWeight := rateCapRequiresPositiveWeight(m.selector)
+	sawFull := false
 	for id, a := range m.auths {
 		if a == nil || a.Provider != "codex" || a.Disabled || a.Status == StatusDisabled || !eligibility.allows(a) || (pinned != "" && id != pinned) {
 			continue
@@ -296,13 +301,18 @@ func (m *Manager) codexRetryWait(ctx context.Context, model string, opts exec.Op
 		}
 		blocked, _, next := isAuthBlockedForModel(a, m.selectionModelForAuth(a, model), now)
 		if !blocked {
+			// A healthy but full account cannot serve a retry; waiting zero would spin.
+			if m.accountConcurrencyFull(ctx, a) {
+				sawFull = true
+				continue
+			}
 			return 0, true
 		}
 		if next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
 			earliest = next
 		}
 	}
-	if earliest.IsZero() {
+	if sawFull || earliest.IsZero() {
 		return 0, false
 	}
 	wait := earliest.Sub(now)

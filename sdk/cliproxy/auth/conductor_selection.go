@@ -648,6 +648,10 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 // unless session affinity or an across-priorities scheduler is active, in which case the selector
 // or scheduler additionally receives lower priority tiers.
 func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
+	auths, err = m.filterConcurrencyCandidates(ctx, selector, auths, routeModel, now)
+	if err != nil {
+		return nil, nil, err
+	}
 	auths, err = m.filterRateCandidates(ctx, selector, auths, routeModel, now)
 	if err != nil {
 		return nil, nil, err
@@ -1925,6 +1929,10 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 
 // SelectAuthWithCredentialPolicy selects one local credential allowed by a fixed policy.
 func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, model, policy string, opts cliproxyexecutor.Options) (*Auth, error) {
+	return m.selectAuthWithCredentialPolicy(ctx, provider, model, policy, opts, nil)
+}
+
+func (m *Manager) selectAuthWithCredentialPolicy(ctx context.Context, provider, model, policy string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, error) {
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -1936,7 +1944,7 @@ func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, 
 		ctx = context.Background()
 	}
 	selectionCtx := withCredentialPolicy(ctx, policy)
-	selected, _, errPick := m.pickNextLegacy(selectionCtx, provider, model, opts, nil)
+	selected, _, errPick := m.pickNextLegacy(selectionCtx, provider, model, opts, tried)
 	if errPick != nil {
 		return nil, errPick
 	}

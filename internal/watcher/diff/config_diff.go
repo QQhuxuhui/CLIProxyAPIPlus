@@ -187,6 +187,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("antigravity.connection-pool.max-idle-conns-per-host: %s -> %s", oldMaxIdle, newMaxIdle))
 	}
 
+	if oldCfg.Codex.AccountConcurrency.Enabled != newCfg.Codex.AccountConcurrency.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.account-concurrency.enabled: %t -> %t", oldCfg.Codex.AccountConcurrency.Enabled, newCfg.Codex.AccountConcurrency.Enabled))
+	}
+	if oldLimit, newLimit := oldCfg.Codex.AccountConcurrency.EffectiveDefaultLimit(), newCfg.Codex.AccountConcurrency.EffectiveDefaultLimit(); oldLimit != newLimit {
+		changes = append(changes, fmt.Sprintf("codex.account-concurrency.default-limit: %d -> %d", oldLimit, newLimit))
+	}
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}

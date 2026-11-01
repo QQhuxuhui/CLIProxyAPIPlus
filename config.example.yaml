@@ -362,6 +362,14 @@ codex:
   # Optional retry policy; hot-reloadable. Disabled preserves legacy retry behavior.
   retry-budget:
     enable: false
+  # Per-account in-flight limit for Codex OAuth accounts; hot-reloadable. Disabled keeps
+  # scheduling and errors unchanged while still counting in-flight requests for the panel.
+  # When every eligible account is full, requests fail with 529 instead of queueing.
+  # default-limit applies to accounts without an override; 0 leaves them unlimited.
+  # Per-account overrides live in <auth-dir>/.codex-account-concurrency/limits.json.
+  account-concurrency:
+    enabled: false
+    default-limit: 2
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,
   # remap Codex prompt_cache_key and installation identity per selected auth.
   # Some superstitious users believe request tracking identifiers can be used
