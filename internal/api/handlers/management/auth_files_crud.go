@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -142,6 +143,8 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 			return
 		}
 		deleted := 0
+		deletedPaths := make(map[string]struct{})
+		accounts := h.authManager.List()
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
@@ -162,9 +165,11 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 					return
 				}
 				deleted++
+				deletedPaths[cleanAuthFilePath(full)] = struct{}{}
 				h.removeAuth(ctx, full)
 			}
 		}
+		h.authManager.ForgetCodexAccountConcurrencyLimits(authIDsForPaths(accounts, deletedPaths))
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
 		return
 	}
@@ -178,11 +183,14 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
+	var deletedIDs []string
 	if len(names) == 1 {
-		if _, status, errDelete := h.deleteAuthFileByName(ctx, names[0]); errDelete != nil {
+		_, ids, status, errDelete := h.deleteAuthFileByName(ctx, names[0])
+		if errDelete != nil {
 			c.JSON(status, gin.H{"error": errDelete.Error()})
 			return
 		}
+		h.authManager.ForgetCodexAccountConcurrencyLimits(ids)
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}
@@ -190,13 +198,15 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	deletedFiles := make([]string, 0, len(names))
 	failed := make([]gin.H, 0)
 	for _, name := range names {
-		deletedName, _, errDelete := h.deleteAuthFileByName(ctx, name)
+		deletedName, ids, _, errDelete := h.deleteAuthFileByName(ctx, name)
 		if errDelete != nil {
 			failed = append(failed, gin.H{"name": name, "error": errDelete.Error()})
 			continue
 		}
 		deletedFiles = append(deletedFiles, deletedName)
+		deletedIDs = append(deletedIDs, ids...)
 	}
+	h.authManager.ForgetCodexAccountConcurrencyLimits(deletedIDs)
 	if len(failed) > 0 {
 		c.JSON(http.StatusMultiStatus, gin.H{
 			"status":  "partial",
@@ -344,17 +354,18 @@ func uniqueAuthFileNames(names []string) []string {
 	return out
 }
 
-func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string, int, error) {
+// deleteAuthFileByName also returns the IDs of the accounts removed with the file.
+func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string, []string, int, error) {
 	name = strings.TrimSpace(name)
 	if isUnsafeAuthFileName(name) {
-		return "", http.StatusBadRequest, fmt.Errorf("invalid name")
+		return "", nil, http.StatusBadRequest, fmt.Errorf("invalid name")
 	}
 
 	targetPath := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
 	targetID := ""
 	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
 		if !isPluginVirtualSourceDelete(name, targetAuth) {
-			return filepath.Base(name), http.StatusConflict, errPluginVirtualAuth
+			return filepath.Base(name), nil, http.StatusConflict, errPluginVirtualAuth
 		}
 		targetID = strings.TrimSpace(targetAuth.ID)
 		if path := strings.TrimSpace(authAttribute(targetAuth, "path")); path != "" {
@@ -368,15 +379,35 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	}
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		if os.IsNotExist(errRemove) {
-			return filepath.Base(name), http.StatusNotFound, errAuthFileNotFound
+			return filepath.Base(name), nil, http.StatusNotFound, errAuthFileNotFound
 		}
-		return filepath.Base(name), http.StatusInternalServerError, fmt.Errorf("failed to remove file: %w", errRemove)
+		return filepath.Base(name), nil, http.StatusInternalServerError, fmt.Errorf("failed to remove file: %w", errRemove)
 	}
 	if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
-		return filepath.Base(name), http.StatusInternalServerError, errDeleteRecord
+		return filepath.Base(name), nil, http.StatusInternalServerError, errDeleteRecord
+	}
+	ids := authIDsForPaths(h.authManager.List(), map[string]struct{}{cleanAuthFilePath(targetPath): {}})
+	if targetID != "" && !slices.Contains(ids, targetID) {
+		ids = append(ids, targetID)
 	}
 	h.removeAuthsForPath(ctx, targetPath, targetID)
-	return filepath.Base(name), http.StatusOK, nil
+	return filepath.Base(name), ids, http.StatusOK, nil
+}
+
+// authIDsForPaths lists accounts stored in one of paths, which must be cleaned.
+func authIDsForPaths(accounts []*coreauth.Auth, paths map[string]struct{}) []string {
+	ids := make([]string, 0, len(paths))
+	for _, auth := range accounts {
+		if auth == nil {
+			continue
+		}
+		_, direct := paths[cleanAuthFilePath(authAttribute(auth, "path"))]
+		_, virtual := paths[cleanAuthFilePath(authAttribute(auth, coreauth.AttributeVirtualSource))]
+		if direct || virtual {
+			ids = append(ids, auth.ID)
+		}
+	}
+	return ids
 }
 
 func isPluginVirtualSourceDelete(name string, auth *coreauth.Auth) bool {

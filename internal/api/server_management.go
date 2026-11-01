@@ -30,6 +30,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/codex-pool", s.mgmt.GetCodexPool)
 		mgmt.GET("/codex-pools", s.mgmt.GetCodexPools)
 		mgmt.PUT("/codex-pool/config", s.mgmt.PutCodexPoolConfig)
+		mgmt.GET("/codex-account-concurrency/config", s.mgmt.GetCodexAccountConcurrencyConfig)
+		mgmt.PUT("/codex-account-concurrency/config", s.mgmt.PutCodexAccountConcurrencyConfig)
 		mgmt.GET("/codex-quota", s.mgmt.GetCodexQuota)
 		mgmt.GET("/codex-quota/accounts", s.mgmt.GetCodexQuotaAccounts)
 		mgmt.PUT("/codex-quota/settings", s.mgmt.PutCodexQuotaSettings)
@@ -205,6 +207,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
+		mgmt.PATCH("/auth-files/fields/batch", s.mgmt.PatchAuthFileFieldsBatch)
 		mgmt.POST("/auth-files/refresh", s.mgmt.RefreshAuthFiles)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 

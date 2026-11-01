@@ -291,6 +291,10 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
 		return
 	}
+	if isAuthFileConcurrencyPatch(req) {
+		h.patchAuthFileConcurrencyLimit(c, name, req)
+		return
+	}
 	requestRetryPatch, errRequestRetry := decodeAuthFileRequestRetryPatch(req)
 	if errRequestRetry != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": errRequestRetry.Error()})

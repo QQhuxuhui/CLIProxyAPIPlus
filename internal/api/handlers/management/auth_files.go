@@ -126,6 +126,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	auths := h.authManager.List()
 	observedAt := time.Now().UTC()
 	cooldownsKnown := !h.authManager.HomeEnabled()
+	concurrency := h.authManager.CodexAccountConcurrencyView()
 	if pagination.enabled {
 		matching := make([]*coreauth.Auth, 0, len(auths))
 		for _, auth := range auths {
@@ -146,10 +147,13 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 				if cooldownsKnown {
 					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
 				}
+				applyAuthFileConcurrency(entry, auth, concurrency)
 				files = append(files, entry)
 			}
 		}
-		c.JSON(200, authFilesListResponse(observedAt, files, pagination, total, end))
+		response := authFilesListResponse(observedAt, files, pagination, total, end)
+		response["concurrency_enabled"] = concurrency.Enabled()
+		c.JSON(200, response)
 		return
 	}
 	files := make([]gin.H, 0, len(auths))
@@ -162,6 +166,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 			if cooldownsKnown {
 				entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
 			}
+			applyAuthFileConcurrency(entry, auth, concurrency)
 			files = append(files, entry)
 		}
 	}
@@ -170,7 +175,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		nameJ, _ := files[j]["name"].(string)
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
-	c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
+	c.JSON(200, gin.H{"observed_at": observedAt, "files": files, "concurrency_enabled": concurrency.Enabled()})
 }
 
 func parseAuthFilesPagination(c *gin.Context) (authFilesPagination, error) {
