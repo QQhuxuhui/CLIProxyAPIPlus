@@ -334,7 +334,7 @@ test('Codex pool charts distinguish rate limits and exhausted quota', () => {
     points: [{time:'2026-10-22T12:00:00Z',attempts:40,capacity:100,ttft_p50:7,ttft_p90:10,overload:3,rate_limits:2,quota_exhausted:1,other_failures:4}],
     limits: [{limit:20,accounts:8}],
   }));
-  assert.equal(charts.length, 4);
+  assert.equal(charts.length, 5);
   assert.deepEqual(charts[0].series.map(s=>s.data), [[40],[100]]);
   assert.deepEqual(charts[2].series.map(s=>s.data), [[3],[2],[1],[4]]);
   assert.equal(charts[2].series.every(s=>s.stack==='fail'), true);
@@ -560,4 +560,55 @@ test('overview links to resettable accounts only when some exist', () => {
   const later = new Date(Date.now() + 6 * 86400000).toISOString();
   assert.match(quotaLogic.overview(quotaSummary({ reset: { accounts: 5, exhausted: 4, expires_at: later } })).resetText, /5 个账号可重置，其中 4 个额度已用完，最早 .*天后过期/);
   assert.equal(quotaLogic.overview(quotaSummary({ reset: { accounts: 0, exhausted: 0 } })).resetText, '');
+});
+
+test('concurrency cell covers limited, unlimited, disabled and inapplicable accounts', () => {
+  const limited = { in_flight: 1, concurrency_limit: 2 };
+  assert.equal(logic.concurrencyText(limited, true), '1/2');
+  assert.equal(logic.concurrencyText({ concurrency_limit: 0 }, true), '0/∞');
+  assert.equal(logic.concurrencyText(limited, false), '1 · 未启用');
+  assert.equal(logic.concurrencyText({ provider: 'claude' }, true), '—');
+});
+
+test('full filter only keeps accounts at an enforced limit', () => {
+  const rows = [
+    { name: 'full', in_flight: 2, concurrency_limit: 2 },
+    { name: 'free', in_flight: 1, concurrency_limit: 2 },
+    { name: 'unlimited', in_flight: 9, concurrency_limit: 0 },
+    { name: 'other' },
+  ];
+  const full = logic.filterAccounts(rows, { concurrency: 'full', concurrencyEnabled: true });
+  assert.deepEqual(Array.from(full, (row) => row.name), ['full']);
+  assert.equal(logic.filterAccounts(rows, { concurrency: 'full', concurrencyEnabled: false }).length, 0);
+});
+
+test('concurrency limit input separates inherit, zero and invalid values', () => {
+  assert.equal(logic.parseConcurrencyLimit(' '), null);
+  assert.equal(logic.parseConcurrencyLimit('0'), 0);
+  assert.equal(logic.parseConcurrencyLimit(' 8 '), 8);
+  assert.equal(logic.parseConcurrencyLimit('-1'), undefined);
+  assert.equal(logic.parseConcurrencyLimit('1.5'), undefined);
+});
+
+test('batch result reports success and failure counts', () => {
+  const message = logic.concurrencyBatchMessage({ succeeded: ['a'], unchanged: [], failed: [{ name: 'b', error: 'auth file not found' }] });
+  assert.equal(message, '成功 1 个，未变 0 个，失败 1 个：b（auth file not found）');
+});
+
+test('concurrency chart plots samples, capacity and rejections on its own time axis', () => {
+  const pool = vm.createContext({ Date, Number, String });
+  vm.runInContext(logicBlock('CODEX_POOL_LOGIC') + ';this.pool = CodexPoolLogic;', pool);
+  const time = '2026-10-20T10:00:00Z';
+  const data = { points: [], unlimited_accounts: 3, concurrency_enabled: true, concurrency_capacity: 10, in_flight: 4, concurrency_full_accounts: 1, success_rate: 1,
+    concurrency_points: [{ time, in_flight: 4, in_flight_peak: 7, concurrency_capacity: 10, concurrency_rejections: 2 }] };
+  const options = plain(pool.pool.chartOptions(data));
+  const chart = options[options.length - 1];
+  assert.equal(chart.xAxis.data.length, 1);
+  assert.deepEqual(chart.series.map((series) => series.data[0]), [4, 7, 10, 2]);
+  assert.match(chart.series[2].name, /3 个不限额/);
+  const cards = Object.fromEntries(plain(pool.pool.cards(data)));
+  assert.equal(cards['当前在途'], 4);
+  assert.equal(cards['并发容量'], '10 + ∞×3');
+  assert.equal(cards['并发已满账号'], 1);
+  assert.equal(pool.pool.concurrencyCapacity({ concurrency_capacity: 10 }), '10（未启用）');
 });

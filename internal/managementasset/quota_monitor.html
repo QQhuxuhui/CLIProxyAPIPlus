@@ -580,6 +580,7 @@
         <div class="account-filter"><label for="account-status-filter">状态</label><select id="account-status-filter"><option value="">全部</option></select></div>
         <div class="account-filter"><label for="account-error-filter">错误</label><select id="account-error-filter"><option value="">全部</option></select></div>
         <div class="account-filter"><label for="account-quota-filter">Codex 额度</label><select id="account-quota-filter"><option value="">全部</option><option value="low">低于 5%</option><option value="mid">5%–30%</option><option value="high">30% 以上</option><option value="unknown">未知</option><option value="resettable">可重置</option></select></div>
+        <div class="account-filter"><label for="account-concurrency-filter">并发</label><select id="account-concurrency-filter"><option value="">全部</option><option value="full">已满</option></select></div>
         <div class="account-filter"><label for="account-quota-sort">额度排序</label><select id="account-quota-sort"><option value="">默认</option><option value="asc">剩余从低到高</option><option value="desc">剩余从高到低</option></select></div>
       </div>
       <div id="account-bulk-bar" class="account-bulk-bar" hidden>
@@ -588,6 +589,8 @@
           <button id="account-bulk-clear" type="button" class="account-bulk-button">清除选择</button>
           <button id="account-bulk-export" type="button" class="account-bulk-button" data-tip="导出选中账号的邮箱，每行一个">导出邮箱</button>
           <button id="account-bulk-reset" type="button" class="account-bulk-button" data-tip="只重置已用完额度的账号，同一账号只消耗一次">批量重置</button>
+          <button id="account-bulk-concurrency" type="button" class="account-bulk-button" data-tip="只对 Codex OAuth 账号生效，0 表示不限额">批量设上限</button>
+          <button id="account-bulk-concurrency-reset" type="button" class="account-bulk-button" data-tip="删除单号上限，改用全局默认值">恢复继承</button>
           <button id="account-bulk-delete" type="button" class="account-bulk-button danger">批量删除</button>
         </div>
       </div>
@@ -595,7 +598,7 @@
         <table id="table" class="data-table" hidden>
           <thead><tr>
             <th class="select-col"><input id="account-select-all" type="checkbox" data-tip="全选当前筛选结果" aria-label="全选当前筛选结果"></th>
-            <th>账号名称</th><th>provider</th><th>套餐</th><th>额度</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>操作</th><th>状态</th><th>错误</th>
+            <th>账号名称</th><th>provider</th><th>套餐</th><th>额度</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>并发</th><th>操作</th><th>状态</th><th>错误</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -837,10 +840,21 @@
         </div>
         <p id="pool-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
       </form>
+      <form id="pool-concurrency-config" class="pool-settings">
+        <div class="pool-switches">
+          <label><input id="pool-concurrency-enabled" type="checkbox"> 启用账号并发上限（全部已满时返回 529）</label>
+        </div>
+        <div class="pool-fields">
+          <label>默认上限<input id="pool-concurrency-default" type="number" min="0" step="1" required data-tip="没有单号上限的账号使用此值，0 表示不限额"></label>
+          <button id="pool-concurrency-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+        </div>
+        <p id="pool-concurrency-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
+      </form>
       <div id="pool-cards" class="pool-cards"></div>
       <p id="pool-charts-status" class="text-xs text-slate-500 mb-3" role="status" aria-live="polite"></p>
       <div class="pool-charts">
         <div class="pool-chart-card"><h3>请求 RPM / 预测容量</h3><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="每分钟上游请求量与预测容量折线图"></div></div>
+        <div class="pool-chart-card"><h3>账号并发 / 容量</h3><div id="pool-concurrency-chart" class="pool-chart" role="img" aria-label="每分钟账号在途请求与并发容量折线图"></div></div>
         <div class="pool-chart-card"><h3>成功请求首字延迟</h3><div id="pool-ttft-chart" class="pool-chart" role="img" aria-label="每分钟首字延迟 p50 与 p90 折线图"></div></div>
         <div class="pool-chart-card"><h3>每分钟失败构成</h3><div id="pool-failures-chart" class="pool-chart" role="img" aria-label="过载、限流、额度耗尽及其他错误堆叠柱状图"></div></div>
         <div class="pool-chart-card"><h3>学到的单号上限分布</h3><div id="pool-limits-chart" class="pool-chart" role="img" aria-label="单号每分钟请求上限分布直方图"></div></div>
@@ -887,12 +901,13 @@
   var ENDPOINT = '/v0/management/auth-files';
   var REFRESH_MS = 15000;
   var els = {};
-  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-provider-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-reset','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
+  ['key','remember','save','clear','refresh','auto','updated','status','table','rows','empty','account-name-filter','account-provider-filter','account-plan-filter','account-created-from','account-created-to','account-status-filter','account-error-filter','account-quota-filter','account-quota-sort','account-concurrency-filter','account-bulk-concurrency','account-bulk-concurrency-reset','account-page-size','account-page-prev','account-page-next','account-page-info','account-pagination','account-select-all','account-bulk-bar','account-bulk-count','account-bulk-clear','account-bulk-export','account-bulk-reset','account-bulk-delete'].forEach(function (id) { els[id] = document.getElementById(id); });
   var accountsData = []; // account rows currently rendered (raw auth-files entries)
   var accountPage = 1;
   var quotaRows = {};    // Codex quota per account name, served from the background aggregate
   var quotaRowsAt = 0;
   var selectedAccounts = []; // account names ticked for batch delete, kept across refreshes
+  var concurrencyEnabled = false; // effective account concurrency switch from the last list
   var modelRows = [];    // by_model rows with derived tier/pct, sorted worst-first
   var firstSuccess = false;
   var autoTimer = null;
@@ -1055,6 +1070,7 @@
       if (!data) return;
       firstSuccess = true; els.auto.disabled = false;
       showApp();
+      concurrencyEnabled = !!data.concurrency_enabled;
       render(data.files || []);
       fetchSummary(k);
       fetchQuotaRows(k, reason === 'manual' || reason === 'login');
@@ -1542,6 +1558,29 @@
     function accountProvider(entry) {
       return String(entry && entry.provider || '').trim().toLowerCase() || '—';
     }
+    // Only applicable accounts carry concurrency fields; 0 means unlimited.
+    function concurrencyApplicable(entry) { return !!entry && entry.concurrency_limit != null; }
+    function concurrencyFull(entry, enabled) {
+      return !!enabled && concurrencyApplicable(entry) && entry.concurrency_limit > 0 && (entry.in_flight || 0) >= entry.concurrency_limit;
+    }
+    function concurrencyText(entry, enabled) {
+      if (!concurrencyApplicable(entry)) return '—';
+      var current = entry.in_flight || 0;
+      if (!enabled) return current + ' · 未启用';
+      return current + '/' + (entry.concurrency_limit > 0 ? entry.concurrency_limit : '∞');
+    }
+    // Empty input restores inheritance; undefined marks invalid input.
+    function parseConcurrencyLimit(value) {
+      var text = String(value == null ? '' : value).trim();
+      if (text === '') return null;
+      return /^\d+$/.test(text) ? Number(text) : undefined;
+    }
+    function concurrencyBatchMessage(result) {
+      var failed = (result && result.failed) || [];
+      var text = '成功 ' + (((result && result.succeeded) || []).length) + ' 个，未变 ' + (((result && result.unchanged) || []).length) + ' 个，失败 ' + failed.length + ' 个';
+      if (!failed.length) return text;
+      return text + '：' + failed.slice(0, 3).map(function (item) { return item.name + '（' + item.error + '）'; }).join('、');
+    }
     function filterAccounts(entries, filters) {
       filters = filters || {};
       var name = String(filters.name || '').toLowerCase();
@@ -1551,7 +1590,9 @@
       var error = String(filters.error || '');
       var from = String(filters.from || '');
       var to = String(filters.to || '');
+      var concurrency = String(filters.concurrency || '');
       return (entries || []).filter(function (entry) {
+        if (concurrency === 'full' && !concurrencyFull(entry, filters.concurrencyEnabled)) return false;
         if (name && String(entry && entry.name || '').toLowerCase().indexOf(name) === -1) return false;
         if (provider && accountProvider(entry) !== provider) return false;
         if (plan && accountPlan(entry) !== plan) return false;
@@ -1705,7 +1746,9 @@
       paginate: paginate, preserveSelectedOption: preserveSelectedOption,
       statusError: statusError, requestStats: requestStats, formatSuccessRate: formatSuccessRate,
       accountKey: accountKey, pruneSelection: pruneSelection, selectionState: selectionState,
-      toggleSelection: toggleSelection, selectedEmails: selectedEmails
+      toggleSelection: toggleSelection, selectedEmails: selectedEmails,
+      concurrencyApplicable: concurrencyApplicable, concurrencyFull: concurrencyFull, concurrencyText: concurrencyText,
+      parseConcurrencyLimit: parseConcurrencyLimit, concurrencyBatchMessage: concurrencyBatchMessage
     };
   })();
   /* ACCOUNT_VIEW_LOGIC_END */
@@ -1814,7 +1857,9 @@
       from: els['account-created-from'].value,
       to: els['account-created-to'].value,
       status: els['account-status-filter'].value,
-      error: els['account-error-filter'].value
+      error: els['account-error-filter'].value,
+      concurrency: els['account-concurrency-filter'].value,
+      concurrencyEnabled: concurrencyEnabled
     };
   }
 
@@ -1871,6 +1916,8 @@
     els['account-bulk-export'].disabled = count === 0;
     els['account-bulk-delete'].disabled = count === 0;
     els['account-bulk-reset'].disabled = count === 0;
+    els['account-bulk-concurrency'].disabled = count === 0;
+    els['account-bulk-concurrency-reset'].disabled = count === 0;
     els['account-bulk-count'].textContent = hidden > 0
       ? '已选 ' + count + ' 个账号（其中 ' + hidden + ' 个不在当前筛选结果中）'
       : '已选 ' + count + ' 个账号';
@@ -1935,6 +1982,13 @@
     return '<td>' + CodexQuotaLogic.cellMarkup(quotaRows[a.name], Date.now(), escapeHtml, a.name) + '</td>';
   }
 
+  function concurrencyCell(a) {
+    var text = escapeHtml(AccountViewLogic.concurrencyText(a, concurrencyEnabled));
+    if (!AccountViewLogic.concurrencyApplicable(a)) return '<td>' + text + '</td>';
+    var tip = a.concurrency_source === 'override' ? '单号上限' : '继承全局默认';
+    return '<td><span data-tip="' + tip + '">' + text + '</span> <button type="button" class="concurrency-edit text-xs text-indigo-600" data-name="' + escapeHtml(a.name || '') + '">改</button></td>';
+  }
+
   function selectCell(a) {
     var name = AccountViewLogic.accountKey(a);
     var checked = selectedAccounts.indexOf(name) >= 0 ? ' checked' : '';
@@ -1948,7 +2002,7 @@
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
         td(a.provider) + planCell(a) + quotaCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
-        requestCells(a) +
+        requestCells(a) + concurrencyCell(a) +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
         statusCell(a) + errorCell(a) +
         '</tr>';
@@ -2180,6 +2234,31 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
+  // limit is a non-negative integer, or null to restore inheritance. One request writes one file.
+  function patchConcurrencyLimit(path, body, onDone) {
+    return fetch(ENDPOINT + path, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + getStoredKey(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (resp) {
+      if (!resp.ok) return readError(resp).then(function (msg) { throw new Error(msg || 'HTTP ' + resp.status); });
+      return resp.json();
+    }).then(function (result) { onDone(result); fetchData('auto'); })
+      .catch(function (e) { setStatus('修改并发上限失败：' + e.message, 'err'); });
+  }
+  function editConcurrencyLimit(name) {
+    var input = window.prompt('账号 ' + name + ' 的并发上限（非负整数，0 表示不限额，留空恢复继承）');
+    if (input === null) return;
+    var limit = AccountViewLogic.parseConcurrencyLimit(input);
+    if (limit === undefined) { setStatus('并发上限必须是非负整数', 'err'); return; }
+    patchConcurrencyLimit('/fields', { name: name, concurrency_limit: limit }, function () { setStatus('已更新 ' + name + ' 的并发上限', 'ok'); });
+  }
+  function batchConcurrencyLimit(limit) {
+    patchConcurrencyLimit('/fields/batch', { names: selectedAccounts.slice(), concurrency_limit: limit }, function (result) {
+      setStatus('批量修改并发上限：' + AccountViewLogic.concurrencyBatchMessage(result), (result.failed || []).length ? 'err' : 'ok');
+    });
+  }
+
   function deleteSelectedAccounts(names) {
     var k = getStoredKey();
     var button = els['account-bulk-delete'];
@@ -2252,15 +2331,26 @@
       var points = data.points || [], times = points.map(function (p) { return new Date(p.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); });
       function chart(series, unit) { return { animation:false, tooltip:{trigger:'axis',renderMode:'richText'}, legend:{bottom:0,type:'scroll'}, grid:{left:55,right:20,top:25,bottom:60}, xAxis:{type:'category',data:times}, yAxis:{type:'value',name:unit || ''}, series:series }; }
       function series(name, field, type, stack) { return {name:name,type:type || 'line',stack:stack,showSymbol:false,data:points.map(function (p) { return p[field] || 0; })}; }
+      var concurrencyPoints = data.concurrency_points || [];
+      function concurrencySeries(name, field, type) { return {name:name,type:type || 'line',showSymbol:false,data:concurrencyPoints.map(function (p) { return p[field] || 0; })}; }
+      var unlimited = data.unlimited_accounts || 0;
+      var concurrencyChart = chart([concurrencySeries('当前在途','in_flight'),concurrencySeries('采样峰值','in_flight_peak'),concurrencySeries(unlimited > 0 ? '并发容量（另有 ' + unlimited + ' 个不限额）' : '并发容量','concurrency_capacity'),concurrencySeries('并发拒绝','concurrency_rejections','bar')],'请求');
+      concurrencyChart.xAxis = {type:'category',data:concurrencyPoints.map(function (p) { return new Date(p.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); })};
       return [
         chart([series('上游请求','attempts'),series('预测容量','capacity')],'RPM'),
         chart([series('p50','ttft_p50'),series('p90','ttft_p90')],'秒'),
         chart([series('过载 502/503','overload','bar','fail'),series('429 限流','rate_limits','bar','fail'),series('额度耗尽','quota_exhausted','bar','fail'),series('其他','other_failures','bar','fail')],'次'),
-        {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},grid:{left:55,right:20,top:25,bottom:40},xAxis:{type:'category',data:(data.limits || []).map(function (b) {return b.limit;})},yAxis:{type:'value',name:'账号数'},series:[{type:'bar',data:(data.limits || []).map(function (b) {return b.accounts;})}]}
+        {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},grid:{left:55,right:20,top:25,bottom:40},xAxis:{type:'category',data:(data.limits || []).map(function (b) {return b.limit;})},yAxis:{type:'value',name:'账号数'},series:[{type:'bar',data:(data.limits || []).map(function (b) {return b.accounts;})}]},
+        concurrencyChart
       ];
     },
     cards: function (d) {
-      return [['可调度账号',d.schedulable],['预测容量 / RPM',d.capacity],['当前 RPM',d.rpm],['剩余容量 / RPM',d.remaining],['已满账号',d.full],['近 5 分钟成功率',(100*d.success_rate).toFixed(1)+'%'],['首字 p50',d.ttft_p50 ? d.ttft_p50+' s' : '—'],['首字 p90',d.ttft_p90 ? d.ttft_p90+' s' : '—'],['有效成功容量 / RPM',Number(d.effective_capacity || 0).toFixed(1)],['冷却中账号',d.cooling],['快速失败 / 60 分钟',d.fast_failures]];
+      return [['可调度账号',d.schedulable],['预测容量 / RPM',d.capacity],['当前 RPM',d.rpm],['剩余容量 / RPM',d.remaining],['已满账号',d.full],['近 5 分钟成功率',(100*d.success_rate).toFixed(1)+'%'],['首字 p50',d.ttft_p50 ? d.ttft_p50+' s' : '—'],['首字 p90',d.ttft_p90 ? d.ttft_p90+' s' : '—'],['有效成功容量 / RPM',Number(d.effective_capacity || 0).toFixed(1)],['冷却中账号',d.cooling],['快速失败 / 60 分钟',d.fast_failures],['当前在途',d.in_flight || 0],['并发容量',this.concurrencyCapacity(d)],['并发已满账号',d.concurrency_full_accounts || 0]];
+    },
+    concurrencyCapacity: function (d) {
+      var text = String(d.concurrency_capacity || 0);
+      if (d.unlimited_accounts > 0) text += ' + ∞×' + d.unlimited_accounts;
+      return d.concurrency_enabled ? text : text + '（未启用）';
     }
   };
   /* CODEX_POOL_LOGIC_END */
@@ -2456,6 +2546,7 @@
     poolState.loaded=false;poolState.prevCards=null;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
     poolEl('config').reset();setPoolSaving(false);poolEl('save').disabled=true;poolEl('fail-fast').disabled=true;
     poolEl('cards').textContent='';poolEl('updated').textContent='';poolEl('charts-status').textContent='';poolStatus('',false);
+    concurrencyConfigState.dirty=false;poolEl('concurrency-config').reset();poolEl('concurrency-save').disabled=true;concurrencyStatus('',false);
   }
   function renderPool(data) {
     poolState.lastData=data;
@@ -2484,7 +2575,7 @@
   // Asset callbacks update charts only; cached snapshots must not rewrite saved form values.
   function renderPoolCharts(data) {
     if (window.echarts) {
-      if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
+      if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart','concurrency-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
       CodexPoolLogic.chartOptions(data).forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
     }
     renderQuotaTrend();
@@ -2494,6 +2585,7 @@
   }
   function fetchPool() {
     fetchQuota();
+    fetchConcurrencyConfig();
     var key=getStoredKey();
     if (!key || currentTab!=='pool' || !firstSuccess || poolState.controller || poolState.saving) return;
     var generation=poolState.generation,controller=new AbortController();poolState.controller=controller;
@@ -2506,6 +2598,31 @@
       }).then(function(data){if(data && generation===poolState.generation && key===getStoredKey()) renderPool(data);})
       .catch(function(e){if(e.name!=='AbortError' && generation===poolState.generation) poolStatus('号池数据加载失败：'+e.message+'；稍后自动重试',true);})
       .finally(function(){if(poolState.controller===controller) poolState.controller=null;});
+  }
+  var concurrencyConfigState = {dirty:false, saving:false, home:false};
+  function concurrencyStatus(message, failed) {poolEl('concurrency-status').textContent=message;poolEl('concurrency-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function fetchConcurrencyConfig() {
+    var key=getStoredKey();
+    if (!key || concurrencyConfigState.saving) return;
+    fetch('/v0/management/codex-account-concurrency/config',{headers:{Authorization:'Bearer '+key}})
+      .then(function(resp){if(!resp.ok)throw new Error('HTTP '+resp.status);return resp.json();})
+      .then(function(c){
+        if (key!==getStoredKey() || concurrencyConfigState.dirty || concurrencyConfigState.saving) return;
+        concurrencyConfigState.home=!!c.home_mode;
+        poolEl('concurrency-enabled').checked=c.enabled;poolEl('concurrency-default').value=c['default-limit'];
+        poolEl('concurrency-enabled').disabled=concurrencyConfigState.home;poolEl('concurrency-save').disabled=false;
+        concurrencyStatus(concurrencyConfigState.home?'Home 模式：账号并发上限不生效。':(c.active?'已启用：账号满时换号，全部已满返回 529。':'未启用：只统计在途，不影响调度。'),false);
+      }).catch(function(e){concurrencyStatus('并发配置加载失败：'+e.message,true);});
+  }
+  function saveConcurrencyConfig(event) {
+    event.preventDefault();
+    var key=getStoredKey();if(!key || concurrencyConfigState.saving || !poolEl('concurrency-config').reportValidity()) return;
+    concurrencyConfigState.saving=true;poolEl('concurrency-save').disabled=true;concurrencyStatus('保存中…',false);
+    fetch('/v0/management/codex-account-concurrency/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({enabled:poolEl('concurrency-enabled').checked,'default-limit':Number(poolEl('concurrency-default').value)})})
+      .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
+      .then(function(){concurrencyConfigState.dirty=false;concurrencyStatus('已保存，等待配置热更新',false);})
+      .catch(function(e){concurrencyStatus('保存失败：'+e.message,true);})
+      .finally(function(){concurrencyConfigState.saving=false;poolEl('concurrency-save').disabled=false;});
   }
   function startPool() {loadPoolECharts();if(poolState.saving || poolState.timer || poolState.controller)return;stopPool();fetchPool();poolState.timer=setInterval(fetchPool,10000);}
   function setPoolSaving(saving) {
@@ -2540,6 +2657,8 @@
   });
   quotaEl('scan-enabled').addEventListener('change', function () { saveQuotaSettings(); });
   poolEl('config').addEventListener('submit',savePool);
+  poolEl('concurrency-config').addEventListener('submit',saveConcurrencyConfig);
+  poolEl('concurrency-config').addEventListener('input',function(){concurrencyConfigState.dirty=true;concurrencyStatus('有未保存的修改',false);});
   poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});
   poolEl('enabled').addEventListener('change',function(){poolEl('fail-fast').disabled=!this.checked;if(!this.checked)poolEl('fail-fast').checked=false;});
   window.addEventListener('resize',function(){poolState.charts.forEach(function(c){c.resize();});});
@@ -3049,7 +3168,7 @@
       renderAccountView({ resetPage: true, rebuildOptions: false });
     });
   });
-  ['account-provider-filter', 'account-plan-filter', 'account-status-filter', 'account-error-filter', 'account-quota-filter', 'account-quota-sort'].forEach(function (id) {
+  ['account-concurrency-filter', 'account-provider-filter', 'account-plan-filter', 'account-status-filter', 'account-error-filter', 'account-quota-filter', 'account-quota-sort'].forEach(function (id) {
     els[id].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
   });
   els['account-page-size'].addEventListener('change', function () { renderAccountView({ resetPage: true, rebuildOptions: false }); });
@@ -3097,6 +3216,18 @@
     selectedAccounts = [];
     renderAccountView({ resetPage: false, rebuildOptions: false });
   });
+  els.rows.addEventListener('click', function (e) {
+    var button = e.target && e.target.closest ? e.target.closest('.concurrency-edit') : null;
+    if (button) editConcurrencyLimit(button.getAttribute('data-name') || '');
+  });
+  els['account-bulk-concurrency'].addEventListener('click', function () {
+    var input = window.prompt('为选中的 ' + selectedAccounts.length + ' 个账号设置并发上限（非负整数，0 表示不限额）');
+    if (input === null) return;
+    var limit = AccountViewLogic.parseConcurrencyLimit(input);
+    if (limit === undefined || limit === null) { setStatus('并发上限必须是非负整数', 'err'); return; }
+    batchConcurrencyLimit(limit);
+  });
+  els['account-bulk-concurrency-reset'].addEventListener('click', function () { batchConcurrencyLimit(null); });
   els['account-bulk-export'].addEventListener('click', function () {
     var result = AccountViewLogic.selectedEmails(selectedAccounts, accountsData);
     if (!result.emails.length) {
