@@ -75,17 +75,17 @@ func (pools *codexPoolSet) pooledPriorityBound(model string) int {
 // poolPickOne snapshots eligible candidates under just this pool's lock. Plugin
 // callbacks and selector code run after releasing it; final identity validation
 // goes through the owner index and may locate a newly migrated slot.
-func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, bool, error) {
 	if err := nonNilContext(ctx).Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	shared := m.shared.Load()
 	if hint := p.availability.Load(); hint != nil && pinnedAuthIDFromMetadata(opts.Metadata) == "" && len(tried) == 0 && hint.potential == 0 && !rateBypassed(ctx) && time.Now().Before(hint.until) {
 		delay := time.Until(hint.until)
 		if hint.capacity {
-			return nil, nil, newPoolCapacityError(delay)
+			return nil, nil, false, newPoolCapacityError(delay)
 		}
-		return nil, nil, newModelCooldownErrorWithCause(model, "codex", delay, nil)
+		return nil, nil, false, newModelCooldownErrorWithCause(model, "codex", delay, nil)
 	}
 	across := false
 	if plugin, ok := shared.pluginScheduler.(PluginSchedulerAcrossPriorities); ok {
@@ -94,7 +94,7 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 	p.lock()
 	if p.retired {
 		p.mu.Unlock()
-		return nil, nil, &Error{Code: "auth_not_found", Message: "pool retired"}
+		return nil, nil, false, &Error{Code: "auth_not_found", Message: "pool retired"}
 	}
 	if !isSameSelector(p.selectorSource, shared.selector) || p.selector == nil {
 		p.selector = clonePoolSelector(shared.selector)
@@ -153,7 +153,7 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 	}
 	if concurrencyFull && !concurrencyReady {
 		p.mu.Unlock()
-		return nil, nil, newConcurrencyCapacityError()
+		return nil, nil, false, newConcurrencyCapacityError()
 	}
 	var available []*Auth
 	var err error
@@ -171,37 +171,97 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 			}
 		}
 		p.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, false, err
+	}
+	// A session binding only stands in for the built-in selector, which like the legacy
+	// session-affinity selector sees every priority tier; the plugin still sees the top tier.
+	var preferred *Auth
+	if preferredID, _ := ctx.Value(poolPreferredAuthKey{}).(string); preferredID != "" {
+		if a := pickSchedulerAuthByID(available, preferredID); a != nil {
+			preferred = snapshotAuthsForSelection(selector, []*Auth{a})[0]
+		}
 	}
 	if !across {
 		available = highestPriorityAuths(available)
 	}
 	candidates = snapshotAuthsForSelection(selector, available)
 	p.mu.Unlock()
-	selected, handled, err := m.poolPluginPick(ctx, shared.pluginScheduler, model, opts, candidates)
+	selected, handled, err := m.poolPluginPick(ctx, p, shared.pluginScheduler, model, opts, candidates)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, &poolPluginError{cause: err}
 	}
-	if !handled {
+	if !handled && preferred != nil {
+		selected = preferred
+	}
+	if !handled && selected == nil {
 		selected, err = selector.Pick(selectorContextForAvailableAuths(ctx, selector, model), "codex", selectionArgForSelector(selector, model), opts, highestPriorityAuths(candidates))
 	}
 	if err != nil {
-		return nil, nil, restoreModelCooldownErrorModel(err, model)
+		return nil, nil, false, restoreModelCooldownErrorModel(err, model)
 	}
 	if selected == nil {
-		return nil, nil, &Error{Code: "auth_not_found", Message: "pool selector returned no credential"}
+		return nil, nil, false, &Error{Code: "auth_not_found", Message: "pool selector returned no credential"}
 	}
 	a, e, err := m.resolveSelectionSnapshot(ctx, selected, model, opts)
 	if nextCtx, nextTried, again := staleSelectionRetry(ctx, err, tried, selected.ID); again {
 		return m.poolPickOne(nextCtx, p, model, opts, nextTried)
 	}
-	return a, e, err
+	return a, e, handled, err
 }
-func (m *Manager) poolPluginPick(ctx context.Context, scheduler PluginScheduler, model string, opts exec.Options, auths []*Auth) (*Auth, bool, error) {
-	if scheduler == nil {
-		return nil, false, nil
+
+// poolPreferredAuthKey carries the session-bound credential ID for built-in fallback.
+type poolPreferredAuthKey struct{}
+
+// poolPluginError prevents plugin failures from becoming pool/provider failover signals.
+// Selection boundaries return the original error to preserve its identity and methods.
+type poolPluginError struct{ cause error }
+
+func (e *poolPluginError) Error() string { return e.cause.Error() }
+func (e *poolPluginError) Unwrap() error { return e.cause }
+
+func isPoolPluginError(err error) bool {
+	var pluginErr *poolPluginError
+	return errors.As(err, &pluginErr)
+}
+
+func unwrapPoolPluginError(err error) error {
+	var pluginErr *poolPluginError
+	if errors.As(err, &pluginErr) {
+		return pluginErr.cause
 	}
-	if state, ok := scheduler.(pluginSchedulerState); ok && !state.HasScheduler() {
+	return err
+}
+
+func poolPluginActive(scheduler PluginScheduler) bool {
+	if scheduler == nil {
+		return false
+	}
+	state, ok := scheduler.(pluginSchedulerState)
+	return !ok || state.HasScheduler()
+}
+
+// poolBoundPick resolves a valid session binding. Without a plugin scheduler the bound
+// credential is used directly; with one, the plugin decides first within the bound
+// credential's pool, matching the legacy path where affinity lives inside the selector.
+func (m *Manager) poolBoundPick(ctx context.Context, binding codexPoolBinding, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, bool, error) {
+	a, e, err := m.poolBoundAuth(ctx, binding, model, opts, tried)
+	if err != nil || !poolPluginActive(m.shared.Load().pluginScheduler) {
+		return a, e, false, err
+	}
+	guard, errLock := m.lockAuth(ctx, binding.authID)
+	if errLock != nil {
+		return nil, nil, false, errLock
+	}
+	owner := guard.pool
+	guard.unlock()
+	if owner == nil {
+		return nil, nil, false, &Error{Code: "auth_unavailable", Message: staleSelectionMessage, Retryable: true}
+	}
+	return m.poolPickOne(context.WithValue(ctx, poolPreferredAuthKey{}, binding.authID), owner, model, opts, tried)
+}
+
+func (m *Manager) poolPluginPick(ctx context.Context, p *codexAccountPool, scheduler PluginScheduler, model string, opts exec.Options, auths []*Auth) (*Auth, bool, error) {
+	if !poolPluginActive(scheduler) {
 		return nil, false, nil
 	}
 	candidates := make([]pluginapi.SchedulerAuthCandidate, 0, len(auths))
@@ -220,12 +280,21 @@ func (m *Manager) poolPluginPick(ctx context.Context, scheduler PluginScheduler,
 	}
 	// Delegation remains local to this candidate pool, never the global scheduler.
 	if strategy, ok := builtinSchedulerStrategy(response.DelegateBuiltin); ok {
-		var selector Selector = &RoundRobinSelector{}
-		if strategy == schedulerStrategyFillFirst {
-			selector = &FillFirstSelector{}
-		} else if strategy == schedulerStrategyWeightedRoundRobin {
-			selector = &WeightedRoundRobinSelector{}
+		p.mu.Lock()
+		selector := p.delegates[strategy]
+		if selector == nil {
+			selector = &RoundRobinSelector{}
+			if strategy == schedulerStrategyFillFirst {
+				selector = &FillFirstSelector{}
+			} else if strategy == schedulerStrategyWeightedRoundRobin {
+				selector = &WeightedRoundRobinSelector{}
+			}
+			if p.delegates == nil {
+				p.delegates = make(map[schedulerStrategy]Selector)
+			}
+			p.delegates[strategy] = selector
 		}
+		p.mu.Unlock()
 		selected, err := selector.Pick(selectorContextForAvailableAuths(ctx, selector, model), "codex", model, opts, highestPriorityAuths(auths))
 		return selected, true, err
 	}
@@ -398,6 +467,7 @@ func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts
 func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	opts.EnsureMetadata()
 	delete(opts.Metadata, poolStickyMetadataKey)
+	delete(opts.Metadata, poolPluginHandledMetadataKey)
 	opts.Metadata[exec.SessionAffinityProviderMetadataKey] = "codex"
 	opts.Metadata[exec.SessionAffinityModelMetadataKey] = model
 	pools := m.codexPools.Load()
@@ -441,8 +511,15 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		bound, exists := p.bindings[codexBindingKey{key, canonicalModelKey(model)}]
 		p.mu.Unlock()
 		if exists && time.Now().Before(bound.expires) {
-			if a, e, err := m.poolBoundAuth(ctx, bound, model, opts, tried); err == nil {
-				opts.Metadata[poolStickyMetadataKey] = true
+			a, e, handled, err := m.poolBoundPick(ctx, bound, model, opts, tried)
+			if isPoolPluginError(err) {
+				return nil, nil, err
+			}
+			if err == nil {
+				opts.Metadata[poolPluginHandledMetadataKey] = handled
+				if !handled && a.ID == bound.authID {
+					opts.Metadata[poolStickyMetadataKey] = true
+				}
 				return a, e, nil
 			}
 		}
@@ -458,7 +535,15 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 			binding, exists := p.bindings[codexBindingKey{parent, canonicalModelKey(model)}]
 			p.mu.Unlock()
 			if exists && time.Now().Before(binding.expires) {
-				if a, e, err := m.poolBoundAuth(ctx, binding, model, opts, tried); err == nil {
+				a, e, handled, err := m.poolBoundPick(ctx, binding, model, opts, tried)
+				if isPoolPluginError(err) {
+					return nil, nil, err
+				}
+				if err == nil {
+					opts.Metadata[poolPluginHandledMetadataKey] = handled
+					if handled || a.ID != binding.authID {
+						return a, e, nil
+					}
 					opts.Metadata[poolStickyMetadataKey] = true
 					if preview, _ := ctx.Value(poolPreviewKey{}).(bool); preview {
 						return a, e, nil
@@ -490,6 +575,7 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 	})
 	var chosen *Auth
 	var executor ProviderExecutor
+	var chosenHandled bool
 	var bestErr error
 	var sawSaturated bool
 	observeSaturation := func(err error) {
@@ -500,12 +586,18 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 	}
 	sideFirst := pools.side.priorityBound(model) > pools.pooledPriorityBound(model)
 	if sideFirst {
-		chosen, executor, bestErr = m.poolPickOne(ctx, pools.side, model, opts, tried)
+		chosen, executor, chosenHandled, bestErr = m.poolPickOne(ctx, pools.side, model, opts, tried)
+		if isPoolPluginError(bestErr) {
+			return nil, nil, bestErr
+		}
 		observeSaturation(bestErr)
 	}
 	if chosen == nil || pools.pooledPriorityBound(model) > authPriority(chosen) {
 		for i, p := range order {
-			a, e, err := m.poolPickOne(ctx, p, model, opts, tried)
+			a, e, handled, err := m.poolPickOne(ctx, p, model, opts, tried)
+			if isPoolPluginError(err) {
+				return nil, nil, err
+			}
 			if err == nil {
 				if i > 0 {
 					preferred.fallback.Add(1)
@@ -514,7 +606,7 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 					}
 				}
 				if chosen == nil || authPriority(a) > authPriority(chosen) {
-					chosen, executor = a, e
+					chosen, executor, chosenHandled = a, e, handled
 				}
 				break
 			}
@@ -523,9 +615,12 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		}
 	}
 	if !sideFirst && (chosen == nil || pools.side.priorityBound(model) > authPriority(chosen)) {
-		a, e, err := m.poolPickOne(ctx, pools.side, model, opts, tried)
+		a, e, handled, err := m.poolPickOne(ctx, pools.side, model, opts, tried)
+		if isPoolPluginError(err) {
+			return nil, nil, err
+		}
 		if err == nil && (chosen == nil || authPriority(a) > authPriority(chosen)) {
-			chosen, executor = a, e
+			chosen, executor, chosenHandled = a, e, handled
 		}
 		observeSaturation(err)
 		bestErr = preferPoolError(bestErr, err)
@@ -539,7 +634,8 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		}
 		return nil, nil, bestErr
 	}
-	if preview, _ := ctx.Value(poolPreviewKey{}).(bool); affinity != nil && !preview {
+	opts.Metadata[poolPluginHandledMetadataKey] = chosenHandled
+	if preview, _ := ctx.Value(poolPreviewKey{}).(bool); affinity != nil && !preview && !chosenHandled {
 		return m.bindPoolSelection(ctx, key, model, opts, affinity, chosen, tried)
 	}
 	return chosen, executor, nil
@@ -622,6 +718,12 @@ func (m *Manager) updatePoolAffinity(result Result, epoch uint64) {
 }
 
 func (m *Manager) pickCodexPool(ctx context.Context, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	a, e, err := m.pickCodexPoolWithPluginError(ctx, model, opts, tried)
+	return a, e, unwrapPoolPluginError(err)
+}
+
+// Mixed routing needs the failure category until it has decided whether to fall back.
+func (m *Manager) pickCodexPoolWithPluginError(ctx context.Context, model string, opts exec.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	opts.EnsureMetadata()
 	delete(opts.Metadata, poolSaturatedMetadataKey)
 	ctx = nonNilContext(ctx)
@@ -631,6 +733,9 @@ func (m *Manager) pickCodexPool(ctx context.Context, model string, opts exec.Opt
 		}
 		version := m.codexPools.Load().table.Load().version
 		a, e, err := m.pickCodexPoolOnce(ctx, model, opts, tried)
+		if isPoolPluginError(err) {
+			return nil, nil, err
+		}
 		if nextCtx, nextTried, again := staleSelectionRetry(ctx, err, tried, ""); again {
 			ctx, tried = nextCtx, nextTried
 			continue

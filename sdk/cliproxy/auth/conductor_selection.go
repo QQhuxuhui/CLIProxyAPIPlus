@@ -387,6 +387,11 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		}
 	}
 	if guard.pool != nil {
+		// Pooled auths publish their registry projection through the pool, but the cleared
+		// cooldown records still need the persistence mark before returning.
+		if cooldownStateChanged {
+			m.persistCooldownStates(context.Background())
+		}
 		return
 	}
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
@@ -1041,7 +1046,7 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
-		return nil, true, errPick
+		return nil, true, preservePoolPluginError(ctx, errPick)
 	}
 	if !handled || !resp.Handled {
 		return nil, false, nil
@@ -1054,7 +1059,8 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	if !okStrategy {
 		return nil, false, nil
 	}
-	return m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, tried)
+	selected, delegated, errPick := m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, tried)
+	return selected, delegated, preservePoolPluginError(ctx, errPick)
 }
 
 func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, auth *Auth, routeModel string) bool {
@@ -1870,6 +1876,8 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			// A failed re-pick keeps the retryable stale-selection error for the caller.
 			if retried, retriedExecutor, errRetry := m.pickNextLegacy(retryCtx, provider, model, opts, retryTried); errRetry == nil {
 				return retried, retriedExecutor, nil
+			} else if isPoolPluginError(errRetry) {
+				return nil, nil, errRetry
 			}
 		}
 		return authCopy, executor, errResolve
@@ -2221,6 +2229,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			// A failed re-pick keeps the retryable stale-selection error for the caller.
 			if retried, retriedExecutor, retriedProvider, errRetry := m.pickNextMixedLegacy(retryCtx, providers, model, opts, retryTried); errRetry == nil {
 				return retried, retriedExecutor, retriedProvider, nil
+			} else if isPoolPluginError(errRetry) {
+				return nil, nil, "", errRetry
 			}
 		}
 		if errResolve != nil {

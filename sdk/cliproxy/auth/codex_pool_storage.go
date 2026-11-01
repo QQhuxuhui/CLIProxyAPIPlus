@@ -39,6 +39,9 @@ type codexAccountPool struct {
 	projectionDue  map[string]time.Time
 	catalogDirty   atomic.Bool
 	selectorSource Selector
+	// delegates keeps the built-in selectors a plugin scheduler delegates to, so their
+	// rotation state survives across picks like the legacy scheduler's does.
+	delegates      map[schedulerStrategy]Selector
 	priorities     atomic.Pointer[map[string]int]
 	bindingOrder   list.List
 	bindingEntries map[codexBindingKey]*list.Element
