@@ -332,12 +332,21 @@ type CodexFastSessionRollbackConfig struct {
 	WindowMinutes int `yaml:"window-minutes" json:"window-minutes"`
 	// MinSamples is the per-group sample count required within the window. Default 30.
 	MinSamples int `yaml:"min-samples" json:"min-samples"`
-	// TTFTWorsePercent triggers rollback when the fast-group small-request TTFT p50 is worse
-	// than the control group by more than this percentage. Default 20.
+	// TTFTWorsePercent is kept for old configs and no longer affects the share; TTFT is only
+	// reported. Default 20.
 	TTFTWorsePercent float64 `yaml:"ttft-worse-percent" json:"ttft-worse-percent"`
-	// FailureWorsePoints triggers rollback when the fast-group failure rate exceeds the
+	// FailureWorsePoints halves the fast share when the fast-group failure rate exceeds the
 	// control group by more than this many percentage points. Default 5.
 	FailureWorsePoints float64 `yaml:"failure-worse-points" json:"failure-worse-points"`
+	// MinPercent is the lowest share automatic halving reaches (1-99). Default 5.
+	MinPercent int `yaml:"min-percent,omitempty" json:"min-percent,omitempty"`
+	// CooldownSeconds is the minimum wait between adjustments (60-3600). Default 300.
+	CooldownSeconds int `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
+	// RecoverIntervalSeconds is how long after an adjustment, with no failure evidence, the
+	// share climbs one step (60-86400). Default 600.
+	RecoverIntervalSeconds int `yaml:"recover-interval-seconds,omitempty" json:"recover-interval-seconds,omitempty"`
+	// IncreaseStepPercent is the size of one recovery step (1-50). Default 5.
+	IncreaseStepPercent int `yaml:"increase-step-percent,omitempty" json:"increase-step-percent,omitempty"`
 }
 
 // DefaultCodexFastSessionProbeModel is the default probe model.
@@ -376,6 +385,10 @@ func (c *CodexFastSessionIDsConfig) Normalize() {
 	if c.Rollback.FailureWorsePoints <= 0 {
 		c.Rollback.FailureWorsePoints = 5
 	}
+	c.Rollback.MinPercent = normalizeBoundedInt(c.Rollback.MinPercent, 5, 99)
+	c.Rollback.CooldownSeconds = max(normalizeBoundedInt(c.Rollback.CooldownSeconds, 300, 3600), 60)
+	c.Rollback.RecoverIntervalSeconds = max(normalizeBoundedInt(c.Rollback.RecoverIntervalSeconds, 600, 86400), 60)
+	c.Rollback.IncreaseStepPercent = normalizeBoundedInt(c.Rollback.IncreaseStepPercent, 5, 50)
 }
 
 // CodexEgressPoolConfig configures the Codex outbound proxy pool. Credentials with their own

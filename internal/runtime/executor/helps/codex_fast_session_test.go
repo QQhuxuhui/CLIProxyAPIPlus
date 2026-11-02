@@ -246,8 +246,8 @@ func TestCodexFastSessionFullRolloutKeepsRollbackControl(t *testing.T) {
 	}
 	pool.EvaluateRollback(cfg.Rollback)
 	snap := pool.Snapshot(10)
-	if !snap.Rollback.Disabled {
-		t.Fatalf("all fast requests failed without rollback: %+v, control=%d", snap.RollbackCheck, snap.Groups[CodexFastSessionGroupControl].WindowRequests)
+	if snap.EffectivePercent >= 99 {
+		t.Fatalf("all fast requests failed without a lower share: %+v, control=%d", snap.RollbackCheck, snap.Groups[CodexFastSessionGroupControl].WindowRequests)
 	}
 	cfg.Rollback.Enable = false
 	pool.ApplyConfig(cfg)
@@ -258,7 +258,7 @@ func TestCodexFastSessionFullRolloutKeepsRollbackControl(t *testing.T) {
 	}
 }
 
-func TestCodexFastSessionReenableClearsEvaluationWindow(t *testing.T) {
+func TestCodexFastSessionConfigChangeClearsEvaluationWindow(t *testing.T) {
 	pool, cfg := codexFastSessionRollbackPool(t)
 	observeN(pool, CodexFastSessionGroupFast, 30, 30, 0)
 	observeN(pool, CodexFastSessionGroupControl, 30, 0, time.Second)
@@ -267,8 +267,8 @@ func TestCodexFastSessionReenableClearsEvaluationWindow(t *testing.T) {
 	pool.ApplyConfig(cfg)
 	pool.EvaluateRollback(cfg.Rollback)
 	snap := pool.Snapshot(10)
-	if snap.Rollback.Disabled || snap.Groups[CodexFastSessionGroupFast].WindowRequests != 0 {
-		t.Fatalf("old samples disabled fresh pool: %+v", snap)
+	if snap.EffectivePercent != 99 || snap.Groups[CodexFastSessionGroupFast].WindowRequests != 0 {
+		t.Fatalf("old samples lowered fresh pool: %+v", snap)
 	}
 	if snap.Groups[CodexFastSessionGroupFast].TotalRequests != 30 {
 		t.Fatal("lifetime totals should survive a new evaluation window")

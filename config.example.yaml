@@ -510,16 +510,22 @@ codex:
   #   admit-ratio: 0.4             # fast = probe wait < admit-ratio * baseline median
   #   consecutive: 2               # judged rounds needed to admit, and to remove
   #   probe-model: "gpt-6-luna"
-  #   # Automatic runtime disable when the fast group does worse than the control group.
+  #   # Automatic share control: the fast share halves when the fast group's failure rate is
+  #   # clearly worse than the control group's, and climbs back to `percent` when no new failure
+  #   # evidence appears. It never turns the feature off. TTFT is reported, not judged.
   #   # Keeps at least 1% of identities as controls (not a guaranteed request share).
-  #   # Status exposes percent and effective_percent; minimum samples are still required.
-  #   # Re-enabled when enable/percent/seed/rollback.enable changes, with a fresh stats window.
+  #   # Status exposes percent and effective_percent. A config change or restart resets the
+  #   # share to `percent`.
   #   rollback:
   #     enable: false
   #     window-minutes: 10
   #     min-samples: 30            # per group, within the window
-  #     ttft-worse-percent: 20     # small-request (input < 20000 tokens) TTFT p50
+  #     ttft-worse-percent: 20     # kept for old configs; no longer affects the share
   #     failure-worse-points: 5    # failure rate, percentage points
+  #     min-percent: 5             # lowest share automatic halving reaches
+  #     cooldown-seconds: 300      # minimum wait between adjustments
+  #     recover-interval-seconds: 600 # climb one step after this long with no failure evidence
+  #     increase-step-percent: 5   # size of one recovery step
   # Outbound proxy pool for HTTP/SSE /responses attempts. Credentials with their own proxy_url
   # never use it. Retries after an upstream overload/5xx/transport error go through the pool
   # (control-percent of them stay direct as the control group); with shift enabled, a share of
