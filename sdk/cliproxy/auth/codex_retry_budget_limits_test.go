@@ -79,3 +79,34 @@ func TestSetConfigPublishesCodexRetryBudgetLimits(t *testing.T) {
 		t.Fatalf("removing the keys restores defaults: %d, %s", accounts, window)
 	}
 }
+
+func TestCodexRetryBudgetLimitsStayConsistentDuringUpdates(t *testing.T) {
+	resetCodexRetryBudgetLimits(t)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				setCodexRetryBudgetLimits(1, 120)
+			} else {
+				setCodexRetryBudgetLimits(30, 1)
+			}
+		}
+	}()
+	for i := 0; i < 200000; i++ {
+		accounts, window := currentCodexRetryBudgetLimits()
+		if (accounts == 30 && window == 120*time.Second) || (accounts == 1 && window == time.Second) {
+			close(stop)
+			<-done
+			t.Fatalf("mixed limits: %d, %s", accounts, window)
+		}
+	}
+	close(stop)
+	<-done
+}

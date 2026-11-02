@@ -22,36 +22,33 @@ const (
 	maxCodexRetryWindow       = 120 * time.Second
 )
 
-// codexRetryAccountLimit and codexRetryWindowLimit hold the configured budget.
-// WithCodexRetryBudget runs in handlers that have no Manager, so the values are
-// published on config updates and each logical request snapshots them once.
-var (
-	codexRetryAccountLimit atomic.Int64
-	codexRetryWindowLimit  atomic.Int64
-)
+// codexRetryLimits is published as one immutable value, so a request never mixes
+// two config versions. WithCodexRetryBudget runs in handlers that have no Manager,
+// and each logical request snapshots the value once.
+type codexRetryLimits struct {
+	accounts int
+	window   time.Duration
+}
+
+var codexRetryLimitsValue atomic.Pointer[codexRetryLimits]
 
 // setCodexRetryBudgetLimits publishes the limits; non-positive values mean default.
 func setCodexRetryBudgetLimits(accounts, windowSeconds int) {
-	if accounts > maxCodexRetryAccounts {
-		accounts = maxCodexRetryAccounts
+	limits := &codexRetryLimits{accounts: defaultCodexRetryAccounts, window: defaultCodexRetryWindow}
+	if accounts > 0 {
+		limits.accounts = min(accounts, maxCodexRetryAccounts)
 	}
-	window := time.Duration(windowSeconds) * time.Second
-	if window > maxCodexRetryWindow {
-		window = maxCodexRetryWindow
+	if windowSeconds > 0 {
+		limits.window = min(time.Duration(windowSeconds)*time.Second, maxCodexRetryWindow)
 	}
-	codexRetryAccountLimit.Store(int64(max(accounts, 0)))
-	codexRetryWindowLimit.Store(int64(max(window, 0)))
+	codexRetryLimitsValue.Store(limits)
 }
 
 func currentCodexRetryBudgetLimits() (int, time.Duration) {
-	accounts, window := int(codexRetryAccountLimit.Load()), time.Duration(codexRetryWindowLimit.Load())
-	if accounts <= 0 {
-		accounts = defaultCodexRetryAccounts
+	if limits := codexRetryLimitsValue.Load(); limits != nil {
+		return limits.accounts, limits.window
 	}
-	if window <= 0 {
-		window = defaultCodexRetryWindow
-	}
-	return accounts, window
+	return defaultCodexRetryAccounts, defaultCodexRetryWindow
 }
 
 type codexRetryKey struct{}
