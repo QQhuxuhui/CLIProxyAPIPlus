@@ -215,14 +215,17 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldSpeed.Enable != newSpeed.Enable {
 		changes = append(changes, fmt.Sprintf("codex.speed-priority.enable: %t -> %t", oldSpeed.Enable, newSpeed.Enable))
 	}
-	if oldSpeed.Percent != newSpeed.Percent {
-		changes = append(changes, fmt.Sprintf("codex.speed-priority.percent: %d -> %d", oldSpeed.Percent, newSpeed.Percent))
+	if oldSpeed.FastPercent != newSpeed.FastPercent {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.fast-percent: %d -> %d", oldSpeed.FastPercent, newSpeed.FastPercent))
 	}
-	if oldSpeed.Weights != newSpeed.Weights {
-		changes = append(changes, fmt.Sprintf("codex.speed-priority.weights: %d/%d/%d -> %d/%d/%d", oldSpeed.Weights.Fast, oldSpeed.Weights.Unknown, oldSpeed.Weights.Slow, newSpeed.Weights.Fast, newSpeed.Weights.Unknown, newSpeed.Weights.Slow))
+	if oldSpeed.Probe != newSpeed.Probe {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.probe: %d min %d/s %s -> %d min %d/s %s", oldSpeed.Probe.IntervalMinutes, oldSpeed.Probe.RatePerSecond, oldSpeed.Probe.Model, newSpeed.Probe.IntervalMinutes, newSpeed.Probe.RatePerSecond, newSpeed.Probe.Model))
 	}
-	if oldSpeed != newSpeed && oldSpeed.Enable == newSpeed.Enable && oldSpeed.Percent == newSpeed.Percent && oldSpeed.Weights == newSpeed.Weights {
-		changes = append(changes, "codex.speed-priority: thresholds updated")
+	oldScore, newScore := oldSpeed, newSpeed
+	oldScore.Enable, oldScore.FastPercent, oldScore.Probe = false, 0, config.CodexSpeedProbeConfig{}
+	newScore.Enable, newScore.FastPercent, newScore.Probe = false, 0, config.CodexSpeedProbeConfig{}
+	if oldScore != newScore {
+		changes = append(changes, "codex.speed-priority: score thresholds updated")
 	}
 	oldFastSession := oldCfg.Codex.FastSessionIDs
 	newFastSession := newCfg.Codex.FastSessionIDs

@@ -651,34 +651,72 @@ test('speed fast cards report current hour and shares', () => {
   assert.equal(map['本小时样本（fast / 对照）'], '30 / 60');
 });
 
-test('speed priority cards explain inactive state and shares', () => {
+test('speed priority cards explain state, groups and headroom', () => {
   const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
   vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
-  const sp = { config: { percent: 15 }, live: { active: false, inactive: 'pools_need_restart', classify: false, baseline_ms: null, cap_percent: 15, effective_percent: 7,
-    tiers: { fast: 3, slow: 9, unknown: 1, boost_fast: 2, hold_fast: 1 }, current: { treatment: { requests: 4, attempts: 10, overloads: 1, p50_ms: 1200 }, control: { requests: 20, attempts: 0, overloads: 0 }, probes: 5 } } };
+  const sp = { config: { fast_percent: 30, pools_configured: true, pools_running: true, enable: true },
+    live: { active: true, ready: true, fast: 570, slow: 1100, unscored: 230, fast_util: 0.423, overflow_share: 0.12, fast_p50_ms: 1400, slow_p50_ms: 7600, overall_p50_ms: null, probes: 9 } };
   const map = Object.fromEntries(plain(ctx.speed.speedCards(sp)));
-  assert.equal(map['状态'], '未生效：分池已配置，重启后生效');
-  assert.equal(map['配置占比 / 上限 / 运行占比'], '15% / 15% / 7%');
-  assert.equal(map['本小时过载率（实验 / 对照）'], '10.0% / —');
-  assert.equal(map['本小时首字 p50（实验 / 对照）'], '1.20 s / —');
+  assert.equal(map['状态'], '运行中');
+  assert.equal(map['快号 / 慢号 / 无分数'], '570 / 1100 / 230');
+  assert.equal(map['快组平均水位'], '42.3%');
+  assert.equal(map['本小时溢出占比'], '12.0%（偏紧）');
+  assert.equal(map['首字 p50 快组 / 慢组'], '1.40 s / 7.60 s');
+  assert.equal(map['首字 p50 整体'], '—');
+  const off = Object.fromEntries(plain(ctx.speed.speedCards({ config: {}, live: { active: false, inactive: 'pools_need_restart' } })));
+  assert.equal(off['状态'], '未生效：分池已配置，重启后生效');
 });
 
-test('speed priority checks, days and series render', () => {
+test('speed headroom grades, snapping and status text', () => {
   const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
   vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
   const s = ctx.speed;
-  const line = plain(s.checkLine({ name: 'fast_wear', status: 'insufficient', detail: 'x' }));
-  assert.equal(line.cls, 'speed-insufficient');
-  assert.ok(line.text.startsWith('boost 组快号转慢比例'));
-  assert.equal(s.rangeText({}), '当前代际还没有数据');
-  const row = plain(s.dayRow({ day: '2026-11-03', boost_fast_set: 40, boost_fast_to_slow: 4, hold_fast_set: 0, hold_fast_to_slow: 0, boost_slow_set: 10, boost_slow_to_fast: 1, hold_slow_set: 5, hold_slow_to_fast: 0, quota_boost_per_account_hour: 0.125, quota_hold_per_account_hour: 0, wear_status: 'insufficient' }));
-  assert.equal(row[6], '数据不足（不参与）');
-  assert.equal(row[1], '4/40（10.0%）');
-  assert.equal(row[2], '0/0（—）');
-  assert.equal(row[5], '0.13 / 0.00');
-  const g = (p50, att, ov, req, f) => ({ p50_ms: p50, p90_ms: p50, attempts: att, overloads: ov, requests: req, final_529: f });
-  const series = plain(s.speedSeries({ hours: [{ hour: '2026-11-03T06:00:00Z', treatment: g(1000, 10, 1, 8, 0), control: g(9000, 20, 6, 16, 2) }], live: { current: { hour: '2026-11-03T07:00:00Z', treatment: g(null, 0, 0, 0, 0), control: g(9500, 5, 0, 5, 0) } } }));
-  assert.deepEqual(series.treatP50, [1, null]);
-  assert.deepEqual(series.controlOverload, [30, 0]);
-  assert.deepEqual(series.control529, [12.5, 0]);
+  assert.equal(s.headroom(null).text, '—');
+  assert.equal(s.headroom(0.049).text, '充足');
+  assert.equal(s.headroom(0.05).text, '偏紧');
+  assert.equal(s.headroom(0.2).text, '偏紧');
+  assert.equal(s.headroom(0.21).cls, 'speed-fail');
+  assert.equal(s.snapPercent(29.6), 30);
+  assert.equal(s.snapPercent(0.2), 1);
+  assert.equal(s.snapPercent(95), 90);
+  assert.equal(s.snapPercent('x'), 30);
+  const base = { pools_configured: true, pools_running: true, enable: true };
+  assert.ok(s.statusText({ config: base, live: { ready: false, scored: 7, ready_min: 20 } }).includes('已有分数 7 个，需要 20 个'));
+  assert.ok(s.statusText({ config: base, live: { ready: true, probe_behind: true, probe_cycle_minutes: 31.6 } }).includes('一轮约 32 分钟'));
+  assert.ok(s.statusText({ config: { pools_configured: false }, live: {} }).startsWith('Codex 分池未开启'));
+});
+
+test('speed bins become chart points with null gaps and fast share', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const b = plain(ctx.speed.binSeries([
+    { accounts: 4, fast: 4, score_ms: 900, util: 0.5 },
+    { accounts: 4, fast: 1, score_ms: null, util: null },
+    { accounts: 0, fast: 0, score_ms: null, util: null }
+  ]));
+  assert.deepEqual(b.score, [[1, 0.9], [3, null], [5, null]]);
+  assert.deepEqual(b.util, [[1, 50], [3, null], [5, null]]);
+  assert.deepEqual(b.fast, [[1, 100], [3, 25], [5, null]]);
+});
+
+test('speed trend keeps legacy hours to the overall line', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const now = Date.now();
+  const iso = (h) => new Date(now - h * 3600 * 1000).toISOString();
+  const g = (p50) => ({ p50_ms: p50 });
+  const series = plain(ctx.speed.trendSeries({
+    hours: [
+      { hour: iso(30), schema: 'ranked', fast: g(1), slow: g(1), overall: g(1) },
+      { hour: iso(3), schema: 'legacy_ab', fast: g(null), slow: g(null), overall: g(9000), fast_util: 0.5, overflow_share: 0.5, fast_percent: 0 },
+      { hour: iso(2), schema: 'ranked', fast: g(1200), slow: g(8000), overall: g(2000), fast_util: 0.4, overflow_share: 0.031, fast_percent: 30 }
+    ],
+    live: { current: { hour: iso(0), schema: 'ranked', fast: g(null), slow: g(null), overall: g(null), fast_util: null, overflow_share: null, fast_percent: 30 } }
+  }));
+  assert.equal(series.times.length, 3, 'hours older than 24h are dropped');
+  assert.ok(series.times[0].endsWith('（旧口径）'));
+  assert.deepEqual(series.overallP50, [9, 2, null]);
+  assert.deepEqual(series.fastP50, [null, 1.2, null]);
+  assert.deepEqual(series.overflow, [null, 3.1, null]);
+  assert.deepEqual(series.fastPercent, [null, 30, 30]);
 });

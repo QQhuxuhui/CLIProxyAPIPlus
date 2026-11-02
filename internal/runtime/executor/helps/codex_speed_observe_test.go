@@ -1,9 +1,12 @@
 package helps
 
 import (
+	"context"
+
 	"testing"
 	"time"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -74,5 +77,22 @@ func TestCodexSpeedTimingSkipsEmptyDelta(t *testing.T) {
 	ObserveResponsesTimingEvent(r, []byte(`{"type":"response.output_text.delta","delta":" "}`))
 	if r.speedOutputAt.IsZero() {
 		t.Fatal("a whitespace delta is real output")
+	}
+}
+
+// The reporter freezes the account's speed group when the attempt starts; API key accounts are
+// left out of speed statistics.
+func TestCodexSpeedReporterFreezesGroupAtStart(t *testing.T) {
+	ctx := context.Background()
+	oauth := &cliproxyauth.Auth{ID: "oauth-acct", Provider: "codex"}
+	if got := NewUsageReporter(ctx, "codex", "m", oauth).speedGroup; got != cliproxyauth.CodexSpeedGroupOff {
+		t.Fatalf("disabled ranking must tag the attempt off, got %q", got)
+	}
+	key := &cliproxyauth.Auth{ID: "key-acct", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAPIKey: "sk"}}
+	if got := NewUsageReporter(ctx, "codex", "m", key).speedGroup; got != "" {
+		t.Fatalf("API key accounts must be excluded, got %q", got)
+	}
+	if got := NewUsageReporter(ctx, "openai", "m", oauth).speedGroup; got != "" {
+		t.Fatalf("non-Codex providers carry no speed group, got %q", got)
 	}
 }

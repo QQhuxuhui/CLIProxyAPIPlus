@@ -60,13 +60,12 @@ type UsageReporter struct {
 	codexEgressGroup string
 	codexEgressRoute string
 	// Codex speed measurement: upstream send, response.created and first real output times,
-	// image input flag, and the speed-priority group of the request (guarded by ttftMu).
-	speedSentAt     time.Time
-	speedCreatedAt  time.Time
-	speedOutputAt   time.Time
-	speedHasImage   bool
-	speedGroup      string
-	speedGeneration uint64
+	// image input flag, and the account's speed group at attempt start (guarded by ttftMu).
+	speedSentAt    time.Time
+	speedCreatedAt time.Time
+	speedOutputAt  time.Time
+	speedHasImage  bool
+	speedGroup     string
 }
 
 type usageExecutor interface {
@@ -132,10 +131,9 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
 	if strings.EqualFold(provider, "codex") {
-		// A Codex attempt is starting: tag it with the request's speed group and mark the
-		// request as having executed Codex for request-level speed stats.
-		reporter.speedGroup, reporter.speedGeneration = cliproxyauth.CodexSpeedGroupFromContext(ctx)
-		cliproxyauth.MarkCodexSpeedExecuted(ctx)
+		// A Codex attempt is starting on its final account: freeze the account's speed group so
+		// the result counts under it even if the ranking changes before the attempt finishes.
+		reporter.speedGroup = cliproxyauth.CodexSpeed().GroupAt(ctx, auth)
 	}
 	return reporter
 }

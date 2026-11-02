@@ -18,9 +18,7 @@ import (
 const DirName = ".codex-speed"
 
 const (
-	historyFile     = "history.jsonl"
-	transitionsFile = "transitions.jsonl"
-	accountsFile    = "accounts.dat"
+	historyFile = "history.jsonl"
 	// Retention bounds every persisted series.
 	Retention = 7 * 24 * time.Hour
 )
@@ -121,92 +119,4 @@ func writeFileAtomic(dir, name string, data []byte) error {
 		return fmt.Errorf("codex speed: replace %s: %w", name, errRename)
 	}
 	return nil
-}
-
-// AppendTransitions appends tier changes; lines older than Retention are dropped by PruneTransitions.
-func (s *Store) AppendTransitions(items []Transition) error {
-	if s == nil || s.dir == "" || len(items) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return fmt.Errorf("codex speed: create dir: %w", err)
-	}
-	f, err := os.OpenFile(filepath.Join(s.dir, transitionsFile), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("codex speed: open transitions: %w", err)
-	}
-	var buf bytes.Buffer
-	for _, item := range items {
-		line, errMarshal := json.Marshal(item)
-		if errMarshal != nil {
-			_ = f.Close()
-			return fmt.Errorf("codex speed: encode transition: %w", errMarshal)
-		}
-		buf.Write(line)
-		buf.WriteByte('\n')
-	}
-	if _, errWrite := f.Write(buf.Bytes()); errWrite != nil {
-		_ = f.Close()
-		return fmt.Errorf("codex speed: write transitions: %w", errWrite)
-	}
-	return f.Close()
-}
-
-// PruneTransitions rewrites transitions.jsonl without lines older than Retention or malformed.
-func (s *Store) PruneTransitions(now time.Time) error {
-	if s == nil || s.dir == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	data, err := os.ReadFile(filepath.Join(s.dir, transitionsFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("codex speed: read transitions: %w", err)
-	}
-	cutoff := now.Add(-Retention)
-	var buf bytes.Buffer
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 64<<10), 16<<20)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		var item Transition
-		if len(line) == 0 || json.Unmarshal(line, &item) != nil || item.Time.Before(cutoff) {
-			continue
-		}
-		buf.Write(line)
-		buf.WriteByte('\n')
-	}
-	return writeFileAtomic(s.dir, transitionsFile, buf.Bytes())
-}
-
-// SaveAccounts replaces accounts.dat with data.
-func (s *Store) SaveAccounts(data []byte) error {
-	if s == nil || s.dir == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return writeFileAtomic(s.dir, accountsFile, data)
-}
-
-// LoadAccounts returns accounts.dat, or nil when it is missing or unreadable.
-func (s *Store) LoadAccounts() []byte {
-	if s == nil || s.dir == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	data, err := os.ReadFile(filepath.Join(s.dir, accountsFile))
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.WithError(err).Warn("codex speed: read accounts state failed")
-		}
-		return nil
-	}
-	return data
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -69,21 +68,14 @@ func (e *streamBootstrapError) Headers() http.Header {
 	return cloneHTTPHeader(e.headers)
 }
 
-// streamErrorResults remembers results built by streamErrorResult so that ExecuteStream's
-// speed accounting can count a bootstrap failure delivered with a nil error. ExecuteStream
-// removes the entry on return.
-var streamErrorResults sync.Map
-
 func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamResult {
 	ch := make(chan cliproxyexecutor.StreamChunk, 1)
 	ch <- cliproxyexecutor.StreamChunk{Err: err}
 	close(ch)
-	result := &cliproxyexecutor.StreamResult{
+	return &cliproxyexecutor.StreamResult{
 		Headers: cloneHTTPHeader(headers),
 		Chunks:  ch,
 	}
-	streamErrorResults.Store(result, err)
-	return result
 }
 
 func validateStreamResult(result *cliproxyexecutor.StreamResult, err error) (*cliproxyexecutor.StreamResult, error) {

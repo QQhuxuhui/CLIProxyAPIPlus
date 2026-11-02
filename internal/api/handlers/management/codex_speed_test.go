@@ -2,7 +2,6 @@ package management
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,40 +82,17 @@ func TestCodexSpeedPriorityConfigRequiresRunningPools(t *testing.T) {
 	if rec := call(`{"speed_priority":{"enable":true}}`); rec.Code != 400 || !strings.Contains(rec.Body.String(), "restart") {
 		t.Fatalf("pools not running: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := call(`{"speed_priority":{"percent":20,"weights":{"fast":12,"slow":2}}}`); rec.Code != 200 {
-		t.Fatalf("weights save: %d %s", rec.Code, rec.Body.String())
+	if rec := call(`{"speed_priority":{"fast_percent":25,"probe_interval_minutes":20}}`); rec.Code != 200 {
+		t.Fatalf("fast percent save: %d %s", rec.Code, rec.Body.String())
 	}
 	got := h.cfg.Codex.SpeedPriority
-	if got.Enable || got.Percent != 20 || got.Weights.Fast != 12 || got.Weights.Slow != 2 || got.Weights.Unknown != 3 {
+	if got.Enable || got.FastPercent != 25 || got.Probe.IntervalMinutes != 20 || got.Probe.RatePerSecond != 3 {
 		t.Fatalf("saved: %+v", got)
 	}
-	for _, body := range []string{`{"speed_priority":{"percent":0}}`, `{"speed_priority":{"weights":{"fast":1001}}}`, `{"speed_priority":{"x":1}}`} {
+	for _, body := range []string{`{"speed_priority":{"fast_percent":0}}`, `{"speed_priority":{"fast_percent":91}}`, `{"speed_priority":{"probe_interval_minutes":61}}`, `{"speed_priority":{"percent":20}}`, `{"speed_priority":{"weights":{"fast":2}}}`, `{"speed_priority":{"x":1}}`} {
 		if rec := call(body); rec.Code != 400 {
 			t.Fatalf("invalid %s: %d", body, rec.Code)
 		}
-	}
-}
-
-func TestCodexSpeedFastWearJudgedPerDay(t *testing.T) {
-	day := func(d string, bSet, bConv, hSet, hConv int) codexspeed.SpeedHour {
-		return codexspeed.SpeedHour{Generation: "g", Hour: time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC),
-			Boost: codexspeed.SpeedCohortDay{Day: d, FastSet: bSet, FastToSlow: bConv},
-			Hold:  codexspeed.SpeedCohortDay{Day: d, FastSet: hSet, FastToSlow: hConv}}
-	}
-	var small []codexspeed.SpeedHour
-	for i := 1; i <= 7; i++ {
-		small = append(small, day(fmt.Sprintf("2026-11-0%d", i), 3, 0, 3, 0))
-	}
-	if got := codexSpeedAcceptanceFor("g", small, codexspeed.SpeedHour{}).Checks[2]; got.Status != "insufficient" {
-		t.Fatalf("7 days of 3 accounts must stay insufficient: %+v", got)
-	}
-	mixed := []codexspeed.SpeedHour{day("2026-11-01", 30, 3, 30, 3), day("2026-11-02", 30, 9, 30, 3), day("2026-11-03", 5, 5, 5, 0)}
-	acc := codexSpeedAcceptanceFor("g", mixed, codexspeed.SpeedHour{})
-	if acc.Checks[2].Status != "fail" || acc.Days[1].WearStatus != "fail" || acc.Days[2].WearStatus != "insufficient" {
-		t.Fatalf("one failing day must fail: %+v %+v", acc.Checks[2], acc.Days)
-	}
-	if got := codexSpeedAcceptanceFor("g", mixed[:1], codexspeed.SpeedHour{}).Checks[2]; got.Status != "pass" {
-		t.Fatalf("all judged days passing: %+v", got)
 	}
 }
 
@@ -133,27 +109,28 @@ func TestCodexSpeedQuotaReadingsKeepDuplicates(t *testing.T) {
 	}
 }
 
-func TestCodexSpeedFastWearExactBoundaryPasses(t *testing.T) {
-	cases := []struct {
-		bConv, hConv int
-		want         string
-	}{
-		{9, 6, "pass"},  // exactly 1.5x: 9/20 vs 6/20
-		{10, 6, "fail"}, // just above
-		{0, 0, "pass"},
-		{1, 0, "fail"},
+func TestCodexSpeedPriorityViewShape(t *testing.T) {
+	h := &Handler{cfg: &config.Config{}}
+	h.cfg.Codex.SpeedPriority.FastPercent = 40
+	legacy := codexspeed.SpeedHour{Hour: time.Date(2026, 11, 2, 11, 0, 0, 0, time.UTC), Schema: codexspeed.SpeedSchemaLegacyAB}
+	legacy.Overall.Hist.Add(time.Second)
+	view := h.codexSpeedPriorityView(h.cfg, []codexspeed.HourRecord{{Hour: legacy.Hour, Speed: &legacy}, {Hour: legacy.Hour.Add(time.Hour)}})
+	if view.Config.FastPercent != 40 || view.Config.ProbeIntervalMinutes != 10 {
+		t.Fatalf("config: %+v", view.Config)
 	}
-	for _, tc := range cases {
-		d := codexSpeedDay{BoostFastSet: 20, BoostFastToSlow: tc.bConv, HoldFastSet: 20, HoldFastToSlow: tc.hConv}
-		d.evaluateWear()
-		if d.WearStatus != tc.want {
-			t.Errorf("boost %d/20 vs hold %d/20: got %s want %s", tc.bConv, tc.hConv, d.WearStatus, tc.want)
+	if len(view.Hours) != 1 || view.Hours[0].Schema != codexspeed.SpeedSchemaLegacyAB || view.Hours[0].Overall.Hist != nil {
+		t.Fatalf("hours: %+v", view.Hours)
+	}
+	if len(view.Live.Bins) != 50 {
+		t.Fatalf("bins: %d", len(view.Live.Bins))
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"fast_percent"`, `"probe_interval_minutes"`, `"bins"`, `"overflow_share"`, `"ready_min"`, `"schema"`} {
+		if !strings.Contains(string(data), key) {
+			t.Fatalf("missing %s in %s", key, data)
 		}
-	}
-	hour := codexspeed.SpeedHour{Generation: "g", Hour: time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC),
-		Boost: codexspeed.SpeedCohortDay{Day: "2026-11-03", FastSet: 20, FastToSlow: 9},
-		Hold:  codexspeed.SpeedCohortDay{Day: "2026-11-03", FastSet: 20, FastToSlow: 6}}
-	if got := codexSpeedAcceptanceFor("g", []codexspeed.SpeedHour{hour}, codexspeed.SpeedHour{}).Checks[2]; got.Status != "pass" {
-		t.Fatalf("a day exactly at 1.5x must pass overall: %+v", got)
 	}
 }

@@ -72,8 +72,9 @@ func (m *Manager) AcquireCodexProbeAuthByID(authID, model string) (*Auth, string
 	return probe, ""
 }
 
-// CodexSpeedAuthInfos lists pooled Codex OAuth accounts for the speed recompute and probing.
-// QuotaUsed is left at -1 for the caller to fill.
+// CodexSpeedAuthInfos lists pooled Codex OAuth accounts for the speed recompute and probing,
+// with their current load. The concurrency snapshot is taken before any pool lock (its own lock
+// is never nested inside a pool lock); QuotaUsed is left at -1 for the caller to fill.
 func (m *Manager) CodexSpeedAuthInfos(model string) []CodexSpeedAuthInfo {
 	if m == nil {
 		return nil
@@ -82,6 +83,7 @@ func (m *Manager) CodexSpeedAuthInfos(model string) []CodexSpeedAuthInfo {
 	if pools == nil {
 		return nil
 	}
+	concurrency := m.CodexAccountConcurrencyView()
 	now := time.Now()
 	reg := registry.GetGlobalRegistry()
 	var out []CodexSpeedAuthInfo
@@ -98,7 +100,14 @@ func (m *Manager) CodexSpeedAuthInfos(model string) []CodexSpeedAuthInfo {
 					schedulable = false
 				}
 			}
-			out = append(out, CodexSpeedAuthInfo{ID: a.ID, AccountKey: codexSpeedAccountKey(a), Schedulable: schedulable, QuotaUsed: -1})
+			info := CodexSpeedAuthInfo{ID: a.ID, AccountKey: codexSpeedAccountKey(a), Schedulable: schedulable, QuotaUsed: -1}
+			if entry, ok := concurrency.Entry(a); ok && concurrency.Enabled() {
+				info.InFlight, info.ConcurrencyLimit = entry.InFlight, max(entry.Limit, 0)
+			}
+			if p.rate != nil && p.rate.config.Enabled {
+				info.RateCount, info.RateLimit, _ = p.rate.accountLocked(a.ID, p.rate.nowFunc())
+			}
+			out = append(out, info)
 		}
 		p.mu.Unlock()
 	}

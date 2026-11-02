@@ -386,7 +386,8 @@
   .speed-events { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
   .speed-events li { overflow-wrap: anywhere; }
   .speed-sp-form { margin-top: 28px; }
-  .speed-pass { color: #3ccf8e; } .speed-fail { color: #f2626a; } .speed-insufficient { color: #8b9bb0; }
+  .speed-pass { color: #3ccf8e; } .speed-warn { color: #f2a93b; } .speed-fail { color: #f2626a; } .speed-insufficient { color: #8b9bb0; }
+  .speed-bucket-chart { height: 340px; cursor: ew-resize; }
   .pool-chart-card h3 { margin-bottom: 14px; color: var(--text); font-size: 13.5px; font-weight: 600; letter-spacing: .02em; }
   .pool-chart { height: 280px; width: 100%; overflow: hidden; }
   .proxy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
@@ -850,25 +851,20 @@
         </div>
         <div class="pool-chart-card speed-events-card"><h3>最近成员变化</h3><ul id="speed-fs-events" class="speed-events"></ul></div>
         <form id="speed-sp-config" class="pool-settings speed-sp-form">
-          <h4 class="speed-subtitle">快号优先（A/B 实验）</h4>
+          <h4 class="speed-subtitle">快号优先（按速度排名分快组 / 慢组）</h4>
           <div class="pool-switches"><label><input id="speed-sp-enable" type="checkbox"> 启用快号优先（需要 Codex 分池）</label></div>
           <div class="pool-fields">
-            <label>实验组占比（%）<input id="speed-sp-percent" type="number" min="1" max="100" step="1" required data-tip="按会话分组；开启自动减半时最多 99%，留出对照组"></label>
-            <label>快号权重<input id="speed-sp-wfast" type="number" min="1" max="1000" step="1" required data-tip="只有 boost 组的快号使用此权重；hold 组快号按未知权重"></label>
-            <label>未知权重<input id="speed-sp-wunknown" type="number" min="1" max="1000" step="1" required></label>
-            <label>慢号权重<input id="speed-sp-wslow" type="number" min="1" max="1000" step="1" required></label>
+            <label>快组比例（%）<input id="speed-sp-fast-percent" type="number" min="1" max="90" step="1" required data-tip="按速度排名的前 X% 账号进入快组；请求先用快组，快组满了才按排名用慢组。也可以在下图拖动竖线"></label>
+            <label>慢号探测间隔（分钟）<input id="speed-sp-probe-interval" type="number" min="1" max="60" step="1" required data-tip="快组以外的账号多久探测一次，用来发现恢复变快的账号"></label>
             <button id="speed-sp-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
           </div>
           <p id="speed-sp-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
         </form>
         <div id="speed-sp-cards" class="pool-cards"></div>
-        <div class="pool-chart-card speed-events-card"><h3>全量标准（当前实验代际）</h3><ul id="speed-sp-checks" class="speed-events"></ul><p id="speed-sp-range" class="muted text-xs mt-2"></p></div>
+        <div class="pool-chart-card"><h3>账号速度与占用（按速度排名，竖线为快慢分界，可拖动）</h3><div id="speed-sp-bucket-chart" class="pool-chart speed-bucket-chart" role="img" aria-label="账号按首字速度从快到慢排名的曲线、占用水位面积和快慢分界线"></div><p id="speed-sp-bucket-note" class="muted text-xs mt-2"></p></div>
         <div class="pool-charts">
-          <div class="pool-chart-card"><h3>小请求首字：实验组 vs 对照组（近 7 天）</h3><div id="speed-sp-ttft-chart" class="pool-chart" role="img" aria-label="快号优先实验组与对照组每小时首字 p50 与 p90 折线图"></div></div>
-          <div class="pool-chart-card"><h3>过载率与最终 529 率（近 7 天）</h3><div id="speed-sp-fail-chart" class="pool-chart" role="img" aria-label="快号优先实验组与对照组每小时过载率与 529 率折线图"></div></div>
-        </div>
-        <div class="pool-chart-card speed-events-card"><h3>每日快号转慢 / 慢号恢复 / 额度消耗</h3>
-          <div class="overflow-x-auto"><table class="data-table"><thead><tr><th>日期</th><th>boost 快号转慢</th><th>hold 快号转慢</th><th>boost 慢号恢复</th><th>hold 慢号恢复</th><th>额度消耗 boost / hold（每号每小时百分点）</th><th>判定</th></tr></thead><tbody id="speed-sp-days"></tbody></table></div>
+          <div class="pool-chart-card"><h3>首字 p50：快组 / 慢组 / 整体（近 24 小时）</h3><div id="speed-sp-ttft-chart" class="pool-chart" role="img" aria-label="快组、慢组和整体每小时小请求首字 p50 折线图"></div></div>
+          <div class="pool-chart-card"><h3>容量：快组水位 / 溢出占比 / 快组比例（近 24 小时）</h3><div id="speed-sp-capacity-chart" class="pool-chart" role="img" aria-label="快组平均占用、溢出到慢组的占比和快组比例每小时折线图"></div></div>
         </div>
       </section>
       <div class="pool-heading pool-monitor-heading"><div><h3>请求监控</h3><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
@@ -2446,62 +2442,82 @@
       };
     },
     inactiveText: {disabled:'未开启', pools_disabled:'未生效：需先开启 Codex 分池', pools_need_restart:'未生效：分池已配置，重启后生效'},
-    checkNames: {ttft_drop:'首字 p50 比对照低 ≥30%', overload_and_529:'过载率和最终 529 率不高于对照', fast_wear:'boost 组快号转慢比例 ≤ hold 组的 1.5 倍'},
-    checkStatus: {pass:'达标', fail:'未达标', insufficient:'数据不足'},
-    pct: function (n, d) { return d ? (100 * n / d).toFixed(1) + '%' : '—'; },
+    pct: function (v) { return v == null ? '—' : (100 * v).toFixed(1) + '%'; },
+    // headroom grades the overflow share: how often requests had to fall back to the slow group.
+    headroom: function (share) {
+      if (share == null) return {text: '—', cls: 'speed-insufficient'};
+      if (share < 0.05) return {text: '充足', cls: 'speed-pass'};
+      if (share <= 0.20) return {text: '偏紧', cls: 'speed-warn'};
+      return {text: '快号不够', cls: 'speed-fail'};
+    },
+    snapPercent: function (v) {
+      var n = Math.round(Number(v));
+      if (!isFinite(n)) return 30;
+      return Math.min(90, Math.max(1, n));
+    },
+    statusText: function (sp) {
+      var c = sp.config || {}, live = sp.live || {};
+      if (!c.pools_configured) return 'Codex 分池未开启，快号优先无法生效；测速仍在后台运行。';
+      if (!c.pools_running) return '分池已配置但未运行，重启服务后才能开启。';
+      if (!c.enable) return '未开启：被动测速照常进行，开启后才按快慢组选号并探测慢号。';
+      if (!live.ready) return '正在测速：已有分数 ' + (live.scored || 0) + ' 个，需要 ' + (live.ready_min || 20) + ' 个，期间按原方式选号。';
+      var text = '运行中：请求先用快组，快组满了才按排名用慢组；分界每分钟按最新速度重排。';
+      if (live.probe_behind) text += ' 探测排不过来：一轮约 ' + Math.round(live.probe_cycle_minutes) + ' 分钟。';
+      return text;
+    },
     speedCards: function (sp) {
-      var live = sp.live || {}, cur = live.current || {treatment:{}, control:{}}, t = cur.treatment || {}, c = cur.control || {}, tiers = live.tiers || {};
+      var live = sp.live || {}, room = this.headroom(live.overflow_share);
       return [
-        ['状态', live.active ? '运行中' : (this.inactiveText[live.inactive] || live.inactive || '—')],
-        ['分档', live.classify ? '分档中' : '不分档（低峰或样本不足）'],
-        ['全池基线', this.seconds(live.baseline_ms)],
-        ['快号 / 慢号 / 未知', (tiers.fast || 0) + ' / ' + (tiers.slow || 0) + ' / ' + (tiers.unknown || 0)],
-        ['boost 快号 / hold 快号', (tiers.boost_fast || 0) + ' / ' + (tiers.hold_fast || 0)],
-        ['配置占比 / 上限 / 运行占比', sp.config.percent + '% / ' + live.cap_percent + '% / ' + live.effective_percent + '%'],
-        ['本小时请求（实验 / 对照）', (t.requests || 0) + ' / ' + (c.requests || 0)],
-        ['本小时首字 p50（实验 / 对照）', this.seconds(t.p50_ms) + ' / ' + this.seconds(c.p50_ms)],
-        ['本小时过载率（实验 / 对照）', this.pct(t.overloads, t.attempts) + ' / ' + this.pct(c.overloads, c.attempts)],
-        ['created 前等待（快 / 慢）', this.seconds(cur.pre_created_fast_ms) + ' / ' + this.seconds(cur.pre_created_slow_ms)],
-        ['本小时探测数', cur.probes || 0]
+        ['状态', live.active ? (live.ready ? '运行中' : '测速中') : (this.inactiveText[live.inactive] || live.inactive || '—')],
+        ['快号 / 慢号 / 无分数', (live.fast || 0) + ' / ' + (live.slow || 0) + ' / ' + (live.unscored || 0)],
+        ['快组平均水位', this.pct(live.fast_util)],
+        ['本小时溢出占比', this.pct(live.overflow_share) + '（' + room.text + '）'],
+        ['首字 p50 快组 / 慢组', this.seconds(live.fast_p50_ms) + ' / ' + this.seconds(live.slow_p50_ms)],
+        ['首字 p50 整体', this.seconds(live.overall_p50_ms)],
+        ['本小时探测数', live.probes || 0]
       ];
     },
-    checkLine: function (check) {
-      return {text: (this.checkNames[check.name] || check.name) + '：' + (this.checkStatus[check.status] || check.status) + ' · ' + check.detail, cls: 'speed-' + check.status};
+    // binSeries maps the 50 rank bins to [percent-center, value] points; empty values stay null so
+    // the smoothed lines break instead of dropping to zero.
+    binSeries: function (bins) {
+      var out = {score: [], util: [], fast: []};
+      (bins || []).forEach(function (b, i) {
+        var x = i * 2 + 1;
+        out.score.push([x, b.score_ms == null ? null : Math.round(b.score_ms / 10) / 100]);
+        out.util.push([x, b.util == null ? null : Math.round(1000 * b.util) / 10]);
+        out.fast.push([x, b.accounts ? Math.round(1000 * b.fast / b.accounts) / 10 : null]);
+      });
+      return out;
     },
-    rangeText: function (acc) {
-      if (!acc || !acc.range_start) return '当前代际还没有数据';
-      return '统计范围：' + this.hourLabel(acc.range_start) + ' 至 ' + this.hourLabel(acc.range_end) + '，共 ' + acc.hours + ' 小时、' + (acc.days || []).length + ' 天；是否覆盖 2 个工作日高峰请人工判断。';
-    },
-    speedSeries: function (sp) {
+    trendSeries: function (sp) {
       var hours = (sp.hours || []).slice();
+      var cutoff = Date.now() - 24 * 3600 * 1000;
+      hours = hours.filter(function (h) { return new Date(h.hour).getTime() >= cutoff; });
       if (sp.live && sp.live.current && sp.live.current.hour) hours.push(sp.live.current);
       var sec = function (v) { return v == null ? null : Math.round(v / 10) / 100; };
-      var r = function (n, d) { return d ? Math.round(1000 * n / d) / 10 : null; };
+      var pc = function (v) { return v == null ? null : Math.round(1000 * v) / 10; };
+      var ranked = function (h) { return h.schema !== 'legacy_ab'; };
       return {
-        times: hours.map(function (h) { return SpeedViewLogic.hourLabel(h.hour); }),
-        treatP50: hours.map(function (h) { return sec(h.treatment.p50_ms); }),
-        controlP50: hours.map(function (h) { return sec(h.control.p50_ms); }),
-        treatP90: hours.map(function (h) { return sec(h.treatment.p90_ms); }),
-        controlP90: hours.map(function (h) { return sec(h.control.p90_ms); }),
-        treatOverload: hours.map(function (h) { return r(h.treatment.overloads, h.treatment.attempts); }),
-        controlOverload: hours.map(function (h) { return r(h.control.overloads, h.control.attempts); }),
-        treat529: hours.map(function (h) { return r(h.treatment.final_529, h.treatment.requests); }),
-        control529: hours.map(function (h) { return r(h.control.final_529, h.control.requests); })
+        times: hours.map(function (h) { return SpeedViewLogic.hourLabel(h.hour) + (ranked(h) ? '' : '（旧口径）'); }),
+        fastP50: hours.map(function (h) { return ranked(h) && h.fast ? sec(h.fast.p50_ms) : null; }),
+        slowP50: hours.map(function (h) { return ranked(h) && h.slow ? sec(h.slow.p50_ms) : null; }),
+        overallP50: hours.map(function (h) { return h.overall ? sec(h.overall.p50_ms) : null; }),
+        fastUtil: hours.map(function (h) { return ranked(h) ? pc(h.fast_util) : null; }),
+        overflow: hours.map(function (h) { return ranked(h) ? pc(h.overflow_share) : null; }),
+        fastPercent: hours.map(function (h) { return ranked(h) && h.fast_percent ? h.fast_percent : null; })
       };
-    },
-    dayRow: function (d) {
-      var self = this, ratio = function (n, total) { return n + '/' + total + '（' + self.pct(n, total) + '）'; };
-      return [d.day, ratio(d.boost_fast_to_slow, d.boost_fast_set), ratio(d.hold_fast_to_slow, d.hold_fast_set), ratio(d.boost_slow_to_fast, d.boost_slow_set), ratio(d.hold_slow_to_fast, d.hold_slow_set), d.quota_boost_per_account_hour.toFixed(2) + ' / ' + d.quota_hold_per_account_hour.toFixed(2), (this.checkStatus[d.wear_status] || '—') + (d.wear_status === 'insufficient' ? '（不参与）' : '')];
     }
   };
   /* SPEED_VIEW_LOGIC_END */
   var poolState = {timer:null, controller:null, generation:0, charts:[], loaded:false, dirty:false, saving:false, home:false, saveToken:0, saveController:null, lastData:null, chartsLoading:false, chartsFailed:false};
-  var speedState = {controller:null, charts:[], data:null, dirty:false, saving:false, loaded:false, spDirty:false, spSaving:false};
+  var speedState = {controller:null, charts:[], bucket:null, data:null, dirty:false, saving:false, loaded:false, spDirty:false, spSaving:false, lastFetch:0};
   function speedEl(id) {return document.getElementById('speed-' + id);}
   function speedStatus(message, failed) {speedEl('fs-status').textContent=message;speedEl('fs-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
   function fetchSpeed() {
     var key=getStoredKey();
     if (!key || currentTab!=='pool' || speedState.controller || speedState.saving) return;
+    if (speedState.lastFetch && Date.now()-speedState.lastFetch<30000) return;
+    speedState.lastFetch=Date.now();
     var controller=new AbortController();speedState.controller=controller;
     fetch('/v0/management/codex-speed',{headers:{Authorization:'Bearer '+key},signal:controller.signal})
       .then(function(resp){if(!resp.ok)throw new Error('HTTP '+resp.status);return resp.json();})
@@ -2536,8 +2552,7 @@
   function renderSpeedPriority(sp) {
     if (!sp) return;
     if (!speedState.spDirty && !speedState.spSaving) {
-      speedEl('sp-enable').checked=sp.config.enable;speedEl('sp-percent').value=sp.config.percent;
-      speedEl('sp-wfast').value=sp.config.weights.fast;speedEl('sp-wunknown').value=sp.config.weights.unknown;speedEl('sp-wslow').value=sp.config.weights.slow;
+      speedEl('sp-enable').checked=sp.config.enable;speedEl('sp-fast-percent').value=sp.config.fast_percent;speedEl('sp-probe-interval').value=sp.config.probe_interval_minutes;
     }
     speedEl('sp-save').disabled=speedState.spSaving;
     speedEl('sp-cards').textContent='';
@@ -2545,44 +2560,66 @@
       var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
       card.className='pool-metric';label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);speedEl('sp-cards').appendChild(card);
     });
-    var list=speedEl('sp-checks');list.textContent='';
-    ((sp.acceptance && sp.acceptance.checks) || []).forEach(function(check){var line=SpeedViewLogic.checkLine(check),li=document.createElement('li');li.textContent=line.text;li.className=line.cls;list.appendChild(li);});
-    speedEl('sp-range').textContent=SpeedViewLogic.rangeText(sp.acceptance);
-    var body=speedEl('sp-days');body.textContent='';
-    ((sp.acceptance && sp.acceptance.days) || []).forEach(function(d){
-      var tr=document.createElement('tr');
-      SpeedViewLogic.dayRow(d).forEach(function(v){var td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
-      body.appendChild(tr);
-    });
-    if (!speedState.spDirty && !speedState.spSaving) {
-      var c=sp.config;
-      speedSpStatus(!c.pools_configured?'Codex 分池未开启，快号优先无法生效；测速仍在后台运行。':(!c.pools_running?'分池已配置但未运行，重启服务后才能开启。':(c.enable?'已开启：只影响实验组会话，对照组保持原选号。':'未开启：被动测速与分档照常统计，开启后才加权选号和探测。')),false);
-    }
+    var live=sp.live||{};
+    speedEl('sp-bucket-note').textContent='共 '+(live.total||0)+' 个可调度账号，实际快组 '+(live.fast||0)+' 个（缓冲带让快组成员不一定连续）；曲线为每段首字中位数，面积为每段平均占用（并发 / RPM），浅色柱为每段快组占比。';
+    if (!speedState.spDirty && !speedState.spSaving) speedSpStatus(SpeedViewLogic.statusText(sp),false);
   }
+  function speedFastPercentInput() {return SpeedViewLogic.snapPercent(speedEl('sp-fast-percent').value);}
   function saveSpeedPriority(event) {
     event.preventDefault();
     var key=getStoredKey();if(!key || speedState.spSaving || !speedEl('sp-config').reportValidity()) return;
     speedState.spSaving=true;speedEl('sp-save').disabled=true;speedSpStatus('保存中…',false);
-    var body={speed_priority:{enable:speedEl('sp-enable').checked,percent:Number(speedEl('sp-percent').value),weights:{fast:Number(speedEl('sp-wfast').value),unknown:Number(speedEl('sp-wunknown').value),slow:Number(speedEl('sp-wslow').value)}}};
+    var body={speed_priority:{enable:speedEl('sp-enable').checked,fast_percent:speedFastPercentInput(),probe_interval_minutes:Number(speedEl('sp-probe-interval').value)}};
     fetch('/v0/management/codex-speed/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
-      .then(function(){speedState.spDirty=false;speedSpStatus('已保存，约 1 分钟内热更新生效；配置变化会开始新的实验代际',false);})
+      .then(function(){speedState.spDirty=false;speedState.lastFetch=0;speedSpStatus('已保存，约 1 分钟内热更新生效',false);})
       .catch(function(e){speedSpStatus('保存失败：'+e.message,true);})
       .finally(function(){speedState.spSaving=false;speedEl('sp-save').disabled=false;});
   }
+  function bucketOption(sp) {
+    var b=SpeedViewLogic.binSeries(sp.live && sp.live.bins), cut=speedFastPercentInput();
+    return {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},legend:{bottom:0},grid:{left:55,right:55,top:30,bottom:55},
+      xAxis:{type:'value',min:0,max:100,name:'排名%',axisLabel:{formatter:'{value}%'}},
+      yAxis:[{type:'value',name:'首字 秒'},{type:'value',name:'占用 %',min:0,max:100,splitLine:{show:false}}],
+      series:[
+        {name:'首字中位数',type:'line',smooth:true,showSymbol:false,connectNulls:false,data:b.score,markLine:{symbol:'none',silent:true,label:{formatter:'快组 '+cut+'%'},lineStyle:{color:'#f2a93b',width:2},data:[{xAxis:cut}]}},
+        {name:'占用水位',type:'line',smooth:true,showSymbol:false,connectNulls:false,yAxisIndex:1,areaStyle:{opacity:0.25},lineStyle:{width:1},data:b.util},
+        {name:'快组占比',type:'bar',yAxisIndex:1,barWidth:'60%',itemStyle:{opacity:0.18},data:b.fast}
+      ]};
+  }
+  function bindBucketDrag(chart) {
+    var zr=chart.getZr(),dragging=false;
+    var apply=function(e){
+      var v=chart.convertFromPixel({xAxisIndex:0},e.offsetX);if(v==null||!isFinite(v))return;
+      var next=SpeedViewLogic.snapPercent(v);
+      if (String(next)!==speedEl('sp-fast-percent').value) {speedEl('sp-fast-percent').value=next;speedState.spDirty=true;speedSpStatus('有未保存的修改：快组比例 '+next+'%，点“保存设置”生效',false);renderBucketChart();}
+    };
+    zr.on('mousedown',function(e){if(!chart.containPixel('grid',[e.offsetX,e.offsetY]))return;dragging=true;apply(e);});
+    zr.on('mousemove',function(e){if(dragging)apply(e);});
+    zr.on('mouseup',function(){dragging=false;});
+    zr.on('globalout',function(){dragging=false;});
+  }
+  function renderBucketChart() {
+    if (!window.echarts || !speedState.data || !speedState.data.speed || !speedState.bucket) return;
+    speedState.bucket.setOption(bucketOption(speedState.data.speed),true);
+  }
   function renderSpeedCharts() {
     if (!window.echarts || !speedState.data) return;
-    if (!speedState.charts.length) ['fs-ttft-chart','fs-fail-chart','sp-ttft-chart','sp-fail-chart'].forEach(function(id){speedState.charts.push(chartInit(speedEl(id)));});
+    if (!speedState.charts.length) {
+      ['fs-ttft-chart','fs-fail-chart','sp-ttft-chart','sp-capacity-chart'].forEach(function(id){speedState.charts.push(chartInit(speedEl(id)));});
+      speedState.bucket=chartInit(speedEl('sp-bucket-chart'));speedState.charts.push(speedState.bucket);bindBucketDrag(speedState.bucket);
+    }
     var d=SpeedViewLogic.fastSeries(speedState.data.fast_session);
     function chart(series, unit) {return {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},legend:{bottom:0,type:'scroll'},grid:{left:55,right:20,top:25,bottom:60},xAxis:{type:'category',data:d.times},yAxis:{type:'value',name:unit},series:series};}
     function line(name, data) {return {name:name,type:'line',showSymbol:false,connectNulls:false,data:data};}
     speedState.charts[0].setOption(chart([line('fast p50',d.fastP50),line('对照 p50',d.controlP50),line('fast p90',d.fastP90),line('对照 p90',d.controlP90)],'秒'),true);
     speedState.charts[1].setOption(chart([line('fast 失败率',d.fastFail),line('对照失败率',d.controlFail)],'%'),true);
     if (speedState.data.speed) {
-      var sd=SpeedViewLogic.speedSeries(speedState.data.speed);
+      var sd=SpeedViewLogic.trendSeries(speedState.data.speed);
       d={times:sd.times};
-      speedState.charts[2].setOption(chart([line('实验 p50',sd.treatP50),line('对照 p50',sd.controlP50),line('实验 p90',sd.treatP90),line('对照 p90',sd.controlP90)],'秒'),true);
-      speedState.charts[3].setOption(chart([line('实验过载率',sd.treatOverload),line('对照过载率',sd.controlOverload),line('实验 529 率',sd.treat529),line('对照 529 率',sd.control529)],'%'),true);
+      speedState.charts[2].setOption(chart([line('快组 p50',sd.fastP50),line('慢组 p50',sd.slowP50),line('整体 p50',sd.overallP50)],'秒'),true);
+      speedState.charts[3].setOption(chart([line('快组水位',sd.fastUtil),line('溢出占比',sd.overflow),line('快组比例',sd.fastPercent)],'%'),true);
+      renderBucketChart();
     }
     speedState.charts.forEach(function(c){c.resize();});
   }
@@ -2903,7 +2940,7 @@
   speedEl('fs-config').addEventListener('submit',saveSpeedFastSession);
   speedEl('fs-config').addEventListener('input',function(){speedState.dirty=true;speedStatus('有未保存的修改',false);});
   speedEl('sp-config').addEventListener('submit',saveSpeedPriority);
-  speedEl('sp-config').addEventListener('input',function(){speedState.spDirty=true;speedSpStatus('有未保存的修改',false);});
+  speedEl('sp-config').addEventListener('input',function(){speedState.spDirty=true;speedSpStatus('有未保存的修改',false);renderBucketChart();});
   poolEl('concurrency-config').addEventListener('submit',saveConcurrencyConfig);
   poolEl('concurrency-config').addEventListener('input',function(){concurrencyConfigState.dirty=true;concurrencyStatus('有未保存的修改',false);});
   poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});

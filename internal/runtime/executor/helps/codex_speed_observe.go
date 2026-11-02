@@ -105,18 +105,16 @@ func (r *UsageReporter) observeCodexSpeed(record usage.Record) {
 	if r == nil || !strings.EqualFold(r.provider, "codex") || record.AdditionalModel || !usage.GenerateEnabled(record.Generate) || record.AuthID == "" {
 		return
 	}
-	gap, preCreated, hasImage := r.codexSpeedGap()
+	gap, _, hasImage := r.codexSpeedGap()
 	cliproxyauth.CodexSpeed().ObserveAttempt(cliproxyauth.CodexSpeedAttempt{
 		AuthID:          record.AuthID,
 		Success:         !record.Failed,
 		Overload:        codexSpeedOverload(record),
 		Gap:             gap,
-		PreCreated:      preCreated,
 		InputTokens:     record.Detail.InputTokens,
 		ReasoningTokens: record.Detail.ReasoningTokens,
 		HasImage:        hasImage,
 		TTFT:            record.TTFT,
 		Group:           r.speedGroup,
-		Generation:      r.speedGeneration,
 	})
 }

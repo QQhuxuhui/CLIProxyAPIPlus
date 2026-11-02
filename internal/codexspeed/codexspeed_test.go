@@ -129,34 +129,70 @@ func TestRuntimeRecordKeepsMemoryOnDiskFailure(t *testing.T) {
 	}
 }
 
-func TestStoreTransitionsAndAccounts(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore(dir)
-	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	if err := store.AppendTransitions([]Transition{{Time: now.Add(-8 * 24 * time.Hour), AuthID: "old"}, {Time: now, AuthID: "new", From: "fast", To: "slow"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PruneTransitions(now); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, transitionsFile))
-	if err != nil || len(data) == 0 || bytesContains(data, "old") || !bytesContains(data, "new") {
-		t.Fatalf("pruned transitions: %q %v", data, err)
-	}
-	if store.LoadAccounts() != nil {
-		t.Fatal("missing accounts file must load as nil")
-	}
-	if err = store.SaveAccounts([]byte("state")); err != nil || string(store.LoadAccounts()) != "state" {
-		t.Fatalf("accounts round trip failed: %v", err)
+func TestSpeedGroupHourMerge(t *testing.T) {
+	a := SpeedGroupHour{Attempts: 2, Hist: histOf(1000)}
+	a.Merge(SpeedGroupHour{Attempts: 3, Overloads: 1, Hist: histOf(1000, 1000)})
+	if a.Attempts != 5 || a.Overloads != 1 || a.Samples != 3 || a.P50Ms == nil {
+		t.Fatalf("merge: %+v", a)
 	}
 }
 
-func bytesContains(data []byte, s string) bool { return strings.Contains(string(data), s) }
+func TestSpeedHourOverflowShare(t *testing.T) {
+	h := SpeedHour{Fast: SpeedGroupHour{Attempts: 3}, Slow: SpeedGroupHour{Attempts: 1}}
+	h.FinalizeGroups()
+	if h.OverflowShare == nil || *h.OverflowShare != 0.25 {
+		t.Fatalf("share = %v", h.OverflowShare)
+	}
+	empty := SpeedHour{}
+	empty.FinalizeGroups()
+	if empty.OverflowShare != nil {
+		t.Fatal("no attempts must leave the share nil")
+	}
+}
 
-func TestSpeedGroupHourMerge(t *testing.T) {
-	a := SpeedGroupHour{Attempts: 2, Requests: 1, Hist: histOf(1000)}
-	a.Merge(SpeedGroupHour{Attempts: 3, Final529: 1, Hist: histOf(1000, 1000)})
-	if a.Attempts != 5 || a.Final529 != 1 || a.Samples != 3 || a.P50Ms == nil {
-		t.Fatalf("merge: %+v", a)
+// A v98 A/B line with a second generation segment: treatment and control merge into overall,
+// the schema marks it legacy, and a rewrite plus reload keeps the result without double counting.
+const legacyHourLine = `{"hour":"2026-11-02T11:00:00Z","fast_session":{"hour":"2026-11-02T11:00:00Z","members":2,"label":"no_difference"},` +
+	`"speed":{"hour":"2026-11-02T11:00:00Z","generation":"g1@x","treatment":{"attempts":3,"overloads":1,"ttft_hist":[0,0]},"control":{"attempts":2,"overloads":0}},` +
+	`"speed_parts":[{"hour":"2026-11-02T11:00:00Z","generation":"g2@y","treatment":{"attempts":4},"control":{"attempts":1,"overloads":1}}]}`
+
+func TestLegacyHourMigratesOnceAndKeepsFastSession(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, historyFile), []byte(legacyHourLine+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(dir)
+	now := time.Date(2026, 11, 2, 13, 0, 0, 0, time.UTC)
+	check := func(stage string, recs []HourRecord) {
+		t.Helper()
+		var legacy *HourRecord
+		for i := range recs {
+			if recs[i].Hour.Equal(time.Date(2026, 11, 2, 11, 0, 0, 0, time.UTC)) {
+				legacy = &recs[i]
+			}
+		}
+		if legacy == nil || legacy.Speed == nil || legacy.FastSession == nil || legacy.FastSession.Members != 2 {
+			t.Fatalf("%s: legacy record lost: %+v", stage, recs)
+		}
+		sp := legacy.Speed
+		if sp.Schema != SpeedSchemaLegacyAB || sp.Overall.Attempts != 10 || sp.Overall.Overloads != 2 || sp.Fast.Attempts != 0 {
+			t.Fatalf("%s: migrated speed = %+v", stage, sp)
+		}
+	}
+	check("load", store.LoadHours(now))
+	if err := store.AppendHour(HourRecord{Hour: now, Speed: &SpeedHour{Hour: now, Schema: SpeedSchemaRanked}}, now); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, historyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "speed_parts") || strings.Contains(string(data), "treatment") {
+		t.Fatalf("legacy fields written back:\n%s", data)
+	}
+	recs := NewStore(dir).LoadHours(now)
+	check("reload", recs)
+	if len(recs) != 2 || recs[1].Speed.Schema != SpeedSchemaRanked {
+		t.Fatalf("ranked record must keep its schema: %+v", recs)
 	}
 }

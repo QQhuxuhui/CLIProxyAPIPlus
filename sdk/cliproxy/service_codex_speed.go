@@ -20,20 +20,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const (
-	// codexSpeedTickInterval drives the recompute, hourly rollover and the minute summary.
-	codexSpeedTickInterval = time.Minute
-	// codexSpeedStateEvery is how often accounts.dat is rewritten, in ticks.
-	codexSpeedStateEvery = 5
-	// codexSpeedMaxProbesInFlight bounds concurrent speed probes.
-	codexSpeedMaxProbesInFlight = 8
-)
+// codexSpeedTickInterval drives the recompute, hourly rollover and the minute summary.
+const codexSpeedTickInterval = time.Minute
 
 type codexSpeedService struct {
 	s       *Service
 	rt      *codexspeed.Runtime
 	tracker *coreauth.CodexSpeedTracker
-	ticks   int
 
 	infosMu sync.Mutex
 	infos   []coreauth.CodexSpeedAuthInfo
@@ -44,9 +37,10 @@ type codexSpeedService struct {
 	launch  func(ctx context.Context, auth *coreauth.Auth, model string)
 }
 
-// startCodexSpeedRuntime loads the speed-strategy history and state under the auth dir, then
-// runs the minute maintenance and the probe loop for the service lifetime. Without an auth dir
-// the tracker still runs; only persistence is disabled.
+// startCodexSpeedRuntime loads the speed-strategy history under the auth dir, then runs the
+// minute maintenance and the probe loop for the service lifetime. Speed samples are not
+// persisted: after a restart ranking waits until enough accounts have a score. Without an auth
+// dir the tracker still runs; only history is disabled.
 func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 	if s == nil {
 		return
@@ -69,12 +63,6 @@ func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 		go svc.probe(ctx, auth, model)
 	}
 	svc.applyConfig()
-	if errRestore := svc.tracker.RestoreState(store.LoadAccounts()); errRestore != nil {
-		log.WithError(errRestore).Warn("codex speed: ignoring unreadable accounts state")
-	}
-	if errPrune := store.PruneTransitions(time.Now()); errPrune != nil {
-		log.WithError(errPrune).Warn("codex speed: prune transitions failed")
-	}
 	go svc.runTicker(ctx)
 	go svc.runProber(ctx)
 }
@@ -104,7 +92,6 @@ func (c *codexSpeedService) runTicker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			c.saveState()
 			return
 		case <-ticker.C:
 			c.tick(time.Now())
@@ -120,10 +107,6 @@ func (c *codexSpeedService) tick(now time.Time) {
 		infos = c.s.coreManager.CodexSpeedAuthInfos(speedCfg.Probe.Model)
 	}
 	readings := codexspeed.QuotaReadings()
-	usedByKey := make(map[string]float64, len(readings))
-	for _, r := range readings {
-		usedByKey[r.AccountKey] = r.UsedPercent
-	}
 	for i := range infos {
 		if r, ok := readings[infos[i].ID]; ok {
 			infos[i].QuotaUsed = r.UsedPercent
@@ -133,24 +116,14 @@ func (c *codexSpeedService) tick(now time.Time) {
 	c.infos = infos
 	c.infosMu.Unlock()
 
-	if transitions := c.tracker.Recompute(infos); len(transitions) > 0 {
-		if err := c.rt.Store().AppendTransitions(transitions); err != nil {
-			log.WithError(err).Error("codex speed: persist transitions failed")
-		}
-	}
-	if event := c.tracker.Tick(); event != "" {
-		log.Infof("codex speed share %s", event)
-	}
-	c.rollHours(now, usedByKey)
-	c.ticks++
-	if c.ticks%codexSpeedStateEvery == 0 {
-		c.saveState()
-	}
+	c.tracker.Recompute(infos)
+	c.tracker.Tick()
+	c.rollHours(now)
 	log.Info(c.tracker.SummaryLine())
 }
 
 // rollHours persists every finished hour, merging fast session and speed records by hour.
-func (c *codexSpeedService) rollHours(now time.Time, usedByKey map[string]float64) {
+func (c *codexSpeedService) rollHours(now time.Time) {
 	records := map[time.Time]*codexspeed.HourRecord{}
 	get := func(hour time.Time) *codexspeed.HourRecord {
 		if rec := records[hour]; rec != nil {
@@ -164,19 +137,9 @@ func (c *codexSpeedService) rollHours(now time.Time, usedByKey map[string]float6
 		fs := hour
 		get(fs.Hour).FastSession = &fs
 	}
-	if speedHours := c.tracker.RollHours(usedByKey); len(speedHours) > 0 {
-		for _, hour := range speedHours {
-			sh := hour
-			rec := get(sh.Hour)
-			if rec.Speed == nil {
-				rec.Speed = &sh
-			} else {
-				rec.SpeedParts = append(rec.SpeedParts, sh)
-			}
-		}
-		if err := c.rt.Store().PruneTransitions(now); err != nil {
-			log.WithError(err).Warn("codex speed: prune transitions failed")
-		}
+	for _, hour := range c.tracker.RollHours() {
+		sh := hour
+		get(sh.Hour).Speed = &sh
 	}
 	hours := make([]time.Time, 0, len(records))
 	for hour := range records {
@@ -188,18 +151,7 @@ func (c *codexSpeedService) rollHours(now time.Time, usedByKey map[string]float6
 	}
 }
 
-func (c *codexSpeedService) saveState() {
-	data, err := c.tracker.MarshalState()
-	if err != nil {
-		log.WithError(err).Error("codex speed: encode state failed")
-		return
-	}
-	if errSave := c.rt.Store().SaveAccounts(data); errSave != nil {
-		log.WithError(errSave).Error("codex speed: persist state failed")
-	}
-}
-
-// runProber sends up to probe.max-per-second probes each second while speed priority is active.
+// runProber sends up to probe.rate-per-second probes each second while speed priority is active.
 func (c *codexSpeedService) runProber(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -217,7 +169,7 @@ func (c *codexSpeedService) runProber(ctx context.Context) {
 		c.infosMu.Lock()
 		infos := c.infos
 		c.infosMu.Unlock()
-		c.probeRound(ctx, infos, speedCfg.Probe.MaxPerSecond, speedCfg.Probe.Model)
+		c.probeRound(ctx, infos, speedCfg.Probe.RatePerSecond, speedCfg.Probe.Model)
 	}
 }
 
@@ -225,7 +177,7 @@ func (c *codexSpeedService) runProber(ctx context.Context) {
 // budget, the in-flight cap or the candidates run out. A failed admission restores the
 // reservation and spends no budget. It returns the number of probes started.
 func (c *codexSpeedService) probeRound(ctx context.Context, infos []coreauth.CodexSpeedAuthInfo, maxPerSecond int, model string) int {
-	budget := min(maxPerSecond, codexSpeedMaxProbesInFlight-int(c.inflight.Load()))
+	budget := min(maxPerSecond, coreauth.CodexSpeedMaxProbesInFlight-int(c.inflight.Load()))
 	started := 0
 	if budget <= 0 {
 		return 0
@@ -253,8 +205,9 @@ func (c *codexSpeedService) probeRound(ctx context.Context, infos []coreauth.Cod
 func (c *codexSpeedService) probe(ctx context.Context, auth *coreauth.Auth, model string) {
 	defer c.inflight.Add(-1)
 	defer c.s.coreManager.ReleaseCodexProbeAuth(auth)
+	started := time.Now()
 	timing, err := executor.NewCodexExecutor(c.s.currentConfig()).ProbeFastSession(ctx, auth, model, uuid.NewString())
-	res := coreauth.CodexSpeedProbeResult{AuthID: auth.ID}
+	res := coreauth.CodexSpeedProbeResult{AuthID: auth.ID, Duration: time.Since(started)}
 	switch {
 	case err == nil:
 		res.Success = true

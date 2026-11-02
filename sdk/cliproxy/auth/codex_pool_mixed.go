@@ -80,7 +80,12 @@ func (m *Manager) pickPoolMixed(ctx context.Context, providers []string, model s
 			key, _ := m.poolSessionKey(model, pooledOpts)
 			selectedID := a.ID
 			var err error
-			a, e, err = m.bindPoolSelection(ctx, key, model, pooledOpts, affinity, a, tried, nil, nil)
+			var replaceIf *codexPoolBinding
+			if b, ok := pooledOpts.Metadata[poolSpeedReplaceMetadataKey].(codexPoolBinding); ok {
+				replaceIf = &b
+			}
+			delete(pooledOpts.Metadata, poolSpeedReplaceMetadataKey)
+			a, e, err = m.bindPoolSelection(ctx, key, model, pooledOpts, affinity, a, tried, replaceIf)
 			if nextCtx, nextTried, again := staleSelectionRetry(nonNilContext(ctx), err, tried, selectedID); again {
 				return m.pickPoolMixed(nextCtx, providers, model, opts, nextTried)
 			}
