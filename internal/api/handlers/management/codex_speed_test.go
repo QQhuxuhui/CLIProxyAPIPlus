@@ -132,3 +132,28 @@ func TestCodexSpeedQuotaReadingsKeepDuplicates(t *testing.T) {
 		t.Fatalf("readings = %+v", got)
 	}
 }
+
+func TestCodexSpeedFastWearExactBoundaryPasses(t *testing.T) {
+	cases := []struct {
+		bConv, hConv int
+		want         string
+	}{
+		{9, 6, "pass"},  // exactly 1.5x: 9/20 vs 6/20
+		{10, 6, "fail"}, // just above
+		{0, 0, "pass"},
+		{1, 0, "fail"},
+	}
+	for _, tc := range cases {
+		d := codexSpeedDay{BoostFastSet: 20, BoostFastToSlow: tc.bConv, HoldFastSet: 20, HoldFastToSlow: tc.hConv}
+		d.evaluateWear()
+		if d.WearStatus != tc.want {
+			t.Errorf("boost %d/20 vs hold %d/20: got %s want %s", tc.bConv, tc.hConv, d.WearStatus, tc.want)
+		}
+	}
+	hour := codexspeed.SpeedHour{Generation: "g", Hour: time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC),
+		Boost: codexspeed.SpeedCohortDay{Day: "2026-11-03", FastSet: 20, FastToSlow: 9},
+		Hold:  codexspeed.SpeedCohortDay{Day: "2026-11-03", FastSet: 20, FastToSlow: 6}}
+	if got := codexSpeedAcceptanceFor("g", []codexspeed.SpeedHour{hour}, codexspeed.SpeedHour{}).Checks[2]; got.Status != "pass" {
+		t.Fatalf("a day exactly at 1.5x must pass overall: %+v", got)
+	}
+}

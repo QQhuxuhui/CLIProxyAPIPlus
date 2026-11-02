@@ -55,7 +55,6 @@ const (
 	codexSpeedAcceptMinRequests = 2000
 	codexSpeedAcceptMinCohort   = 20
 	codexSpeedAcceptTTFTDrop    = 0.30
-	codexSpeedAcceptWearRatio   = 1.5
 )
 
 type codexSpeedCheck struct {
@@ -95,8 +94,11 @@ func (d *codexSpeedDay) evaluateWear() {
 	if d.BoostFastSet < codexSpeedAcceptMinCohort || d.HoldFastSet < codexSpeedAcceptMinCohort {
 		return
 	}
-	b, h := *d.BoostRate, *d.HoldRate
-	d.WearStatus = statusOf((b == 0 && h == 0) || (h > 0 && b <= h*codexSpeedAcceptWearRatio))
+	// boost/boostSet <= 1.5 * hold/holdSet, compared with integers so the exact 1.5x boundary
+	// is not lost to float rounding; both zero passes, hold zero with boost above zero fails.
+	lhs := 2 * int64(d.BoostFastToSlow) * int64(d.HoldFastSet)
+	rhs := 3 * int64(d.HoldFastToSlow) * int64(d.BoostFastSet)
+	d.WearStatus = statusOf(lhs <= rhs)
 }
 
 type codexSpeedAcceptance struct {
