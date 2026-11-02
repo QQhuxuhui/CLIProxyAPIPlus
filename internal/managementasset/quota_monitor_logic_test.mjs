@@ -612,3 +612,41 @@ test('concurrency chart plots samples, capacity and rejections on its own time a
   assert.equal(cards['并发已满账号'], 1);
   assert.equal(pool.pool.concurrencyCapacity({ concurrency_capacity: 10 }), '10（未启用）');
 });
+
+test('speed view summarises 24h labels in a fixed order', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const s = ctx.speed;
+  assert.equal(s.labelSummary({ slower: 1, effective: 3 }), '近 24 小时结论：有效 3 小时 · 更慢 1 小时');
+  assert.equal(s.labelSummary({}), '近 24 小时还没有完整小时的数据');
+  assert.equal(s.seconds(null), '—');
+  assert.equal(s.seconds(1520), '1.52 s');
+  assert.equal(s.failRate({ requests: 0, failures: 0 }), '—');
+  assert.equal(s.failRate({ requests: 8, failures: 2 }), '25.0%');
+});
+
+test('speed view series appends the current hour and keeps gaps as null', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const g = (p50, req, fail) => ({ p50_ms: p50, p90_ms: p50, requests: req, failures: fail });
+  const series = plain(ctx.speed.fastSeries({
+    hours: [{ hour: '2026-11-02T06:00:00Z', fast: g(1000, 10, 1), control: g(null, 0, 0) }],
+    current: { hour: '2026-11-02T07:00:00Z', fast: g(2000, 4, 0), control: g(9000, 20, 5) },
+  }));
+  assert.equal(series.times.length, 2);
+  assert.deepEqual(series.fastP50, [1, 2]);
+  assert.deepEqual(series.controlP50, [null, 9]);
+  assert.deepEqual(series.fastFail, [10, 0]);
+  assert.deepEqual(series.controlFail, [null, 25]);
+});
+
+test('speed fast cards report current hour and shares', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const cards = plain(ctx.speed.fastCards({ enable: true, percent: 97, effective_percent: 48, members: 1,
+    current: { label: 'no_difference', fast: { p50_ms: 9670, ttft_samples: 30, requests: 50, failures: 5 }, control: { p50_ms: 10460, ttft_samples: 60, requests: 80, failures: 20 } } }));
+  const map = Object.fromEntries(cards);
+  assert.equal(map['配置占比 / 运行占比'], '97% / 48%');
+  assert.equal(map['本小时结论'], '无差异');
+  assert.equal(map['本小时样本（fast / 对照）'], '30 / 60');
+});

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexspeed"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
@@ -60,6 +61,8 @@ type CodexFastSessionPool struct {
 
 	statsMu sync.Mutex
 	stats   map[string]*codexFastSessionGroupStats
+	// hours accumulates per-hour group stats for the persisted history, keyed by the hour start.
+	hours map[time.Time]*codexFastSessionHourAcc
 
 	prober atomic.Pointer[CodexFastSessionProber]
 }
@@ -69,6 +72,24 @@ type codexFastSessionBucket struct {
 	requests int64
 	failures int64
 	ttft     []time.Duration
+}
+
+// codexFastSessionHourAcc holds one hour of group stats for a single epoch. A configuration
+// change inside the hour restarts the hour under the new epoch, matching the rolling windows.
+type codexFastSessionHourAcc struct {
+	epoch   uint64
+	fast    codexspeed.GroupHour
+	control codexspeed.GroupHour
+}
+
+func (a *codexFastSessionHourAcc) group(name string) *codexspeed.GroupHour {
+	switch name {
+	case CodexFastSessionGroupFast:
+		return &a.fast
+	case CodexFastSessionGroupControl:
+		return &a.control
+	}
+	return nil
 }
 
 type codexFastSessionGroupStats struct {
@@ -410,6 +431,8 @@ func (p *CodexFastSessionPool) observeGeneration(group string, failed bool, ttft
 	if failed {
 		d.failures++
 	}
+	small := ttft > 0 && inputTokens < codexFastSessionSmallInputTokens
+	p.observeHourLocked(now, group, failed, small, ttft, epoch)
 	b := &stats.buckets[idx]
 	if !b.minute.Equal(minute) {
 		*b = codexFastSessionBucket{minute: minute}
@@ -419,9 +442,100 @@ func (p *CodexFastSessionPool) observeGeneration(group string, failed bool, ttft
 		b.failures++
 		return
 	}
-	if ttft > 0 && inputTokens < codexFastSessionSmallInputTokens && len(b.ttft) < codexFastSessionBucketSamples {
+	if small && len(b.ttft) < codexFastSessionBucketSamples {
 		b.ttft = append(b.ttft, ttft)
 	}
+}
+
+// observeHourLocked adds one attempt to the hourly accumulator. statsMu must be held.
+func (p *CodexFastSessionPool) observeHourLocked(now time.Time, group string, failed, small bool, ttft time.Duration, epoch uint64) {
+	hour := now.Truncate(time.Hour)
+	if p.hours == nil {
+		p.hours = map[time.Time]*codexFastSessionHourAcc{}
+	}
+	acc := p.hours[hour]
+	if acc == nil || acc.epoch != epoch {
+		acc = &codexFastSessionHourAcc{epoch: epoch}
+		p.hours[hour] = acc
+	}
+	g := acc.group(group)
+	if g == nil {
+		return
+	}
+	g.Requests++
+	if failed {
+		g.Failures++
+		return
+	}
+	if small {
+		g.Hist.Add(ttft)
+	}
+}
+
+// RollHours returns the finished hours (before now's hour) and forgets them. Members, share and
+// enable reflect the pool at roll time.
+func (p *CodexFastSessionPool) RollHours(now time.Time) []codexspeed.FastSessionHour {
+	if p == nil {
+		return nil
+	}
+	current := now.Truncate(time.Hour)
+	p.statsMu.Lock()
+	var done []time.Time
+	accs := map[time.Time]*codexFastSessionHourAcc{}
+	for hour, acc := range p.hours {
+		if hour.Before(current) {
+			done = append(done, hour)
+			accs[hour] = acc
+			delete(p.hours, hour)
+		}
+	}
+	p.statsMu.Unlock()
+	slices.SortFunc(done, func(a, b time.Time) int { return a.Compare(b) })
+	out := make([]codexspeed.FastSessionHour, 0, len(done))
+	for _, hour := range done {
+		out = append(out, p.hourRecord(hour, accs[hour]))
+	}
+	return out
+}
+
+// CurrentHour returns the unfinished hour so far.
+func (p *CodexFastSessionPool) CurrentHour(now time.Time) codexspeed.FastSessionHour {
+	if p == nil {
+		return codexspeed.FastSessionHour{}
+	}
+	hour := now.Truncate(time.Hour)
+	p.statsMu.Lock()
+	var acc codexFastSessionHourAcc
+	if src := p.hours[hour]; src != nil {
+		acc.epoch = src.epoch
+		acc.fast = cloneGroupHour(src.fast)
+		acc.control = cloneGroupHour(src.control)
+	}
+	p.statsMu.Unlock()
+	return p.hourRecord(hour, &acc)
+}
+
+func cloneGroupHour(g codexspeed.GroupHour) codexspeed.GroupHour {
+	g.Hist = slices.Clone(g.Hist)
+	return g
+}
+
+func (p *CodexFastSessionPool) hourRecord(hour time.Time, acc *codexFastSessionHourAcc) codexspeed.FastSessionHour {
+	rec := codexspeed.FastSessionHour{Hour: hour}
+	if acc != nil {
+		rec.Epoch = acc.epoch
+		rec.Fast = acc.fast
+		rec.Control = acc.control
+	}
+	rec.Fast.Finalize()
+	rec.Control.Finalize()
+	p.mu.RLock()
+	rec.Members = len(p.members)
+	rec.EffectivePercent = p.effectivePercentLocked()
+	rec.Enabled = p.enabled
+	p.mu.RUnlock()
+	rec.Label = codexspeed.FastSessionLabel(rec.Fast, rec.Control)
+	return rec
 }
 
 func codexFastSessionBucketIndex(minute time.Time) int64 {

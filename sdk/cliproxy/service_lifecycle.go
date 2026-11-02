@@ -53,6 +53,7 @@ func (s *Service) Run(ctx context.Context) error {
 	if s.coreManager != nil {
 		s.coreManager.StartCodexPoolMetrics(ctx)
 		s.startCodexFastSessionProber(ctx)
+		s.startCodexSpeedRuntime(ctx)
 		s.startCodexEgressPoolSync(ctx)
 	}
 	usage.StartDefault(ctx)

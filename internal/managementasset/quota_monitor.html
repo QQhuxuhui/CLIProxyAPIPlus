@@ -380,6 +380,11 @@
   .pool-metric.flash::after { content: ""; position: absolute; inset: 0; background: var(--accent-soft); opacity: 0; animation: ov-flash 1.2s ease-out; pointer-events: none; }
   .pool-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
   .pool-chart-card { min-width: 0; }
+  .speed-panel { margin: 28px 0; }
+  .speed-subtitle { margin-bottom: 10px; color: var(--text); font-size: 13.5px; font-weight: 600; }
+  .speed-events-card { margin-top: 18px; }
+  .speed-events { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+  .speed-events li { overflow-wrap: anywhere; }
   .pool-chart-card h3 { margin-bottom: 14px; color: var(--text); font-size: 13.5px; font-weight: 600; letter-spacing: .02em; }
   .pool-chart { height: 280px; width: 100%; overflow: hidden; }
   .proxy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
@@ -823,6 +828,25 @@
             <p id="quota-scan-line" class="text-xs text-slate-500 quota-scan-line"></p>
           </form>
         </details>
+      </section>
+      <section id="speed-panel" class="speed-panel" aria-label="速度策略">
+        <div class="pool-heading"><div><h3>速度策略</h3><p class="muted text-xs">按小时统计 · 保留 7 天 · 只比较同一小时内的实验组与对照组</p></div><span id="speed-updated" class="muted text-xs"></span></div>
+        <form id="speed-fs-config" class="pool-settings">
+          <h4 class="speed-subtitle">fast session（快会话标识）</h4>
+          <div class="pool-switches"><label><input id="speed-fs-enable" type="checkbox"> 启用 fast session</label></div>
+          <div class="pool-fields">
+            <label>占比（%）<input id="speed-fs-percent" type="number" min="0" max="100" step="1" required data-tip="进入 fast 组的会话比例；开启自动回滚时最多 99%，留出对照组"></label>
+            <button id="speed-fs-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+          </div>
+          <p id="speed-fs-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
+        </form>
+        <div id="speed-fs-cards" class="pool-cards"></div>
+        <p id="speed-fs-labels" class="text-xs text-slate-500 mb-3"></p>
+        <div class="pool-charts">
+          <div class="pool-chart-card"><h3>小请求首字：fast 组 vs 对照组（近 7 天）</h3><div id="speed-fs-ttft-chart" class="pool-chart" role="img" aria-label="fast 组与对照组每小时小请求首字 p50 与 p90 折线图"></div></div>
+          <div class="pool-chart-card"><h3>失败率：fast 组 vs 对照组（近 7 天）</h3><div id="speed-fs-fail-chart" class="pool-chart" role="img" aria-label="fast 组与对照组每小时失败率折线图"></div></div>
+        </div>
+        <div class="pool-chart-card speed-events-card"><h3>最近成员变化</h3><ul id="speed-fs-events" class="speed-events"></ul></div>
       </section>
       <div class="pool-heading pool-monitor-heading"><div><h3>请求监控</h3><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
       <form id="pool-config" class="pool-settings">
@@ -2354,7 +2378,108 @@
     }
   };
   /* CODEX_POOL_LOGIC_END */
+  /* SPEED_VIEW_LOGIC_START */
+  var SpeedViewLogic = {
+    labelText: {effective:'有效', no_difference:'无差异', slower:'更慢', insufficient:'样本不足'},
+    labelOrder: ['effective','no_difference','slower','insufficient'],
+    seconds: function (ms) { return ms == null ? '—' : (ms / 1000).toFixed(2) + ' s'; },
+    failRate: function (g) { return g && g.requests ? (100 * g.failures / g.requests).toFixed(1) + '%' : '—'; },
+    hourLabel: function (iso) {
+      var d = new Date(iso), pad = function (n) { return (n < 10 ? '0' : '') + n; };
+      return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':00';
+    },
+    labelSummary: function (labels) {
+      var self = this, parts = [];
+      labels = labels || {};
+      this.labelOrder.forEach(function (k) { if (labels[k]) parts.push(self.labelText[k] + ' ' + labels[k] + ' 小时'); });
+      return parts.length ? '近 24 小时结论：' + parts.join(' · ') : '近 24 小时还没有完整小时的数据';
+    },
+    fastCards: function (fs) {
+      var cur = fs.current || {fast:{}, control:{}};
+      return [
+        ['开关', fs.enable ? '已开启' : '已关闭'],
+        ['配置占比 / 运行占比', fs.percent + '% / ' + fs.effective_percent + '%'],
+        ['当前成员数', fs.members],
+        ['本小时结论', this.labelText[cur.label] || '—'],
+        ['本小时 fast 组首字 p50', this.seconds(cur.fast.p50_ms)],
+        ['本小时对照组首字 p50', this.seconds(cur.control.p50_ms)],
+        ['本小时样本（fast / 对照）', (cur.fast.ttft_samples || 0) + ' / ' + (cur.control.ttft_samples || 0)],
+        ['本小时失败率（fast / 对照）', this.failRate(cur.fast) + ' / ' + this.failRate(cur.control)]
+      ];
+    },
+    fastSeries: function (fs) {
+      var hours = (fs.hours || []).slice();
+      if (fs.current && fs.current.hour) hours.push(fs.current);
+      var sec = function (v) { return v == null ? null : Math.round(v / 10) / 100; };
+      var rate = function (g) { return g && g.requests ? Math.round(1000 * g.failures / g.requests) / 10 : null; };
+      return {
+        times: hours.map(function (h) { return SpeedViewLogic.hourLabel(h.hour); }),
+        fastP50: hours.map(function (h) { return sec(h.fast.p50_ms); }),
+        controlP50: hours.map(function (h) { return sec(h.control.p50_ms); }),
+        fastP90: hours.map(function (h) { return sec(h.fast.p90_ms); }),
+        controlP90: hours.map(function (h) { return sec(h.control.p90_ms); }),
+        fastFail: hours.map(function (h) { return rate(h.fast); }),
+        controlFail: hours.map(function (h) { return rate(h.control); })
+      };
+    }
+  };
+  /* SPEED_VIEW_LOGIC_END */
   var poolState = {timer:null, controller:null, generation:0, charts:[], loaded:false, dirty:false, saving:false, home:false, saveToken:0, saveController:null, lastData:null, chartsLoading:false, chartsFailed:false};
+  var speedState = {controller:null, charts:[], data:null, dirty:false, saving:false, loaded:false};
+  function speedEl(id) {return document.getElementById('speed-' + id);}
+  function speedStatus(message, failed) {speedEl('fs-status').textContent=message;speedEl('fs-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function fetchSpeed() {
+    var key=getStoredKey();
+    if (!key || currentTab!=='pool' || speedState.controller || speedState.saving) return;
+    var controller=new AbortController();speedState.controller=controller;
+    fetch('/v0/management/codex-speed',{headers:{Authorization:'Bearer '+key},signal:controller.signal})
+      .then(function(resp){if(!resp.ok)throw new Error('HTTP '+resp.status);return resp.json();})
+      .then(function(data){if(key===getStoredKey())renderSpeed(data);})
+      .catch(function(e){if(e.name!=='AbortError')speedStatus('速度策略数据加载失败：'+e.message,true);})
+      .finally(function(){if(speedState.controller===controller)speedState.controller=null;});
+  }
+  function renderSpeed(data) {
+    speedState.data=data;
+    var fs=data.fast_session;
+    if (!speedState.dirty && !speedState.saving) {speedEl('fs-enable').checked=fs.enable;speedEl('fs-percent').value=fs.percent;}
+    speedEl('fs-save').disabled=speedState.saving;speedState.loaded=true;
+    speedEl('fs-cards').textContent='';
+    SpeedViewLogic.fastCards(fs).forEach(function(pair){
+      var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
+      card.className='pool-metric';label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);speedEl('fs-cards').appendChild(card);
+    });
+    speedEl('fs-labels').textContent=SpeedViewLogic.labelSummary(fs.labels_24h)+(data.history_available?'':'（历史未启用：auth 目录不可用）');
+    var list=speedEl('fs-events');list.textContent='';
+    (fs.events || []).slice().reverse().forEach(function(ev){
+      var li=document.createElement('li');
+      li.textContent=new Date(ev.time).toLocaleString()+' · '+ev.action+(ev.value?' '+ev.value.slice(0,8):'')+(ev.detail?' · '+ev.detail:'');
+      list.appendChild(li);
+    });
+    if (!list.children.length) {var empty=document.createElement('li');empty.textContent='暂无成员变化';list.appendChild(empty);}
+    speedEl('updated').textContent='更新于 '+new Date().toLocaleTimeString();
+    if (!speedState.dirty && !speedState.saving) speedStatus(fs.enable?'已开启：结论按小时对比 fast 组与对照组的小请求首字。':'已关闭：请求保持原 Session-Id，不再统计 fast 组。',false);
+    renderSpeedCharts();
+  }
+  function renderSpeedCharts() {
+    if (!window.echarts || !speedState.data) return;
+    if (!speedState.charts.length) ['fs-ttft-chart','fs-fail-chart'].forEach(function(id){speedState.charts.push(chartInit(speedEl(id)));});
+    var d=SpeedViewLogic.fastSeries(speedState.data.fast_session);
+    function chart(series, unit) {return {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},legend:{bottom:0,type:'scroll'},grid:{left:55,right:20,top:25,bottom:60},xAxis:{type:'category',data:d.times},yAxis:{type:'value',name:unit},series:series};}
+    function line(name, data) {return {name:name,type:'line',showSymbol:false,connectNulls:false,data:data};}
+    speedState.charts[0].setOption(chart([line('fast p50',d.fastP50),line('对照 p50',d.controlP50),line('fast p90',d.fastP90),line('对照 p90',d.controlP90)],'秒'),true);
+    speedState.charts[1].setOption(chart([line('fast 失败率',d.fastFail),line('对照失败率',d.controlFail)],'%'),true);
+    speedState.charts.forEach(function(c){c.resize();});
+  }
+  function saveSpeedFastSession(event) {
+    event.preventDefault();
+    var key=getStoredKey();if(!key || speedState.saving || !speedEl('fs-config').reportValidity()) return;
+    speedState.saving=true;speedEl('fs-save').disabled=true;speedStatus('保存中…',false);
+    fetch('/v0/management/codex-speed/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({fast_session:{enable:speedEl('fs-enable').checked,percent:Number(speedEl('fs-percent').value)}})})
+      .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
+      .then(function(){speedState.dirty=false;speedStatus('已保存，约 1 分钟内热更新生效',false);})
+      .catch(function(e){speedStatus('保存失败：'+e.message,true);})
+      .finally(function(){speedState.saving=false;speedEl('fs-save').disabled=false;});
+  }
   // ECharts theme matching the console tokens; registered once the library loads.
   var CHART_THEME = {
     color: ['#4aa3ff', '#3ccf8e', '#f2a93b', '#f2626a', '#a78bfa', '#2dd4bf', '#f472b6', '#94a3b8'],
@@ -2579,6 +2704,7 @@
       CodexPoolLogic.chartOptions(data).forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
     }
     renderQuotaTrend();
+    renderSpeedCharts();
     var failed=!window.echarts && poolState.chartsFailed;
     poolEl('charts-status').textContent=window.echarts?'':(failed?'图表资源加载失败，数值统计仍可查看；重新进入本页签会再次加载。':'图表加载中…');
     poolEl('charts-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');
@@ -2586,6 +2712,7 @@
   function fetchPool() {
     fetchQuota();
     fetchConcurrencyConfig();
+    fetchSpeed();
     var key=getStoredKey();
     if (!key || currentTab!=='pool' || !firstSuccess || poolState.controller || poolState.saving) return;
     var generation=poolState.generation,controller=new AbortController();poolState.controller=controller;
@@ -2657,11 +2784,13 @@
   });
   quotaEl('scan-enabled').addEventListener('change', function () { saveQuotaSettings(); });
   poolEl('config').addEventListener('submit',savePool);
+  speedEl('fs-config').addEventListener('submit',saveSpeedFastSession);
+  speedEl('fs-config').addEventListener('input',function(){speedState.dirty=true;speedStatus('有未保存的修改',false);});
   poolEl('concurrency-config').addEventListener('submit',saveConcurrencyConfig);
   poolEl('concurrency-config').addEventListener('input',function(){concurrencyConfigState.dirty=true;concurrencyStatus('有未保存的修改',false);});
   poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});
   poolEl('enabled').addEventListener('change',function(){poolEl('fail-fast').disabled=!this.checked;if(!this.checked)poolEl('fail-fast').checked=false;});
-  window.addEventListener('resize',function(){poolState.charts.forEach(function(c){c.resize();});});
+  window.addEventListener('resize',function(){poolState.charts.concat(speedState.charts).forEach(function(c){c.resize();});});
 
   // ---- Proxy settings ----
   var proxyLoaded = false;
