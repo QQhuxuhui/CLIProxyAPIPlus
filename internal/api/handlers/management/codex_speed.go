@@ -2,13 +2,16 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexspeed"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 const codexSpeedRecentEvents = 10
@@ -27,6 +30,63 @@ type codexSpeedFastSessionView struct {
 type codexSpeedView struct {
 	HistoryAvailable bool                      `json:"history_available"`
 	FastSession      codexSpeedFastSessionView `json:"fast_session"`
+	Speed            codexSpeedPriorityView    `json:"speed"`
+}
+
+type codexSpeedPriorityView struct {
+	Config     codexSpeedPriorityConfigView `json:"config"`
+	Live       coreauth.CodexSpeedSnapshot  `json:"live"`
+	Hours      []codexspeed.SpeedHour       `json:"hours"`
+	Acceptance codexSpeedAcceptance         `json:"acceptance"`
+}
+
+type codexSpeedPriorityConfigView struct {
+	Enable          bool           `json:"enable"`
+	Percent         int            `json:"percent"`
+	Weights         map[string]int `json:"weights"`
+	PoolsConfigured bool           `json:"pools_configured"`
+	PoolsRunning    bool           `json:"pools_running"`
+	Rollback        bool           `json:"rollback"`
+}
+
+// Acceptance thresholds (D19, D32).
+const (
+	codexSpeedAcceptMinSamples  = 500
+	codexSpeedAcceptMinRequests = 2000
+	codexSpeedAcceptMinCohort   = 20
+	codexSpeedAcceptTTFTDrop    = 0.30
+	codexSpeedAcceptWearRatio   = 1.5
+)
+
+type codexSpeedCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+}
+
+type codexSpeedDay struct {
+	Day             string  `json:"day"`
+	BoostFastSet    int     `json:"boost_fast_set"`
+	BoostFastToSlow int     `json:"boost_fast_to_slow"`
+	HoldFastSet     int     `json:"hold_fast_set"`
+	HoldFastToSlow  int     `json:"hold_fast_to_slow"`
+	BoostSlowSet    int     `json:"boost_slow_set"`
+	BoostSlowToFast int     `json:"boost_slow_to_fast"`
+	HoldSlowSet     int     `json:"hold_slow_set"`
+	HoldSlowToFast  int     `json:"hold_slow_to_fast"`
+	QuotaBoost      float64 `json:"quota_boost_per_account_hour"`
+	QuotaHold       float64 `json:"quota_hold_per_account_hour"`
+}
+
+type codexSpeedAcceptance struct {
+	Generation string                    `json:"generation"`
+	RangeStart *time.Time                `json:"range_start"`
+	RangeEnd   *time.Time                `json:"range_end"`
+	Hours      int                       `json:"hours"`
+	Treatment  codexspeed.SpeedGroupHour `json:"treatment"`
+	Control    codexspeed.SpeedGroupHour `json:"control"`
+	Checks     []codexSpeedCheck         `json:"checks"`
+	Days       []codexSpeedDay           `json:"days"`
 }
 
 // GetCodexSpeed reports the speed-strategy page data: the fast Session-Id pool state, its
@@ -60,7 +120,9 @@ func (h *Handler) GetCodexSpeed(c *gin.Context) {
 	rt := codexspeed.Default()
 	view.HistoryAvailable = rt != nil
 	cutoff := now.Add(-24 * time.Hour)
-	for _, rec := range rt.Hours() {
+	records := rt.Hours()
+	view.Speed = h.codexSpeedPriorityView(cfg, records)
+	for _, rec := range records {
 		if rec.FastSession == nil {
 			continue
 		}
@@ -85,6 +147,15 @@ type codexSpeedConfigUpdate struct {
 		Enable  *bool `json:"enable"`
 		Percent *int  `json:"percent"`
 	} `json:"fast_session"`
+	SpeedPriority *struct {
+		Enable  *bool `json:"enable"`
+		Percent *int  `json:"percent"`
+		Weights *struct {
+			Fast    *int `json:"fast"`
+			Unknown *int `json:"unknown"`
+			Slow    *int `json:"slow"`
+		} `json:"weights"`
+	} `json:"speed_priority"`
 }
 
 // PutCodexSpeedConfig updates the speed-strategy switches in config.yaml; the running
@@ -121,5 +192,174 @@ func (h *Handler) PutCodexSpeedConfig(c *gin.Context) {
 			next.Codex.FastSessionIDs.Enable = *fs.Enable
 		}
 	}
+	if sp := body.SpeedPriority; sp != nil {
+		speed := &next.Codex.SpeedPriority
+		if sp.Percent != nil {
+			if *sp.Percent < 1 || *sp.Percent > 100 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "speed_priority.percent must be between 1 and 100"})
+				return
+			}
+			speed.Percent = *sp.Percent
+		}
+		if w := sp.Weights; w != nil {
+			for _, item := range []struct {
+				name  string
+				value *int
+				dst   *int
+			}{{"fast", w.Fast, &speed.Weights.Fast}, {"unknown", w.Unknown, &speed.Weights.Unknown}, {"slow", w.Slow, &speed.Weights.Slow}} {
+				if item.value == nil {
+					continue
+				}
+				if *item.value < 1 || *item.value > 1000 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "speed_priority.weights." + item.name + " must be between 1 and 1000"})
+					return
+				}
+				*item.dst = *item.value
+			}
+		}
+		if sp.Enable != nil {
+			if *sp.Enable {
+				switch {
+				case next.Home.Enabled:
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Home dispatch owns scheduling; speed priority is unavailable"})
+					return
+				case !next.Codex.Pools.Enable:
+					c.JSON(http.StatusBadRequest, gin.H{"error": "speed priority needs codex.pools.enable; turn on Codex pools first"})
+					return
+				case h.authManager == nil || !h.authManager.CodexPoolsRunning():
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Codex pools are configured but not running; restart the service first"})
+					return
+				}
+			}
+			speed.Enable = *sp.Enable
+		}
+		speed.Normalize()
+	}
 	h.persistConfigLocked(c, next)
+}
+
+func (h *Handler) codexSpeedPriorityView(cfg *config.Config, records []codexspeed.HourRecord) codexSpeedPriorityView {
+	tracker := coreauth.CodexSpeed()
+	live := tracker.Snapshot()
+	live.Current.Treatment.Hist, live.Current.Control.Hist = nil, nil
+	view := codexSpeedPriorityView{Live: live, Hours: []codexspeed.SpeedHour{}}
+	if cfg != nil {
+		speedCfg := cfg.Codex.SpeedPriority
+		speedCfg.Normalize()
+		view.Config = codexSpeedPriorityConfigView{
+			Enable: speedCfg.Enable, Percent: speedCfg.Percent, Rollback: speedCfg.RollbackEnabled(),
+			Weights:         map[string]int{"fast": speedCfg.Weights.Fast, "unknown": speedCfg.Weights.Unknown, "slow": speedCfg.Weights.Slow},
+			PoolsConfigured: cfg.Codex.Pools.Enable && !cfg.Home.Enabled,
+			PoolsRunning:    h.authManager != nil && h.authManager.CodexPoolsRunning(),
+		}
+	}
+	var speedHours []codexspeed.SpeedHour
+	for _, rec := range records {
+		if rec.Speed != nil {
+			speedHours = append(speedHours, *rec.Speed)
+		}
+	}
+	current := tracker.Snapshot().Current
+	view.Acceptance = codexSpeedAcceptanceFor(live.Generation, speedHours, current)
+	for _, hour := range speedHours {
+		hour.Treatment.Hist, hour.Control.Hist = nil, nil
+		view.Hours = append(view.Hours, hour)
+	}
+	return view
+}
+
+// codexSpeedAcceptanceFor merges the current generation's hours (histograms added bucket by
+// bucket) and evaluates the three full-rollout checks.
+func codexSpeedAcceptanceFor(generation string, hours []codexspeed.SpeedHour, current codexspeed.SpeedHour) codexSpeedAcceptance {
+	out := codexSpeedAcceptance{Generation: generation, Checks: []codexSpeedCheck{}, Days: []codexSpeedDay{}}
+	all := append(append([]codexspeed.SpeedHour{}, hours...), current)
+	dayIndex := map[string]int{}
+	for _, hour := range all {
+		if hour.Generation != generation {
+			continue
+		}
+		out.Treatment.Merge(hour.Treatment)
+		out.Control.Merge(hour.Control)
+		out.Hours++
+		h := hour.Hour
+		if out.RangeStart == nil || h.Before(*out.RangeStart) {
+			out.RangeStart = &h
+		}
+		if out.RangeEnd == nil || h.After(*out.RangeEnd) {
+			out.RangeEnd = &h
+		}
+		if hour.Boost.Day == "" {
+			continue
+		}
+		idx, ok := dayIndex[hour.Boost.Day]
+		if !ok {
+			idx = len(out.Days)
+			dayIndex[hour.Boost.Day] = idx
+			out.Days = append(out.Days, codexSpeedDay{Day: hour.Boost.Day})
+		}
+		d := &out.Days[idx]
+		// Cohort counts are cumulative for the day, so the latest hour wins.
+		d.BoostFastSet, d.BoostFastToSlow, d.BoostSlowSet, d.BoostSlowToFast = hour.Boost.FastSet, hour.Boost.FastToSlow, hour.Boost.SlowSet, hour.Boost.SlowToFast
+		d.HoldFastSet, d.HoldFastToSlow, d.HoldSlowSet, d.HoldSlowToFast = hour.Hold.FastSet, hour.Hold.FastToSlow, hour.Hold.SlowSet, hour.Hold.SlowToFast
+		d.QuotaBoost += hour.QuotaBoost.DeltaSum
+		d.QuotaHold += hour.QuotaHold.DeltaSum
+	}
+	quotaAccounts := map[string][2]int{}
+	for _, hour := range all {
+		if hour.Generation == generation && hour.Boost.Day != "" {
+			q := quotaAccounts[hour.Boost.Day]
+			quotaAccounts[hour.Boost.Day] = [2]int{q[0] + hour.QuotaBoost.Accounts, q[1] + hour.QuotaHold.Accounts}
+		}
+	}
+	for i := range out.Days {
+		q := quotaAccounts[out.Days[i].Day]
+		if q[0] > 0 {
+			out.Days[i].QuotaBoost /= float64(q[0])
+		}
+		if q[1] > 0 {
+			out.Days[i].QuotaHold /= float64(q[1])
+		}
+	}
+	t, c := out.Treatment, out.Control
+	enough := t.Samples >= codexSpeedAcceptMinSamples && c.Samples >= codexSpeedAcceptMinSamples && t.Requests >= codexSpeedAcceptMinRequests && c.Requests >= codexSpeedAcceptMinRequests
+	ttft := codexSpeedCheck{Name: "ttft_drop", Status: "insufficient", Detail: "每组需要至少 500 个小请求首字样本和 2000 个请求"}
+	if enough && t.P50Ms != nil && c.P50Ms != nil && *c.P50Ms > 0 {
+		drop := 1 - float64(*t.P50Ms)/float64(*c.P50Ms)
+		ttft.Status = statusOf(drop >= codexSpeedAcceptTTFTDrop)
+		ttft.Detail = fmt.Sprintf("实验组 p50 %d ms，对照组 %d ms，下降 %.1f%%", *t.P50Ms, *c.P50Ms, 100*drop)
+	}
+	failures := codexSpeedCheck{Name: "overload_and_529", Status: "insufficient", Detail: ttft.Detail}
+	if enough && t.Attempts > 0 && c.Attempts > 0 {
+		tOv, cOv := ratio(t.Overloads, t.Attempts), ratio(c.Overloads, c.Attempts)
+		t529, c529 := ratio(t.Final529, t.Requests), ratio(c.Final529, c.Requests)
+		failures.Status = statusOf(tOv <= cOv && t529 <= c529)
+		failures.Detail = fmt.Sprintf("过载率 %.1f%% vs %.1f%%，529 率 %.2f%% vs %.2f%%", 100*tOv, 100*cOv, 100*t529, 100*c529)
+	}
+	var bSet, bConv, hSet, hConv int
+	for _, d := range out.Days {
+		bSet, bConv, hSet, hConv = bSet+d.BoostFastSet, bConv+d.BoostFastToSlow, hSet+d.HoldFastSet, hConv+d.HoldFastToSlow
+	}
+	wear := codexSpeedCheck{Name: "fast_wear", Status: "insufficient", Detail: "两组快号观察集合各需要至少 20 个账号"}
+	if bSet >= codexSpeedAcceptMinCohort && hSet >= codexSpeedAcceptMinCohort {
+		bRate, hRate := float64(bConv)/float64(bSet), float64(hConv)/float64(hSet)
+		wear.Status = statusOf(bRate <= hRate*codexSpeedAcceptWearRatio || (bRate == 0 && hRate == 0))
+		wear.Detail = fmt.Sprintf("boost 组快号转慢 %.1f%%，hold 组 %.1f%%（%d 天）", 100*bRate, 100*hRate, len(out.Days))
+	}
+	out.Checks = append(out.Checks, ttft, failures, wear)
+	out.Treatment.Hist, out.Control.Hist = nil, nil
+	return out
+}
+
+func ratio(n, d int64) float64 {
+	if d <= 0 {
+		return 0
+	}
+	return float64(n) / float64(d)
+}
+
+func statusOf(pass bool) string {
+	if pass {
+		return "pass"
+	}
+	return "fail"
 }

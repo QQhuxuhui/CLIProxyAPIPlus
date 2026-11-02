@@ -183,7 +183,11 @@ func (m *Manager) poolPickOne(ctx context.Context, p *codexAccountPool, model st
 		return nil, nil, err
 	}
 	if !handled {
-		selected, err = selector.Pick(selectorContextForAvailableAuths(ctx, selector, model), "codex", selectionArgForSelector(selector, model), opts, highestPriorityAuths(candidates))
+		if speed := CodexSpeed(); speed.treatmentWeighted(ctx) {
+			selected = speed.PickWeighted(p.id, preferCodexWebsocketAuths(ctx, "codex", highestPriorityAuths(candidates)))
+		} else {
+			selected, err = selector.Pick(selectorContextForAvailableAuths(ctx, selector, model), "codex", selectionArgForSelector(selector, model), opts, highestPriorityAuths(candidates))
+		}
 	}
 	if err != nil {
 		return nil, nil, restoreModelCooldownErrorModel(err, model)
@@ -340,18 +344,29 @@ func (m *Manager) poolSessionKey(model string, opts exec.Options) (string, *Sess
 	}
 	return CanonicalSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata), selector
 }
-func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts exec.Options, affinity *SessionAffinitySelector, selected *Auth, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts exec.Options, affinity *SessionAffinitySelector, selected *Auth, tried map[string]struct{}, replaceIf *codexPoolBinding) (*Auth, ProviderExecutor, error) {
 	pools := m.codexPools.Load()
 	ttl := time.Hour
 	if affinity != nil && affinity.cache != nil {
 		ttl = affinity.cache.ttl
 	}
+	speed := CodexSpeed()
+	speedState := codexSpeedStateFrom(ctx)
+	origin := ""
+	if group, _, _, inited := speedStateGet(speedState); inited && group == CodexSpeedGroupTreatment {
+		origin = CodexSpeedGroupTreatment
+	}
+	originalKey := key
 	if fingerprints, minPrefix := lcpFingerprintsFromMetadata(opts.Metadata); affinity != nil && affinity.matcher != nil && len(fingerprints) > 0 && minPrefix > 0 {
 		binding := affinity.matcher.BindFingerprintsWithResult(lcpAffinityNamespace("codex", model, opts.Metadata), fingerprints, minPrefix, selected.ID)
 		if binding.SessionID != "" {
 			key = binding.SessionID
 			opts.Metadata[exec.LCPAffinitySessionIDMetadataKey] = key
 			opts.Metadata[exec.LCPAccessGenerationMetadataKey] = binding.AccessNumber
+		}
+		if _, _, bucket, inited := speedStateGet(speedState); inited && key != originalKey {
+			// The binding identity changed (first LCP binding): later turns find it by this key.
+			speed.ab.adoptBucket(key, bucket, ttl, speed.now())
 		}
 	}
 	if key == "" {
@@ -365,13 +380,24 @@ func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts
 			return nil, nil, err
 		}
 		current, exists := p.bindings[bindingKey]
+		if replaceIf != nil && exists && current == *replaceIf {
+			// Speed-priority replacement of a slow binding, still unchanged since it was read.
+			p.putBindingLocked(bindingKey, codexPoolBinding{authID: selected.ID, epoch: selected.RegistrationEpoch, expires: time.Now().Add(ttl), origin: origin})
+			p.mu.Unlock()
+			speed.ab.markRebound(originalKey, ttl, speed.now())
+			if key != originalKey {
+				speed.ab.markRebound(key, ttl, speed.now())
+			}
+			return m.poolBoundAuth(ctx, codexPoolBinding{authID: selected.ID, epoch: selected.RegistrationEpoch}, model, opts, tried)
+		}
 		if !exists || !time.Now().Before(current.expires) {
-			p.putBindingLocked(bindingKey, codexPoolBinding{selected.ID, selected.RegistrationEpoch, time.Now().Add(ttl)})
+			p.putBindingLocked(bindingKey, codexPoolBinding{authID: selected.ID, epoch: selected.RegistrationEpoch, expires: time.Now().Add(ttl), origin: origin})
 			p.mu.Unlock()
 			return m.poolBoundAuth(ctx, codexPoolBinding{authID: selected.ID, epoch: selected.RegistrationEpoch}, model, opts, tried)
 		}
 		p.mu.Unlock()
 		if winner, executor, err := m.poolBoundAuth(ctx, current, model, opts, tried); err == nil {
+			speed.noteBindingUse(speedState, current)
 			p, err = pools.lockSession(ctx, key)
 			if err != nil {
 				return nil, nil, err
@@ -388,7 +414,7 @@ func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts
 			return nil, nil, err
 		}
 		if p.bindings[bindingKey] == current {
-			p.putBindingLocked(bindingKey, codexPoolBinding{selected.ID, selected.RegistrationEpoch, time.Now().Add(ttl)})
+			p.putBindingLocked(bindingKey, codexPoolBinding{authID: selected.ID, epoch: selected.RegistrationEpoch, expires: time.Now().Add(ttl), origin: origin})
 			p.mu.Unlock()
 			return m.poolBoundAuth(ctx, codexPoolBinding{authID: selected.ID, epoch: selected.RegistrationEpoch}, model, opts, tried)
 		}
@@ -433,6 +459,19 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		return a.Clone(), executor, nil
 	}
 	key, affinity := m.poolSessionKey(model, opts)
+	preview, _ := ctx.Value(poolPreviewKey{}).(bool)
+	speed := CodexSpeed()
+	speedState := codexSpeedStateFrom(ctx)
+	speedTTL := codexSpeedSessionTTL
+	if affinity != nil && affinity.cache != nil {
+		speedTTL = affinity.cache.ttl
+	}
+	if speedState != nil && !preview {
+		speed.initRequest(speedState, key, speedTTL)
+	}
+	speedGroup, _, _, _ := speedStateGet(speedState)
+	var replaceIf *codexPoolBinding
+	originalTried := tried
 	if key != "" {
 		p, err := pools.lockSession(ctx, key)
 		if err != nil {
@@ -441,7 +480,17 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		bound, exists := p.bindings[codexBindingKey{key, canonicalModelKey(model)}]
 		p.mu.Unlock()
 		if exists && time.Now().Before(bound.expires) {
-			if a, e, err := m.poolBoundAuth(ctx, bound, model, opts, tried); err == nil {
+			if !preview && speedGroup == CodexSpeedGroupTreatment && speed.TierOf(bound.authID) == CodexSpeedTierSlow && !speed.ab.rebound(key, speed.now()) {
+				// Replace a binding to a slow account once per session: pick without it.
+				b := bound
+				replaceIf = &b
+				tried = make(map[string]struct{}, len(originalTried)+1)
+				for id := range originalTried {
+					tried[id] = struct{}{}
+				}
+				tried[bound.authID] = struct{}{}
+			} else if a, e, err := m.poolBoundAuth(ctx, bound, model, opts, tried); err == nil {
+				speed.noteBindingUse(speedState, bound)
 				opts.Metadata[poolStickyMetadataKey] = true
 				return a, e, nil
 			}
@@ -459,11 +508,12 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 			p.mu.Unlock()
 			if exists && time.Now().Before(binding.expires) {
 				if a, e, err := m.poolBoundAuth(ctx, binding, model, opts, tried); err == nil {
+					speed.noteBindingUse(speedState, binding)
 					opts.Metadata[poolStickyMetadataKey] = true
 					if preview, _ := ctx.Value(poolPreviewKey{}).(bool); preview {
 						return a, e, nil
 					}
-					return m.bindPoolSelection(ctx, key, model, opts, affinity, a, tried)
+					return m.bindPoolSelection(ctx, key, model, opts, affinity, a, tried, nil)
 				}
 			}
 		}
@@ -530,6 +580,13 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		observeSaturation(err)
 		bestErr = preferPoolError(bestErr, err)
 	}
+	if chosen == nil && replaceIf != nil {
+		// No replacement available: keep the slow binding; the session may try again later.
+		if a, e, err := m.poolBoundAuth(ctx, *replaceIf, model, opts, originalTried); err == nil {
+			opts.Metadata[poolStickyMetadataKey] = true
+			return a, e, nil
+		}
+	}
 	if chosen == nil {
 		if sawSaturated {
 			return nil, nil, &poolSaturatedError{cause: bestErr}
@@ -539,8 +596,8 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		}
 		return nil, nil, bestErr
 	}
-	if preview, _ := ctx.Value(poolPreviewKey{}).(bool); affinity != nil && !preview {
-		return m.bindPoolSelection(ctx, key, model, opts, affinity, chosen, tried)
+	if affinity != nil && !preview {
+		return m.bindPoolSelection(ctx, key, model, opts, affinity, chosen, tried, replaceIf)
 	}
 	return chosen, executor, nil
 }

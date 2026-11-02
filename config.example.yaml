@@ -526,6 +526,37 @@ codex:
   #     cooldown-seconds: 300      # minimum wait between adjustments
   #     recover-interval-seconds: 600 # climb one step after this long with no failure evidence
   #     increase-step-percent: 5   # size of one recovery step
+  # Speed-aware account selection (requires codex.pools.enable and a restart after enabling pools).
+  # Every Codex attempt is measured passively: the gap between response.created and the first
+  # output delta of successful small requests (<20k input tokens, no images, few reasoning tokens).
+  # Accounts are tiered fast / unknown / slow; off-peak (pool baseline under baseline-min-ms) no
+  # tier applies. When enabled, a treatment share of sessions picks accounts by smooth weighted
+  # round robin with the tier weights, replaces a binding to a slow account once per session, and
+  # accounts without enough samples are probed. Editable on quota-monitor.html (speed strategy card).
+  # speed-priority:
+  #   enable: false
+  #   percent: 15                 # treatment share of sessions (capped at 99 while rollback is on)
+  #   weights: {fast: 10, unknown: 3, slow: 1}
+  #   fast-gap-ms: 3000
+  #   fast-max-overload-percent: 15
+  #   slow-overload-percent: 30
+  #   min-samples: 3
+  #   sample-window-minutes: 60   # passive samples; probe samples stay valid min-samples x probe interval
+  #   half-life-minutes: 30
+  #   baseline-min-ms: 2500
+  #   max-reasoning-tokens: 64
+  #   probe:
+  #     per-account-interval-minutes: 60
+  #     max-per-second: 1
+  #     model: "gpt-6-luna"
+  #   rollback:                   # halves the treatment share when it fails clearly more than control
+  #     disable: false
+  #     window-minutes: 30
+  #     min-samples: 40
+  #     failure-worse-points: 10
+  #     min-percent: 2
+  #     recover-interval-seconds: 600
+  #     recover-step-percent: 5
   # Outbound proxy pool for HTTP/SSE /responses attempts. Credentials with their own proxy_url
   # never use it. Retries after an upstream overload/5xx/transport error go through the pool
   # (control-percent of them stay direct as the control group); with shift enabled, a share of

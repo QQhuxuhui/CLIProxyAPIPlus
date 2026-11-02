@@ -211,6 +211,19 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}
+	oldSpeed, newSpeed := oldCfg.Codex.SpeedPriority, newCfg.Codex.SpeedPriority
+	if oldSpeed.Enable != newSpeed.Enable {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.enable: %t -> %t", oldSpeed.Enable, newSpeed.Enable))
+	}
+	if oldSpeed.Percent != newSpeed.Percent {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.percent: %d -> %d", oldSpeed.Percent, newSpeed.Percent))
+	}
+	if oldSpeed.Weights != newSpeed.Weights {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.weights: %d/%d/%d -> %d/%d/%d", oldSpeed.Weights.Fast, oldSpeed.Weights.Unknown, oldSpeed.Weights.Slow, newSpeed.Weights.Fast, newSpeed.Weights.Unknown, newSpeed.Weights.Slow))
+	}
+	if oldSpeed != newSpeed && oldSpeed.Enable == newSpeed.Enable && oldSpeed.Percent == newSpeed.Percent && oldSpeed.Weights == newSpeed.Weights {
+		changes = append(changes, "codex.speed-priority: thresholds updated")
+	}
 	oldFastSession := oldCfg.Codex.FastSessionIDs
 	newFastSession := newCfg.Codex.FastSessionIDs
 	if oldFastSession.Enable != newFastSession.Enable {

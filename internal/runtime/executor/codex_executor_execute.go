@@ -74,6 +74,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, errReplay
 	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
+	reporter.SetHasImageInput(helps.CodexRequestHasImageInput(body))
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
@@ -247,6 +248,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
+	reporter.SetHasImageInput(helps.CodexRequestHasImageInput(body))
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	var identityState codexIdentityConfuseState

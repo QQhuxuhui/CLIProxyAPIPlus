@@ -118,6 +118,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, errValidate
 	}
 	cfg.Codex.FastSessionIDs.Normalize()
+	cfg.Codex.SpeedPriority.Normalize()
 	cfg.Codex.EgressPool.Normalize()
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate

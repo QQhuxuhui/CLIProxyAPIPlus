@@ -66,3 +66,36 @@ func (r *Runtime) Record(rec HourRecord) {
 		log.WithError(err).Error("codex speed: persist hourly record failed")
 	}
 }
+
+// Store returns the runtime's store.
+func (r *Runtime) Store() *Store {
+	if r == nil {
+		return nil
+	}
+	return r.store
+}
+
+// QuotaReading is one account's used percent on its longest quota window.
+type QuotaReading struct {
+	AccountKey  string
+	UsedPercent float64
+}
+
+var quotaProvider atomic.Pointer[func() map[string]QuotaReading]
+
+// SetQuotaProvider registers the source of per-auth quota readings (keyed by auth ID).
+func SetQuotaProvider(fn func() map[string]QuotaReading) {
+	if fn == nil {
+		quotaProvider.Store(nil)
+		return
+	}
+	quotaProvider.Store(&fn)
+}
+
+// QuotaReadings returns the current readings, or nil when no provider is registered.
+func QuotaReadings() map[string]QuotaReading {
+	if fn := quotaProvider.Load(); fn != nil {
+		return (*fn)()
+	}
+	return nil
+}

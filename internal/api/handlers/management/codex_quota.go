@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexquota"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexspeed"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 )
@@ -46,7 +47,34 @@ func (h *Handler) StartCodexQuota(ctx context.Context) {
 	h.mu.Lock()
 	h.codexQuota = service
 	h.mu.Unlock()
+	codexspeed.SetQuotaProvider(func() map[string]codexspeed.QuotaReading { return codexSpeedQuotaReadings(service.Rows()) })
 	service.Start(ctx)
+}
+
+// codexSpeedQuotaReadings maps quota rows to the longest window's used percent per auth file,
+// skipping pending, duplicate and invalid rows.
+func codexSpeedQuotaReadings(rows map[string]codexquota.AccountRow) map[string]codexspeed.QuotaReading {
+	out := make(map[string]codexspeed.QuotaReading, len(rows))
+	for name, row := range rows {
+		if row.Invalid || row.Duplicate || len(row.Windows) == 0 {
+			continue
+		}
+		longest := row.Windows[0]
+		for _, w := range row.Windows[1:] {
+			if w.Minutes > longest.Minutes {
+				longest = w
+			}
+		}
+		if longest.Pending {
+			continue
+		}
+		key := row.AccountKey
+		if key == "" {
+			key = name
+		}
+		out[name] = codexspeed.QuotaReading{AccountKey: key, UsedPercent: longest.UsedPercent}
+	}
+	return out
 }
 
 func (h *Handler) codexQuotaSource() codexquota.Source {

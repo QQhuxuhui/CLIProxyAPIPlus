@@ -113,6 +113,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 		return resp, errBuild
 	}
 	reporter.SetTranslatedReasoningEffort(body, "codex")
+	reporter.SetHasImageInput(true)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
@@ -213,6 +214,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 		return nil, errBuild
 	}
 	reporter.SetTranslatedReasoningEffort(body, "codex")
+	reporter.SetHasImageInput(true)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
@@ -343,6 +345,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	reporter := helps.NewExecutorUsageReporter(ctx, e, model, auth)
 	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(body, "openai")
+	reporter.SetHasImageInput(true)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	var identityState codexIdentityConfuseState
@@ -404,6 +407,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	reporter := helps.NewExecutorUsageReporter(ctx, e, model, auth)
 	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(body, "openai")
+	reporter.SetHasImageInput(true)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	var identityState codexIdentityConfuseState

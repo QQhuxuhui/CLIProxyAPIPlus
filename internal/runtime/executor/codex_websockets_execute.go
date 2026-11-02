@@ -86,6 +86,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
+	reporter.SetHasImageInput(helps.CodexRequestHasImageInput(clientBody))
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel, e.cfg)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)

@@ -251,6 +251,9 @@ type CodexConfig struct {
 	// FastSessionIDs remaps the outgoing upstream Session-Id header of HTTP/SSE Codex
 	// /responses requests onto a pool of known-fast values.
 	FastSessionIDs CodexFastSessionIDsConfig `yaml:"fast-session-ids" json:"fast-session-ids"`
+	// SpeedPriority weights Codex account selection by measured per-account speed for an A/B
+	// share of sessions. Requires codex.pools. Passive speed measurement runs even when disabled.
+	SpeedPriority CodexSpeedPriorityConfig `yaml:"speed-priority" json:"speed-priority"`
 	// EgressPool routes some HTTP/SSE Codex /responses attempts through a pool of outbound
 	// proxies: retries after upstream overloads, and a share of first attempts while the direct
 	// route is overloaded.
@@ -390,6 +393,103 @@ func (c *CodexFastSessionIDsConfig) Normalize() {
 	c.Rollback.RecoverIntervalSeconds = max(normalizeBoundedInt(c.Rollback.RecoverIntervalSeconds, 600, 86400), 60)
 	c.Rollback.IncreaseStepPercent = normalizeBoundedInt(c.Rollback.IncreaseStepPercent, 5, 50)
 }
+
+// CodexSpeedPriorityConfig configures speed-aware Codex account selection.
+type CodexSpeedPriorityConfig struct {
+	// Enable turns on probing, weighting and slow-binding replacement. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Percent is the treatment share of sessions. Default 15.
+	Percent int `yaml:"percent,omitempty" json:"percent,omitempty"`
+	// Weights are the per-tier selection weights used for treatment requests.
+	Weights CodexSpeedWeights `yaml:"weights,omitempty" json:"weights,omitempty"`
+	// FastGapMs is the created-to-first-output median below which an account may be fast. Default 3000.
+	FastGapMs int `yaml:"fast-gap-ms,omitempty" json:"fast-gap-ms,omitempty"`
+	// FastMaxOverloadPercent is the overload rate a fast account must stay under. Default 15.
+	FastMaxOverloadPercent int `yaml:"fast-max-overload-percent,omitempty" json:"fast-max-overload-percent,omitempty"`
+	// SlowOverloadPercent is the overload rate at which an account is slow. Default 30.
+	SlowOverloadPercent int `yaml:"slow-overload-percent,omitempty" json:"slow-overload-percent,omitempty"`
+	// MinSamples is the valid-sample floor for a tier. Default 3.
+	MinSamples int `yaml:"min-samples,omitempty" json:"min-samples,omitempty"`
+	// SampleWindowMinutes bounds how long a passive sample stays valid. Default 60.
+	SampleWindowMinutes int `yaml:"sample-window-minutes,omitempty" json:"sample-window-minutes,omitempty"`
+	// HalfLifeMinutes is the decay half-life of samples and overload counts. Default 30.
+	HalfLifeMinutes int `yaml:"half-life-minutes,omitempty" json:"half-life-minutes,omitempty"`
+	// BaselineMinMs is the pool baseline under which tiers are not applied (off-peak). Default 2500.
+	BaselineMinMs int `yaml:"baseline-min-ms,omitempty" json:"baseline-min-ms,omitempty"`
+	// MaxReasoningTokens excludes requests with more reasoning tokens from passive samples. Default 64.
+	MaxReasoningTokens int `yaml:"max-reasoning-tokens,omitempty" json:"max-reasoning-tokens,omitempty"`
+	// Probe configures active probing of accounts without enough samples.
+	Probe CodexSpeedProbeConfig `yaml:"probe,omitempty" json:"probe,omitempty"`
+	// Rollback halves the treatment share when it fails clearly more than control.
+	Rollback CodexSpeedRollbackConfig `yaml:"rollback,omitempty" json:"rollback,omitempty"`
+}
+
+// CodexSpeedWeights are selection weights per speed tier.
+type CodexSpeedWeights struct {
+	Fast    int `yaml:"fast,omitempty" json:"fast,omitempty"`
+	Unknown int `yaml:"unknown,omitempty" json:"unknown,omitempty"`
+	Slow    int `yaml:"slow,omitempty" json:"slow,omitempty"`
+}
+
+// CodexSpeedProbeConfig configures active speed probes.
+type CodexSpeedProbeConfig struct {
+	PerAccountIntervalMinutes int    `yaml:"per-account-interval-minutes,omitempty" json:"per-account-interval-minutes,omitempty"`
+	MaxPerSecond              int    `yaml:"max-per-second,omitempty" json:"max-per-second,omitempty"`
+	Model                     string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
+// CodexSpeedRollbackConfig configures automatic halving of the treatment share.
+type CodexSpeedRollbackConfig struct {
+	// Disable turns automatic halving off (enabled by default).
+	Disable                bool `yaml:"disable,omitempty" json:"disable,omitempty"`
+	WindowMinutes          int  `yaml:"window-minutes,omitempty" json:"window-minutes,omitempty"`
+	MinSamples             int  `yaml:"min-samples,omitempty" json:"min-samples,omitempty"`
+	FailureWorsePoints     int  `yaml:"failure-worse-points,omitempty" json:"failure-worse-points,omitempty"`
+	MinPercent             int  `yaml:"min-percent,omitempty" json:"min-percent,omitempty"`
+	RecoverIntervalSeconds int  `yaml:"recover-interval-seconds,omitempty" json:"recover-interval-seconds,omitempty"`
+	RecoverStepPercent     int  `yaml:"recover-step-percent,omitempty" json:"recover-step-percent,omitempty"`
+}
+
+// Codex speed-priority defaults.
+const (
+	DefaultCodexSpeedPercent    = 15
+	DefaultCodexSpeedProbeModel = "gpt-6-luna"
+	maxCodexSpeedWeight         = 1000
+)
+
+// Normalize fills defaults and clamps values.
+func (c *CodexSpeedPriorityConfig) Normalize() {
+	if c == nil {
+		return
+	}
+	c.Percent = normalizeBoundedInt(c.Percent, DefaultCodexSpeedPercent, 100)
+	c.Weights.Fast = normalizeBoundedInt(c.Weights.Fast, 10, maxCodexSpeedWeight)
+	c.Weights.Unknown = normalizeBoundedInt(c.Weights.Unknown, 3, maxCodexSpeedWeight)
+	c.Weights.Slow = normalizeBoundedInt(c.Weights.Slow, 1, maxCodexSpeedWeight)
+	c.FastGapMs = normalizeBoundedInt(c.FastGapMs, 3000, 600000)
+	c.FastMaxOverloadPercent = normalizeBoundedInt(c.FastMaxOverloadPercent, 15, 100)
+	c.SlowOverloadPercent = normalizeBoundedInt(c.SlowOverloadPercent, 30, 100)
+	c.MinSamples = normalizeBoundedInt(c.MinSamples, 3, 32)
+	c.SampleWindowMinutes = normalizeBoundedInt(c.SampleWindowMinutes, 60, 1440)
+	c.HalfLifeMinutes = normalizeBoundedInt(c.HalfLifeMinutes, 30, 1440)
+	c.BaselineMinMs = normalizeBoundedInt(c.BaselineMinMs, 2500, 600000)
+	c.MaxReasoningTokens = normalizeBoundedInt(c.MaxReasoningTokens, 64, 1000000)
+	c.Probe.PerAccountIntervalMinutes = normalizeBoundedInt(c.Probe.PerAccountIntervalMinutes, 60, 1440)
+	c.Probe.MaxPerSecond = normalizeBoundedInt(c.Probe.MaxPerSecond, 1, 20)
+	c.Probe.Model = strings.TrimSpace(c.Probe.Model)
+	if c.Probe.Model == "" {
+		c.Probe.Model = DefaultCodexSpeedProbeModel
+	}
+	c.Rollback.WindowMinutes = normalizeBoundedInt(c.Rollback.WindowMinutes, 30, 60)
+	c.Rollback.MinSamples = normalizeBoundedInt(c.Rollback.MinSamples, 40, 1000000)
+	c.Rollback.FailureWorsePoints = normalizeBoundedInt(c.Rollback.FailureWorsePoints, 10, 100)
+	c.Rollback.MinPercent = normalizeBoundedInt(c.Rollback.MinPercent, 2, 99)
+	c.Rollback.RecoverIntervalSeconds = max(normalizeBoundedInt(c.Rollback.RecoverIntervalSeconds, 600, 86400), 60)
+	c.Rollback.RecoverStepPercent = normalizeBoundedInt(c.Rollback.RecoverStepPercent, 5, 50)
+}
+
+// RollbackEnabled reports whether automatic halving is active.
+func (c CodexSpeedPriorityConfig) RollbackEnabled() bool { return !c.Rollback.Disable }
 
 // CodexEgressPoolConfig configures the Codex outbound proxy pool. Credentials with their own
 // proxy_url never use the pool; "direct" means the route the credential would use without it.

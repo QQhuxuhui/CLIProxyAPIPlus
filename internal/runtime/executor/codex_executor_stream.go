@@ -82,6 +82,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, errReplay
 	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
+	reporter.SetHasImageInput(helps.CodexRequestHasImageInput(body))
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState

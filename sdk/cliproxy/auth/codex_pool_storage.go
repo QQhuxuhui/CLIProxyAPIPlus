@@ -27,6 +27,9 @@ type codexPoolBinding struct {
 	authID  string
 	epoch   uint64
 	expires time.Time
+	// origin is the speed-priority group of the request that created the binding; control
+	// requests that reuse a treatment binding are excluded from the A/B stats.
+	origin string
 }
 type codexAccountPool struct {
 	availability   atomic.Pointer[codexAvailabilityHint]

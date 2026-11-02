@@ -650,3 +650,34 @@ test('speed fast cards report current hour and shares', () => {
   assert.equal(map['本小时结论'], '无差异');
   assert.equal(map['本小时样本（fast / 对照）'], '30 / 60');
 });
+
+test('speed priority cards explain inactive state and shares', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const sp = { config: { percent: 15 }, live: { active: false, inactive: 'pools_need_restart', classify: false, baseline_ms: null, cap_percent: 15, effective_percent: 7,
+    tiers: { fast: 3, slow: 9, unknown: 1, boost_fast: 2, hold_fast: 1 }, current: { treatment: { requests: 4, attempts: 10, overloads: 1, p50_ms: 1200 }, control: { requests: 20, attempts: 0, overloads: 0 }, probes: 5 } } };
+  const map = Object.fromEntries(plain(ctx.speed.speedCards(sp)));
+  assert.equal(map['状态'], '未生效：分池已配置，重启后生效');
+  assert.equal(map['配置占比 / 上限 / 运行占比'], '15% / 15% / 7%');
+  assert.equal(map['本小时过载率（实验 / 对照）'], '10.0% / —');
+  assert.equal(map['本小时首字 p50（实验 / 对照）'], '1.20 s / —');
+});
+
+test('speed priority checks, days and series render', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const s = ctx.speed;
+  const line = plain(s.checkLine({ name: 'fast_wear', status: 'insufficient', detail: 'x' }));
+  assert.equal(line.cls, 'speed-insufficient');
+  assert.ok(line.text.startsWith('boost 组快号转慢比例'));
+  assert.equal(s.rangeText({}), '当前代际还没有数据');
+  const row = plain(s.dayRow({ day: '2026-11-03', boost_fast_set: 40, boost_fast_to_slow: 4, hold_fast_set: 0, hold_fast_to_slow: 0, boost_slow_set: 10, boost_slow_to_fast: 1, hold_slow_set: 5, hold_slow_to_fast: 0, quota_boost_per_account_hour: 0.125, quota_hold_per_account_hour: 0 }));
+  assert.equal(row[1], '4/40（10.0%）');
+  assert.equal(row[2], '0/0（—）');
+  assert.equal(row[5], '0.13 / 0.00');
+  const g = (p50, att, ov, req, f) => ({ p50_ms: p50, p90_ms: p50, attempts: att, overloads: ov, requests: req, final_529: f });
+  const series = plain(s.speedSeries({ hours: [{ hour: '2026-11-03T06:00:00Z', treatment: g(1000, 10, 1, 8, 0), control: g(9000, 20, 6, 16, 2) }], live: { current: { hour: '2026-11-03T07:00:00Z', treatment: g(null, 0, 0, 0, 0), control: g(9500, 5, 0, 5, 0) } } }));
+  assert.deepEqual(series.treatP50, [1, null]);
+  assert.deepEqual(series.controlOverload, [30, 0]);
+  assert.deepEqual(series.control529, [12.5, 0]);
+});

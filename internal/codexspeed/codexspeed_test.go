@@ -3,6 +3,7 @@ package codexspeed
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,5 +126,37 @@ func TestRuntimeRecordKeepsMemoryOnDiskFailure(t *testing.T) {
 	rt.Record(HourRecord{Hour: now})
 	if len(rt.Hours()) != 1 {
 		t.Fatal("record must stay in memory when the disk write fails")
+	}
+}
+
+func TestStoreTransitionsAndAccounts(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	if err := store.AppendTransitions([]Transition{{Time: now.Add(-8 * 24 * time.Hour), AuthID: "old"}, {Time: now, AuthID: "new", From: "fast", To: "slow"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PruneTransitions(now); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, transitionsFile))
+	if err != nil || len(data) == 0 || bytesContains(data, "old") || !bytesContains(data, "new") {
+		t.Fatalf("pruned transitions: %q %v", data, err)
+	}
+	if store.LoadAccounts() != nil {
+		t.Fatal("missing accounts file must load as nil")
+	}
+	if err = store.SaveAccounts([]byte("state")); err != nil || string(store.LoadAccounts()) != "state" {
+		t.Fatalf("accounts round trip failed: %v", err)
+	}
+}
+
+func bytesContains(data []byte, s string) bool { return strings.Contains(string(data), s) }
+
+func TestSpeedGroupHourMerge(t *testing.T) {
+	a := SpeedGroupHour{Attempts: 2, Requests: 1, Hist: histOf(1000)}
+	a.Merge(SpeedGroupHour{Attempts: 3, Final529: 1, Hist: histOf(1000, 1000)})
+	if a.Attempts != 5 || a.Final529 != 1 || a.Samples != 3 || a.P50Ms == nil {
+		t.Fatalf("merge: %+v", a)
 	}
 }
