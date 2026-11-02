@@ -102,7 +102,10 @@ type codexSpeedView struct {
 	baselineMs int64
 	hasBase    bool
 	tiers      map[string]string
-	counts     codexspeed.SpeedTiers
+	// boost holds the auth IDs whose upstream account is in the boost cohort, computed from the
+	// account key learned at recompute time (selection snapshots do not carry account_id).
+	boost  map[string]bool
+	counts codexspeed.SpeedTiers
 }
 
 // CodexSpeedTracker measures per-account speed and runs the speed-priority A/B.
@@ -134,7 +137,7 @@ func NewCodexSpeedTracker(now func() time.Time) *CodexSpeedTracker {
 	cfg.Normalize()
 	t.cfg.Store(&cfg)
 	t.inactive.Store(CodexSpeedInactiveDisabled)
-	t.view.Store(&codexSpeedView{tiers: map[string]string{}})
+	t.view.Store(&codexSpeedView{tiers: map[string]string{}, boost: map[string]bool{}})
 	for i := range t.shards {
 		t.shards[i].accounts = map[string]*codexSpeedAccount{}
 	}
@@ -404,7 +407,7 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) []codexspeed.T
 	for _, info := range infos {
 		keys[info.ID] = info.AccountKey
 	}
-	view := &codexSpeedView{tiers: map[string]string{}}
+	view := &codexSpeedView{tiers: map[string]string{}, boost: map[string]bool{}}
 	var accountMedians []time.Duration
 	var transitions []codexspeed.Transition
 	for i := range t.shards {
@@ -424,6 +427,9 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) []codexspeed.T
 				accountMedians = append(accountMedians, med)
 			}
 			cohort := codexSpeedCohortOf(a.accountKey)
+			if cohort == CodexSpeedCohortBoost {
+				view.boost[id] = true
+			}
 			switch tier {
 			case CodexSpeedTierFast:
 				view.counts.Fast++
@@ -509,7 +515,7 @@ func (t *CodexSpeedTracker) weightFor(a *Auth, cfg internalconfig.CodexSpeedPrio
 	tierWeight := int64(cfg.Weights.Unknown)
 	switch t.TierOf(a.ID) {
 	case CodexSpeedTierFast:
-		if codexSpeedCohortOf(codexSpeedAccountKey(a)) == CodexSpeedCohortBoost {
+		if t.view.Load().boost[a.ID] {
 			tierWeight = int64(cfg.Weights.Fast)
 		}
 	case CodexSpeedTierSlow:

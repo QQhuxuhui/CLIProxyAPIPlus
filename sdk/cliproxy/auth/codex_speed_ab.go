@@ -74,10 +74,32 @@ type codexSpeedAB struct {
 
 	probes atomic.Int64
 
-	// hour accumulators are guarded by mu.
+	// hour accumulators are guarded by mu. Finished hours wait in pending until the ticker
+	// persists them, so a request that crosses the hour first never drops the previous hour.
 	hourStart time.Time
 	treat     codexspeed.SpeedGroupHour
 	control   codexspeed.SpeedGroupHour
+	pending   []codexSpeedFinishedHour
+}
+
+type codexSpeedFinishedHour struct {
+	start   time.Time
+	treat   codexspeed.SpeedGroupHour
+	control codexspeed.SpeedGroupHour
+}
+
+// closeHourLocked moves the open hour to pending when now is in a later hour.
+func (ab *codexSpeedAB) closeHourLocked(now time.Time) {
+	hour := now.Truncate(time.Hour)
+	if !hour.After(ab.hourStart) {
+		return
+	}
+	if ab.treat.Attempts+ab.treat.Requests+ab.control.Attempts+ab.control.Requests > 0 || len(ab.pending) == 0 {
+		ab.pending = append(ab.pending, codexSpeedFinishedHour{start: ab.hourStart, treat: ab.treat, control: ab.control})
+	}
+	ab.hourStart = hour
+	ab.treat = codexspeed.SpeedGroupHour{}
+	ab.control = codexspeed.SpeedGroupHour{}
 }
 
 func (ab *codexSpeedAB) init(now time.Time) {
@@ -315,12 +337,7 @@ func (ab *codexSpeedAB) slotLocked(now time.Time) *codexSpeedWindowSlot {
 }
 
 func (ab *codexSpeedAB) groupHourLocked(group string, now time.Time) *codexspeed.SpeedGroupHour {
-	if hour := now.Truncate(time.Hour); hour.After(ab.hourStart) {
-		// The hour rolled without a RollHour call; drop it rather than mixing hours.
-		ab.hourStart = hour
-		ab.treat = codexspeed.SpeedGroupHour{}
-		ab.control = codexspeed.SpeedGroupHour{}
-	}
+	ab.closeHourLocked(now)
 	switch group {
 	case CodexSpeedGroupTreatment:
 		return &ab.treat
@@ -435,19 +452,17 @@ func (ab *codexSpeedAB) evaluateRollback(cfg internalconfig.CodexSpeedPriorityCo
 	return ""
 }
 
-// rollHour returns the finished hour's group stats and resets them.
-func (ab *codexSpeedAB) rollHour(now time.Time) (time.Time, codexspeed.SpeedGroupHour, codexspeed.SpeedGroupHour, int64, bool) {
+// rollHours returns every finished hour, oldest first, and the probes counted since the last roll.
+func (ab *codexSpeedAB) rollHours(now time.Time) ([]codexSpeedFinishedHour, int64) {
 	ab.mu.Lock()
 	defer ab.mu.Unlock()
-	current := now.Truncate(time.Hour)
-	if !ab.hourStart.Before(current) {
-		return time.Time{}, codexspeed.SpeedGroupHour{}, codexspeed.SpeedGroupHour{}, 0, false
+	ab.closeHourLocked(now)
+	if len(ab.pending) == 0 {
+		return nil, 0
 	}
-	hour, treat, control := ab.hourStart, ab.treat, ab.control
-	ab.hourStart = current
-	ab.treat = codexspeed.SpeedGroupHour{}
-	ab.control = codexspeed.SpeedGroupHour{}
-	return hour, treat, control, ab.probes.Swap(0), true
+	out := ab.pending
+	ab.pending = nil
+	return out, ab.probes.Swap(0)
 }
 
 func (ab *codexSpeedAB) currentHour() (codexspeed.SpeedGroupHour, codexspeed.SpeedGroupHour, int64) {

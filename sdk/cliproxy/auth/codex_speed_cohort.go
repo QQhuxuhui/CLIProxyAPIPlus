@@ -252,20 +252,27 @@ func (t *CodexSpeedTracker) hourRecord(hour time.Time, treat, control codexspeed
 	return rec
 }
 
-// RollHour returns the finished hour record, if the hour changed since the last call. used maps
-// account keys to their used percent for the quota burn of the hour.
-func (t *CodexSpeedTracker) RollHour(used map[string]float64) (codexspeed.SpeedHour, bool) {
+// RollHours returns the finished hour records, oldest first. used maps account keys to their used
+// percent; the quota burn and probe count go to the latest finished hour.
+func (t *CodexSpeedTracker) RollHours(used map[string]float64) []codexspeed.SpeedHour {
 	if t == nil {
-		return codexspeed.SpeedHour{}, false
+		return nil
 	}
 	now := t.now()
-	hour, treat, control, probes, ok := t.ab.rollHour(now)
-	if !ok {
-		return codexspeed.SpeedHour{}, false
+	finished, probes := t.ab.rollHours(now)
+	out := make([]codexspeed.SpeedHour, 0, len(finished))
+	for i, h := range finished {
+		p := int64(0)
+		if i == len(finished)-1 {
+			p = probes
+		}
+		rec := t.hourRecord(h.start, h.treat, h.control, p, now)
+		if i == len(finished)-1 {
+			rec.QuotaBoost, rec.QuotaHold = t.cohort.quotaBurn(now, used)
+		}
+		out = append(out, rec)
 	}
-	rec := t.hourRecord(hour, treat, control, probes, now)
-	rec.QuotaBoost, rec.QuotaHold = t.cohort.quotaBurn(now, used)
-	return rec, true
+	return out
 }
 
 // Snapshot returns the live view including the unfinished hour.

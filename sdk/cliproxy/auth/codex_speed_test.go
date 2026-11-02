@@ -409,13 +409,49 @@ func TestCodexSpeedInactiveReasons(t *testing.T) {
 func TestCodexSpeedHourRollIncludesCohortsAndProbes(t *testing.T) {
 	tr, clock := newTestSpeedTracker(t, nil)
 	tr.ObserveProbe(CodexSpeedProbeResult{AuthID: "p", Success: true, Gap: time.Second})
-	if _, ok := tr.RollHour(nil); ok {
+	if got := tr.RollHours(nil); len(got) != 0 {
 		t.Fatal("unfinished hour must not roll")
 	}
 	clock.Advance(time.Hour)
-	rec, ok := tr.RollHour(nil)
-	if !ok || rec.Probes != 1 || rec.Generation == "" || rec.Boost.Day == "" {
-		t.Fatalf("rolled = %+v", rec)
+	got := tr.RollHours(nil)
+	if len(got) != 1 || got[0].Probes != 1 || got[0].Generation == "" || got[0].Boost.Day == "" {
+		t.Fatalf("rolled = %+v", got)
 	}
-	var _ codexspeed.SpeedHour = rec
+	var _ codexspeed.SpeedHour = got[0]
+}
+
+func TestCodexSpeedHourSurvivesRequestCrossingTheHour(t *testing.T) {
+	tr, clock := newTestSpeedTracker(t, nil)
+	gen, _, _ := tr.ab.generation()
+	tr.ab.observeRequest(CodexSpeedGroupControl, gen, false, 0, clock.now)
+	clock.Advance(time.Hour) // the next request arrives before the ticker rolls the hour
+	tr.ab.observeRequest(CodexSpeedGroupControl, gen, false, 0, clock.now)
+	got := tr.RollHours(nil)
+	if len(got) != 1 || got[0].Control.Requests != 1 {
+		t.Fatalf("previous hour must be kept for persistence: %+v", got)
+	}
+	if _, control, _ := tr.ab.currentHour(); control.Requests != 1 {
+		t.Fatalf("current hour = %+v", control)
+	}
+}
+
+func TestCodexSpeedWeightUsesLearnedAccountCohort(t *testing.T) {
+	tr, _ := newTestSpeedTracker(t, nil)
+	slowPool(tr, 25)
+	var boostKey, holdID string
+	for i := 0; boostKey == "" || holdID == ""; i++ {
+		v := fmt.Sprintf("v-%d", i)
+		if codexSpeedCohortOf(v) == CodexSpeedCohortBoost && boostKey == "" {
+			boostKey = v
+		} else if codexSpeedCohortOf(v) == CodexSpeedCohortHold && holdID == "" {
+			holdID = v
+		}
+	}
+	// The credential ID hashes to hold, but its upstream account is in boost.
+	feed(tr, holdID, 3, time.Second)
+	tr.Recompute([]CodexSpeedAuthInfo{{ID: holdID, AccountKey: boostKey}})
+	cfg := tr.config()
+	if w := tr.weightFor(&Auth{ID: holdID}, cfg); w != int64(cfg.Weights.Fast)*authWeight(&Auth{ID: holdID}) {
+		t.Fatalf("snapshot without account_id must still use the account cohort, weight %d", w)
+	}
 }

@@ -154,8 +154,11 @@ func (c *codexSpeedService) rollHours(now time.Time, usedByKey map[string]float6
 		fs := hour
 		get(fs.Hour).FastSession = &fs
 	}
-	if speedHour, ok := c.tracker.RollHour(usedByKey); ok {
-		get(speedHour.Hour).Speed = &speedHour
+	if speedHours := c.tracker.RollHours(usedByKey); len(speedHours) > 0 {
+		for _, hour := range speedHours {
+			sh := hour
+			get(sh.Hour).Speed = &sh
+		}
 		if err := c.rt.Store().PruneTransitions(now); err != nil {
 			log.WithError(err).Warn("codex speed: prune transitions failed")
 		}
