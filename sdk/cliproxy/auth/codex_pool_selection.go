@@ -413,6 +413,12 @@ func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts
 				p.putBindingLocked(bindingKey, current)
 			}
 			p.mu.Unlock()
+			// The binding lives on, and so does its speed replacement mark (mixed-provider
+			// callers reach this after a side-effect-free preview).
+			speed.sessions.touch(key, ttl, speed.now())
+			if key != originalKey {
+				speed.sessions.touch(originalKey, ttl, speed.now())
+			}
 			return winner, executor, nil
 		}
 		p, err = pools.lockSession(ctx, key)
@@ -506,7 +512,9 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 						fastTried[id] = struct{}{}
 					}
 					fastTried[bound.authID] = struct{}{}
-					if fast, fastExec, errFast := m.pickCodexPoolRanked(ctx, order, preferred, model, opts, fastTried, true); errFast == nil {
+					// The bound account still counts for the top priority layer: a replacement
+					// never moves the session to a lower priority than the account it leaves.
+					if fast, fastExec, errFast := m.pickCodexPoolRanked(ctx, order, preferred, model, opts, fastTried, true, authPriority(a)); errFast == nil {
 						b := bound
 						if preview {
 							// The mixed-provider caller binds once it settles on Codex.
@@ -569,7 +577,7 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 	}
 	if chosen == nil || pools.pooledPriorityBound(model) > authPriority(chosen) {
 		if ranked {
-			a, e, err := m.pickCodexPoolRanked(ctx, order, preferred, model, opts, tried, false)
+			a, e, err := m.pickCodexPoolRanked(ctx, order, preferred, model, opts, tried, false, math.MinInt)
 			if err == nil {
 				if chosen == nil || authPriority(a) > authPriority(chosen) {
 					chosen, executor = a, e
@@ -640,8 +648,10 @@ var errSpeedNoFast = &Error{Code: "auth_not_found", Message: "no fast account av
 // random fast account, otherwise the best-ranked overflow account. fastOnly never overflows and
 // leaves the choice to a plugin scheduler (reported as errSpeedNoFast). A plugin scheduler keeps
 // its contract: it sees candidates across priorities when it asks for them, otherwise the top
-// priority; the built-in ranking always picks within the global top priority.
-func (m *Manager) pickCodexPoolRanked(ctx context.Context, order []*codexAccountPool, preferred *codexAccountPool, model string, opts exec.Options, tried map[string]struct{}, fastOnly bool) (*Auth, ProviderExecutor, error) {
+// priority; the built-in ranking always picks within the global top priority. floor is the
+// priority of an account excluded from tried that still belongs to the layer computation: when
+// it outranks every candidate, a fast-only pick has nothing to offer.
+func (m *Manager) pickCodexPoolRanked(ctx context.Context, order []*codexAccountPool, preferred *codexAccountPool, model string, opts exec.Options, tried map[string]struct{}, fastOnly bool, floor int) (*Auth, ProviderExecutor, error) {
 	for {
 		var all []*Auth
 		owner := map[string]int{}
@@ -672,6 +682,10 @@ func (m *Manager) pickCodexPoolRanked(ctx context.Context, order []*codexAccount
 			}
 			return nil, nil, bestErr
 		}
+		top := highestPriorityAuths(all)
+		if fastOnly && len(top) > 0 && authPriority(top[0]) < floor {
+			return nil, nil, errSpeedNoFast
+		}
 		pluginCandidates := all
 		if !across {
 			pluginCandidates = highestPriorityAuths(all)
@@ -686,7 +700,7 @@ func (m *Manager) pickCodexPoolRanked(ctx context.Context, order []*codexAccount
 		case handled && selected != nil:
 			notePick(ctx, selected.ID)
 		default:
-			selected = CodexSpeed().pickRanked(preferCodexWebsocketAuths(ctx, "codex", highestPriorityAuths(all)), fastOnly)
+			selected = CodexSpeed().pickRanked(preferCodexWebsocketAuths(ctx, "codex", top), fastOnly)
 			if selected == nil {
 				if fastOnly {
 					return nil, nil, errSpeedNoFast

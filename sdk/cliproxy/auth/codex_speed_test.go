@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	exec "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
@@ -600,5 +601,75 @@ func TestCodexSpeedReplacementMarkFollowsActiveSession(t *testing.T) {
 	}
 	if !tr.sessions.rebound(key, clock.Now()) {
 		t.Fatal("the mark must still be alive")
+	}
+}
+
+// A replacement never leaves a still-usable account of a higher priority layer.
+func TestCodexSpeedReplacementKeepsHigherPriorityBinding(t *testing.T) {
+	m, tr, clock, ids := speedSelectionManager(t, 24)
+	m.SetSelector(NewSessionAffinitySelector(&RoundRobinSelector{}))
+	if _, err := m.Register(context.Background(), &Auth{ID: "prio-slow", Provider: "codex", Attributes: map[string]string{"priority": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient("prio-slow", "codex", []*registry.ModelInfo{{ID: "pool-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("prio-slow") })
+	m.ReconcileRegistryModelStates(context.Background(), "prio-slow")
+	feed(tr, "prio-slow", 3, 60*time.Second)
+	tr.Recompute(infosOf(append(ids, "prio-slow")...))
+	if tr.inFast("prio-slow", clock.Now()) {
+		t.Fatal("setup: the priority-1 account must be slow")
+	}
+	opts := sessionOpts("prio")
+	key, affinity := m.poolSessionKey("pool-model", opts)
+	bound, _ := m.GetByID("prio-slow")
+	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, bound, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := m.pickCodexPool(context.Background(), "pool-model", sessionOpts("prio"), nil)
+	if err != nil || a.ID != "prio-slow" || tr.sessions.rebound(key, clock.Now()) {
+		t.Fatalf("the only priority-1 account must keep the session: %v %v", a, err)
+	}
+}
+
+// A mixed-provider session reuses its binding through preview plus bindPoolSelection; that
+// reuse keeps the replacement mark alive even when no request ends in success.
+func TestCodexSpeedMixedReuseKeepsReplacementMark(t *testing.T) {
+	m, tr, clock, ids := speedSelectionManager(t, 24)
+	m.SetSelector(NewSessionAffinitySelector(&RoundRobinSelector{}))
+	opts := sessionOpts("mixed-long")
+	key, affinity := m.poolSessionKey("pool-model", opts)
+	slow, _ := m.GetByID(ids[23])
+	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, slow, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	preview := context.WithValue(context.Background(), poolPreviewKey{}, true)
+	settle := func() *Auth {
+		t.Helper()
+		pooled := sessionOpts("mixed-long")
+		a, _, err := m.pickCodexPool(preview, "pool-model", pooled, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var replace *codexPoolBinding
+		if b, ok := pooled.Metadata[poolSpeedReplaceMetadataKey].(codexPoolBinding); ok {
+			replace = &b
+		}
+		got, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", pooled, affinity, a, nil, replace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	first := settle()
+	if !tr.sessions.rebound(key, clock.Now()) || !tr.inFast(first.ID, clock.Now()) {
+		t.Fatal("setup: the first settle must replace the slow binding")
+	}
+	for elapsed := time.Duration(0); elapsed < codexSpeedMarkTTL(affinity)+30*time.Minute; elapsed += 10 * time.Minute {
+		clock.Advance(10 * time.Minute)
+		settle()
+	}
+	tr.demoted.Store(first.ID, clock.Now().Add(time.Hour))
+	if again := settle(); again.ID != first.ID {
+		t.Fatalf("an active mixed session must not be replaced twice: %s", again.ID)
 	}
 }
