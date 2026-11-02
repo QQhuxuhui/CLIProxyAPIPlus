@@ -671,7 +671,8 @@ test('speed priority checks, days and series render', () => {
   assert.equal(line.cls, 'speed-insufficient');
   assert.ok(line.text.startsWith('boost 组快号转慢比例'));
   assert.equal(s.rangeText({}), '当前代际还没有数据');
-  const row = plain(s.dayRow({ day: '2026-11-03', boost_fast_set: 40, boost_fast_to_slow: 4, hold_fast_set: 0, hold_fast_to_slow: 0, boost_slow_set: 10, boost_slow_to_fast: 1, hold_slow_set: 5, hold_slow_to_fast: 0, quota_boost_per_account_hour: 0.125, quota_hold_per_account_hour: 0 }));
+  const row = plain(s.dayRow({ day: '2026-11-03', boost_fast_set: 40, boost_fast_to_slow: 4, hold_fast_set: 0, hold_fast_to_slow: 0, boost_slow_set: 10, boost_slow_to_fast: 1, hold_slow_set: 5, hold_slow_to_fast: 0, quota_boost_per_account_hour: 0.125, quota_hold_per_account_hour: 0, wear_status: 'insufficient' }));
+  assert.equal(row[6], '数据不足（不参与）');
   assert.equal(row[1], '4/40（10.0%）');
   assert.equal(row[2], '0/0（—）');
   assert.equal(row[5], '0.13 / 0.00');

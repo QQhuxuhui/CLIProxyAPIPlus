@@ -162,6 +162,17 @@ type HourRecord struct {
 	Hour        time.Time        `json:"hour"`
 	FastSession *FastSessionHour `json:"fast_session,omitempty"`
 	Speed       *SpeedHour       `json:"speed,omitempty"`
+	// SpeedParts holds further generation segments of the same hour (a config change inside it).
+	SpeedParts []SpeedHour `json:"speed_parts,omitempty"`
+}
+
+// SpeedSegments returns every speed segment of the record, oldest first.
+func (r HourRecord) SpeedSegments() []SpeedHour {
+	var out []SpeedHour
+	if r.Speed != nil {
+		out = append(out, *r.Speed)
+	}
+	return append(out, r.SpeedParts...)
 }
 
 // FastSessionLabel compares the two groups' small-request TTFT p50: effective when fast is at

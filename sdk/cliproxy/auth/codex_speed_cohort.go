@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -29,30 +30,49 @@ func (s *codexSpeedCohortSets) summary(day string) codexspeed.SpeedCohortDay {
 	return codexspeed.SpeedCohortDay{Day: day, FastSet: len(s.FastSet), FastToSlow: len(s.FastConverted), SlowSet: len(s.SlowSet), SlowToFast: len(s.SlowConverted)}
 }
 
-// codexSpeedCohort keeps the per-day observation sets of each cohort, keyed by account key, and
-// the last used-percent reading used for hourly quota burn.
+// codexSpeedCohort keeps per-day observation sets of each cohort, keyed by account key, for the
+// latest two Beijing days, and the last used-percent reading used for hourly quota burn.
 type codexSpeedCohort struct {
 	mu       sync.Mutex
-	day      string
-	sets     map[string]*codexSpeedCohortSets
+	days     map[string]map[string]*codexSpeedCohortSets
 	lastUsed map[string]float64
 }
 
-func (c *codexSpeedCohort) rollDayLocked(now time.Time) {
-	day := codexSpeedDay(now)
-	if c.day == day && c.sets != nil {
-		return
+const codexSpeedCohortDays = 2
+
+// setsLocked returns the day's sets, creating them and dropping days beyond the latest two.
+func (c *codexSpeedCohort) setsLocked(day string) map[string]*codexSpeedCohortSets {
+	if c.days == nil {
+		c.days = map[string]map[string]*codexSpeedCohortSets{}
 	}
-	c.day = day
-	c.sets = map[string]*codexSpeedCohortSets{CodexSpeedCohortBoost: newCodexSpeedCohortSets(), CodexSpeedCohortHold: newCodexSpeedCohortSets()}
+	sets := c.days[day]
+	if sets == nil {
+		sets = map[string]*codexSpeedCohortSets{CodexSpeedCohortBoost: newCodexSpeedCohortSets(), CodexSpeedCohortHold: newCodexSpeedCohortSets()}
+		c.days[day] = sets
+		c.pruneDaysLocked()
+	}
+	return sets
 }
 
-// observe adds an account whose last known tier is tier to today's set.
+func (c *codexSpeedCohort) pruneDaysLocked() {
+	if len(c.days) <= codexSpeedCohortDays {
+		return
+	}
+	days := make([]string, 0, len(c.days))
+	for d := range c.days {
+		days = append(days, d)
+	}
+	sort.Strings(days)
+	for _, d := range days[:len(days)-codexSpeedCohortDays] {
+		delete(c.days, d)
+	}
+}
+
+// observe adds an account whose last known tier is tier to the set of now's day.
 func (c *codexSpeedCohort) observe(now time.Time, key, cohort, tier string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rollDayLocked(now)
-	s := c.sets[cohort]
+	s := c.setsLocked(codexSpeedDay(now))[cohort]
 	if s == nil {
 		return
 	}
@@ -64,12 +84,11 @@ func (c *codexSpeedCohort) observe(now time.Time, key, cohort, tier string) {
 	}
 }
 
-// transition marks an observed account that changed tier today.
+// transition marks an observed account that changed tier on now's day.
 func (c *codexSpeedCohort) transition(now time.Time, tr codexspeed.Transition) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rollDayLocked(now)
-	s := c.sets[tr.Cohort]
+	s := c.setsLocked(codexSpeedDay(now))[tr.Cohort]
 	if s == nil {
 		return
 	}
@@ -81,25 +100,32 @@ func (c *codexSpeedCohort) transition(now time.Time, tr codexspeed.Transition) {
 	}
 }
 
-func (c *codexSpeedCohort) summaries(now time.Time) (codexspeed.SpeedCohortDay, codexspeed.SpeedCohortDay) {
+// summaries returns the day's cohort totals without creating or dropping any day.
+func (c *codexSpeedCohort) summaries(day string) (codexspeed.SpeedCohortDay, codexspeed.SpeedCohortDay) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rollDayLocked(now)
-	return c.sets[CodexSpeedCohortBoost].summary(c.day), c.sets[CodexSpeedCohortHold].summary(c.day)
+	sets := c.days[day]
+	if sets == nil {
+		return codexspeed.SpeedCohortDay{Day: day}, codexspeed.SpeedCohortDay{Day: day}
+	}
+	return sets[CodexSpeedCohortBoost].summary(day), sets[CodexSpeedCohortHold].summary(day)
 }
 
-// quotaBurn sums the used-percent increase since the previous call for today's fast set of each
+// quotaBurn sums the used-percent increase since the previous call for the day's fast set of each
 // cohort. Decreases (window resets) are skipped; accounts keep counting after turning slow.
-func (c *codexSpeedCohort) quotaBurn(now time.Time, used map[string]float64) (codexspeed.SpeedQuotaBurn, codexspeed.SpeedQuotaBurn) {
+func (c *codexSpeedCohort) quotaBurn(day string, used map[string]float64) (codexspeed.SpeedQuotaBurn, codexspeed.SpeedQuotaBurn) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rollDayLocked(now)
 	if c.lastUsed == nil {
 		c.lastUsed = map[string]float64{}
 	}
+	sets := c.days[day]
 	burn := func(cohort string) codexspeed.SpeedQuotaBurn {
 		var out codexspeed.SpeedQuotaBurn
-		for key := range c.sets[cohort].FastSet {
+		if sets == nil {
+			return out
+		}
+		for key := range sets[cohort].FastSet {
 			cur, ok := used[key]
 			if !ok {
 				continue
@@ -115,10 +141,32 @@ func (c *codexSpeedCohort) quotaBurn(now time.Time, used map[string]float64) (co
 	return burn(CodexSpeedCohortBoost), burn(CodexSpeedCohortHold)
 }
 
+func cloneCohortSets(src *codexSpeedCohortSets) *codexSpeedCohortSets {
+	out := newCodexSpeedCohortSets()
+	if src == nil {
+		return out
+	}
+	for k := range src.FastSet {
+		out.FastSet[k] = true
+	}
+	for k := range src.FastConverted {
+		out.FastConverted[k] = true
+	}
+	for k := range src.SlowSet {
+		out.SlowSet[k] = true
+	}
+	for k := range src.SlowConverted {
+		out.SlowConverted[k] = true
+	}
+	return out
+}
+
 // codexSpeedPersisted is the accounts.dat content.
 type codexSpeedPersisted struct {
-	Day       string                           `json:"day"`
-	Sets      map[string]*codexSpeedCohortSets `json:"sets"`
+	Days map[string]map[string]*codexSpeedCohortSets `json:"days,omitempty"`
+	// Day and Sets are the single-day format of earlier builds, read for compatibility.
+	Day       string                           `json:"day,omitempty"`
+	Sets      map[string]*codexSpeedCohortSets `json:"sets,omitempty"`
 	LastKnown map[string]codexSpeedKnown       `json:"last_known"`
 	LastUsed  map[string]float64               `json:"last_used"`
 	GenHash   string                           `json:"generation_hash"`
@@ -148,8 +196,7 @@ func (t *CodexSpeedTracker) MarshalState() ([]byte, error) {
 	}
 	_, state.GenHash, state.GenStart = t.ab.generation()
 	t.cohort.mu.Lock()
-	t.cohort.rollDayLocked(t.now())
-	state.Day, state.Sets, state.LastUsed = t.cohort.day, t.cohort.sets, t.cohort.lastUsed
+	state.Days, state.LastUsed = t.cohort.days, t.cohort.lastUsed
 	data, err := json.Marshal(state)
 	t.cohort.mu.Unlock()
 	if err != nil {
@@ -158,8 +205,8 @@ func (t *CodexSpeedTracker) MarshalState() ([]byte, error) {
 	return data, nil
 }
 
-// RestoreState loads accounts.dat written by MarshalState. Today's sets are kept only when the
-// saved day is today; the generation start survives only when the config hash is unchanged.
+// RestoreState loads accounts.dat written by MarshalState. Sets of today and yesterday are kept;
+// the generation start survives only when the config hash is unchanged.
 func (t *CodexSpeedTracker) RestoreState(data []byte) error {
 	if t == nil || len(data) == 0 {
 		return nil
@@ -179,27 +226,22 @@ func (t *CodexSpeedTracker) RestoreState(data []byte) error {
 		}
 		sh.mu.Unlock()
 	}
+	days := state.Days
+	if days == nil && state.Day != "" {
+		days = map[string]map[string]*codexSpeedCohortSets{state.Day: state.Sets}
+	}
+	today := codexSpeedDay(now)
+	yesterday := codexSpeedDay(now.Add(-24 * time.Hour))
 	t.cohort.mu.Lock()
-	t.cohort.rollDayLocked(now)
-	if state.Day == t.cohort.day {
-		for cohort, sets := range state.Sets {
-			if sets == nil || t.cohort.sets[cohort] == nil {
-				continue
+	for day, sets := range days {
+		if day != today && day != yesterday {
+			continue
+		}
+		restored := t.cohort.setsLocked(day)
+		for cohort, src := range sets {
+			if restored[cohort] != nil {
+				restored[cohort] = cloneCohortSets(src)
 			}
-			restored := newCodexSpeedCohortSets()
-			for k := range sets.FastSet {
-				restored.FastSet[k] = true
-			}
-			for k := range sets.FastConverted {
-				restored.FastConverted[k] = true
-			}
-			for k := range sets.SlowSet {
-				restored.SlowSet[k] = true
-			}
-			for k := range sets.SlowConverted {
-				restored.SlowConverted[k] = true
-			}
-			t.cohort.sets[cohort] = restored
 		}
 	}
 	if state.LastUsed != nil {
@@ -228,15 +270,16 @@ type CodexSpeedSnapshot struct {
 
 func (t *CodexSpeedTracker) generationLabel() (string, time.Time) {
 	_, hash, start := t.ab.generation()
-	return hash + "@" + start.UTC().Format("20060102T150405Z"), start
+	return codexSpeedGenerationLabel(hash, start), start
 }
 
-func (t *CodexSpeedTracker) hourRecord(hour time.Time, treat, control codexspeed.SpeedGroupHour, probes int64, now time.Time) codexspeed.SpeedHour {
+// hourRecord builds a record for data collected under generation gen; cohort totals come from
+// the hour's own Beijing day.
+func (t *CodexSpeedTracker) hourRecord(hour time.Time, gen string, genStart time.Time, treat, control codexspeed.SpeedGroupHour, probes int64) codexspeed.SpeedHour {
 	cfg := t.config()
 	view := t.view.Load()
 	treat.Finalize()
 	control.Finalize()
-	gen, genStart := t.generationLabel()
 	capPct, eff := t.ab.shares()
 	rec := codexspeed.SpeedHour{
 		Hour: hour, Generation: gen, GenerationStart: genStart, Enabled: cfg.Enable, Inactive: t.InactiveReason(),
@@ -247,7 +290,7 @@ func (t *CodexSpeedTracker) hourRecord(hour time.Time, treat, control codexspeed
 		b := view.baselineMs
 		rec.BaselineMs = &b
 	}
-	rec.Boost, rec.Hold = t.cohort.summaries(now)
+	rec.Boost, rec.Hold = t.cohort.summaries(codexSpeedDay(hour))
 	rec.PreCreatedFastMs, rec.PreCreatedSlowMs = t.preCreatedByTier(hour)
 	return rec
 }
@@ -266,9 +309,9 @@ func (t *CodexSpeedTracker) RollHours(used map[string]float64) []codexspeed.Spee
 		if i == len(finished)-1 {
 			p = probes
 		}
-		rec := t.hourRecord(h.start, h.treat, h.control, p, now)
+		rec := t.hourRecord(h.start, h.generation, h.genStart, h.treat, h.control, p)
 		if i == len(finished)-1 {
-			rec.QuotaBoost, rec.QuotaHold = t.cohort.quotaBurn(now, used)
+			rec.QuotaBoost, rec.QuotaHold = t.cohort.quotaBurn(codexSpeedDay(h.start), used)
 		}
 		out = append(out, rec)
 	}
@@ -280,7 +323,8 @@ func (t *CodexSpeedTracker) Snapshot() CodexSpeedSnapshot {
 	cfg := t.config()
 	now := t.now()
 	treat, control, probes := t.ab.currentHour()
-	cur := t.hourRecord(now.Truncate(time.Hour), treat, control, probes, now)
+	gen, genStart := t.ab.openGeneration()
+	cur := t.hourRecord(now.Truncate(time.Hour), gen, genStart, treat, control, probes)
 	return CodexSpeedSnapshot{
 		Enabled: cfg.Enable, Active: t.Active(), Inactive: t.InactiveReason(), Classify: cur.Classify,
 		BaselineMs: cur.BaselineMs, CapPercent: cur.CapPercent, EffectivePercent: cur.EffectivePercent,

@@ -344,7 +344,7 @@ func (m *Manager) poolSessionKey(model string, opts exec.Options) (string, *Sess
 	}
 	return CanonicalSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata), selector
 }
-func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts exec.Options, affinity *SessionAffinitySelector, selected *Auth, tried map[string]struct{}, replaceIf *codexPoolBinding) (*Auth, ProviderExecutor, error) {
+func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts exec.Options, affinity *SessionAffinitySelector, selected *Auth, tried map[string]struct{}, replaceIf *codexPoolBinding, inheritOrigin *string) (*Auth, ProviderExecutor, error) {
 	pools := m.codexPools.Load()
 	ttl := time.Hour
 	if affinity != nil && affinity.cache != nil {
@@ -355,6 +355,10 @@ func (m *Manager) bindPoolSelection(ctx context.Context, key, model string, opts
 	origin := ""
 	if group, _, _, inited := speedStateGet(speedState); inited && group == CodexSpeedGroupTreatment {
 		origin = CodexSpeedGroupTreatment
+	}
+	if inheritOrigin != nil {
+		// A child binding inherits the parent's origin so the exclusion follows the account.
+		origin = *inheritOrigin
 	}
 	originalKey := key
 	if fingerprints, minPrefix := lcpFingerprintsFromMetadata(opts.Metadata); affinity != nil && affinity.matcher != nil && len(fingerprints) > 0 && minPrefix > 0 {
@@ -513,7 +517,7 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 					if preview, _ := ctx.Value(poolPreviewKey{}).(bool); preview {
 						return a, e, nil
 					}
-					return m.bindPoolSelection(ctx, key, model, opts, affinity, a, tried, nil)
+					return m.bindPoolSelection(ctx, key, model, opts, affinity, a, tried, nil, &binding.origin)
 				}
 			}
 		}
@@ -597,7 +601,7 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		return nil, nil, bestErr
 	}
 	if affinity != nil && !preview {
-		return m.bindPoolSelection(ctx, key, model, opts, affinity, chosen, tried, replaceIf)
+		return m.bindPoolSelection(ctx, key, model, opts, affinity, chosen, tried, replaceIf, nil)
 	}
 	return chosen, executor, nil
 }

@@ -37,6 +37,11 @@ func ObserveResponsesTimingEvent(reporter *UsageReporter, payload []byte) {
 	}
 	eventType := gjson.GetBytes(payload, "type").String()
 	_, isOutput := codexSpeedOutputEvents[eventType]
+	if isOutput {
+		// An empty delta carries no output; only a non-empty string marks the first output.
+		delta := gjson.GetBytes(payload, "delta")
+		isOutput = delta.Type == gjson.String && delta.Str != ""
+	}
 	if eventType != "response.created" && !isOutput {
 		return
 	}

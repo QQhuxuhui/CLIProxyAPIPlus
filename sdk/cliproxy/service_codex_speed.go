@@ -39,6 +39,9 @@ type codexSpeedService struct {
 	infos   []coreauth.CodexSpeedAuthInfo
 
 	inflight atomic.Int64
+	// acquire and launch are the probe admission and start hooks; tests replace them.
+	acquire func(id, model string) *coreauth.Auth
+	launch  func(ctx context.Context, auth *coreauth.Auth, model string)
 }
 
 // startCodexSpeedRuntime loads the speed-strategy history and state under the auth dir, then
@@ -58,6 +61,13 @@ func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 	rt := codexspeed.NewRuntime(store, time.Now)
 	codexspeed.SetDefault(rt)
 	svc := &codexSpeedService{s: s, rt: rt, tracker: coreauth.CodexSpeed()}
+	svc.acquire = func(id, model string) *coreauth.Auth {
+		auth, _ := s.coreManager.AcquireCodexProbeAuthByID(id, model)
+		return auth
+	}
+	svc.launch = func(ctx context.Context, auth *coreauth.Auth, model string) {
+		go svc.probe(ctx, auth, model)
+	}
 	svc.applyConfig()
 	if errRestore := svc.tracker.RestoreState(store.LoadAccounts()); errRestore != nil {
 		log.WithError(errRestore).Warn("codex speed: ignoring unreadable accounts state")
@@ -157,7 +167,12 @@ func (c *codexSpeedService) rollHours(now time.Time, usedByKey map[string]float6
 	if speedHours := c.tracker.RollHours(usedByKey); len(speedHours) > 0 {
 		for _, hour := range speedHours {
 			sh := hour
-			get(sh.Hour).Speed = &sh
+			rec := get(sh.Hour)
+			if rec.Speed == nil {
+				rec.Speed = &sh
+			} else {
+				rec.SpeedParts = append(rec.SpeedParts, sh)
+			}
 		}
 		if err := c.rt.Store().PruneTransitions(now); err != nil {
 			log.WithError(err).Warn("codex speed: prune transitions failed")
@@ -202,28 +217,37 @@ func (c *codexSpeedService) runProber(ctx context.Context) {
 		c.infosMu.Lock()
 		infos := c.infos
 		c.infosMu.Unlock()
-		budget := min(speedCfg.Probe.MaxPerSecond, codexSpeedMaxProbesInFlight-int(c.inflight.Load()))
-		if budget <= 0 {
+		c.probeRound(ctx, infos, speedCfg.Probe.MaxPerSecond, speedCfg.Probe.Model)
+	}
+}
+
+// probeRound starts up to maxPerSecond probes, walking the whole candidate order until the
+// budget, the in-flight cap or the candidates run out. A failed admission restores the
+// reservation and spends no budget. It returns the number of probes started.
+func (c *codexSpeedService) probeRound(ctx context.Context, infos []coreauth.CodexSpeedAuthInfo, maxPerSecond int, model string) int {
+	budget := min(maxPerSecond, codexSpeedMaxProbesInFlight-int(c.inflight.Load()))
+	started := 0
+	if budget <= 0 {
+		return 0
+	}
+	for _, id := range c.tracker.ProbeCandidates(infos, len(infos)) {
+		if started >= budget {
+			break
+		}
+		previous := c.tracker.LastProbe(id)
+		if !c.tracker.ReserveProbe(id) {
 			continue
 		}
-		for _, id := range c.tracker.ProbeCandidates(infos, budget*4) {
-			if budget <= 0 {
-				break
-			}
-			previous := c.tracker.LastProbe(id)
-			if !c.tracker.ReserveProbe(id) {
-				continue
-			}
-			auth, _ := c.s.coreManager.AcquireCodexProbeAuthByID(id, speedCfg.Probe.Model)
-			if auth == nil {
-				c.tracker.CancelProbe(id, previous)
-				continue
-			}
-			budget--
-			c.inflight.Add(1)
-			go c.probe(ctx, auth, speedCfg.Probe.Model)
+		auth := c.acquire(id, model)
+		if auth == nil {
+			c.tracker.CancelProbe(id, previous)
+			continue
 		}
+		started++
+		c.inflight.Add(1)
+		c.launch(ctx, auth, model)
 	}
+	return started
 }
 
 func (c *codexSpeedService) probe(ctx context.Context, auth *coreauth.Auth, model string) {

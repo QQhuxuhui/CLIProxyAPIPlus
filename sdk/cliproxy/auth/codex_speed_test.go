@@ -264,7 +264,7 @@ func TestCodexSpeedCohortTransitionsAndRestore(t *testing.T) {
 	if len(transitions) != 1 || transitions[0].From != CodexSpeedTierFast || transitions[0].To != CodexSpeedTierSlow || transitions[0].AccountKey != "key-1" {
 		t.Fatalf("transitions = %+v", transitions)
 	}
-	boost, hold := tr.cohort.summaries(clock.now)
+	boost, hold := tr.cohort.summaries(codexSpeedDay(clock.now))
 	total := boost.FastToSlow + hold.FastToSlow
 	if total != 1 || boost.FastSet+hold.FastSet != 1 {
 		t.Fatalf("cohorts = %+v %+v", boost, hold)
@@ -277,7 +277,7 @@ func TestCodexSpeedCohortTransitionsAndRestore(t *testing.T) {
 	if err = restored.RestoreState(data); err != nil {
 		t.Fatal(err)
 	}
-	b2, h2 := restored.cohort.summaries(clock.now)
+	b2, h2 := restored.cohort.summaries(codexSpeedDay(clock.now))
 	if b2.FastToSlow+h2.FastToSlow != 1 {
 		t.Fatalf("restored cohorts = %+v %+v", b2, h2)
 	}
@@ -292,8 +292,8 @@ func TestCodexSpeedQuotaBurnSkipsResets(t *testing.T) {
 	now := time.Date(2026, 11, 3, 6, 0, 0, 0, time.UTC)
 	c.observe(now, "k1", CodexSpeedCohortBoost, CodexSpeedTierFast)
 	c.observe(now, "k2", CodexSpeedCohortBoost, CodexSpeedTierFast)
-	c.quotaBurn(now, map[string]float64{"k1": 10, "k2": 50})
-	boost, _ := c.quotaBurn(now, map[string]float64{"k1": 13, "k2": 2})
+	c.quotaBurn(codexSpeedDay(now), map[string]float64{"k1": 10, "k2": 50})
+	boost, _ := c.quotaBurn(codexSpeedDay(now), map[string]float64{"k1": 13, "k2": 2})
 	if boost.Accounts != 1 || boost.DeltaSum != 3 {
 		t.Fatalf("burn = %+v", boost)
 	}

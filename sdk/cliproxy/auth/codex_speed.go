@@ -445,6 +445,11 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) []codexspeed.T
 			default:
 				view.counts.Unknown++
 			}
+			if a.lastKnown != "" {
+				// Record the carried-over tier in today's set before any change, so a transition
+				// on the first recompute after midnight still counts in today's denominator.
+				t.cohort.observe(now, a.accountKey, cohort, a.lastKnown)
+			}
 			if tier != CodexSpeedTierUnknown {
 				if a.lastKnown != "" && a.lastKnown != tier {
 					transitions = append(transitions, codexspeed.Transition{Time: now, AccountKey: a.accountKey, AuthID: id, From: a.lastKnown, To: tier, Cohort: cohort})

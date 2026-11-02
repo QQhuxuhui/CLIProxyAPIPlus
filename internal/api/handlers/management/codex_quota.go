@@ -52,11 +52,12 @@ func (h *Handler) StartCodexQuota(ctx context.Context) {
 }
 
 // codexSpeedQuotaReadings maps quota rows to the longest window's used percent per auth file,
-// skipping pending, duplicate and invalid rows.
+// skipping pending and invalid rows. Duplicate rows (several files of one upstream account)
+// are kept; consumers deduplicate by AccountKey.
 func codexSpeedQuotaReadings(rows map[string]codexquota.AccountRow) map[string]codexspeed.QuotaReading {
 	out := make(map[string]codexspeed.QuotaReading, len(rows))
 	for name, row := range rows {
-		if row.Invalid || row.Duplicate || len(row.Windows) == 0 {
+		if row.Invalid || len(row.Windows) == 0 {
 			continue
 		}
 		longest := row.Windows[0]

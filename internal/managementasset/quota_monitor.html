@@ -868,7 +868,7 @@
           <div class="pool-chart-card"><h3>过载率与最终 529 率（近 7 天）</h3><div id="speed-sp-fail-chart" class="pool-chart" role="img" aria-label="快号优先实验组与对照组每小时过载率与 529 率折线图"></div></div>
         </div>
         <div class="pool-chart-card speed-events-card"><h3>每日快号转慢 / 慢号恢复 / 额度消耗</h3>
-          <div class="overflow-x-auto"><table class="data-table"><thead><tr><th>日期</th><th>boost 快号转慢</th><th>hold 快号转慢</th><th>boost 慢号恢复</th><th>hold 慢号恢复</th><th>额度消耗 boost / hold（每号每小时百分点）</th></tr></thead><tbody id="speed-sp-days"></tbody></table></div>
+          <div class="overflow-x-auto"><table class="data-table"><thead><tr><th>日期</th><th>boost 快号转慢</th><th>hold 快号转慢</th><th>boost 慢号恢复</th><th>hold 慢号恢复</th><th>额度消耗 boost / hold（每号每小时百分点）</th><th>判定</th></tr></thead><tbody id="speed-sp-days"></tbody></table></div>
         </div>
       </section>
       <div class="pool-heading pool-monitor-heading"><div><h3>请求监控</h3><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
@@ -2491,7 +2491,7 @@
     },
     dayRow: function (d) {
       var self = this, ratio = function (n, total) { return n + '/' + total + '（' + self.pct(n, total) + '）'; };
-      return [d.day, ratio(d.boost_fast_to_slow, d.boost_fast_set), ratio(d.hold_fast_to_slow, d.hold_fast_set), ratio(d.boost_slow_to_fast, d.boost_slow_set), ratio(d.hold_slow_to_fast, d.hold_slow_set), d.quota_boost_per_account_hour.toFixed(2) + ' / ' + d.quota_hold_per_account_hour.toFixed(2)];
+      return [d.day, ratio(d.boost_fast_to_slow, d.boost_fast_set), ratio(d.hold_fast_to_slow, d.hold_fast_set), ratio(d.boost_slow_to_fast, d.boost_slow_set), ratio(d.hold_slow_to_fast, d.hold_slow_set), d.quota_boost_per_account_hour.toFixed(2) + ' / ' + d.quota_hold_per_account_hour.toFixed(2), (this.checkStatus[d.wear_status] || '—') + (d.wear_status === 'insufficient' ? '（不参与）' : '')];
     }
   };
   /* SPEED_VIEW_LOGIC_END */

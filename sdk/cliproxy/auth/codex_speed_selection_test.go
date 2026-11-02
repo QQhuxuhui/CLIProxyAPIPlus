@@ -67,7 +67,7 @@ func TestCodexSpeedTreatmentReplacesSlowBindingOnce(t *testing.T) {
 	opts := sessionOpts("speed-session")
 	key, affinity := m.poolSessionKey("pool-model", opts)
 	slow, _ := m.GetByID("speed-slow")
-	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, slow, nil, nil); err != nil {
+	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, slow, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, _ := speedRequest(tr, CodexSpeedGroupTreatment)
@@ -103,7 +103,7 @@ func TestCodexSpeedReplacementFallsBackWithoutAlternative(t *testing.T) {
 	opts := sessionOpts("lonely")
 	key, affinity := m.poolSessionKey("pool-model", opts)
 	slow, _ := m.GetByID("only-slow")
-	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, slow, nil, nil); err != nil {
+	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, slow, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, _ := speedRequest(tr, CodexSpeedGroupTreatment)

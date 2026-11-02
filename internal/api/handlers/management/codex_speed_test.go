@@ -2,12 +2,16 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexquota"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexspeed"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -90,5 +94,41 @@ func TestCodexSpeedPriorityConfigRequiresRunningPools(t *testing.T) {
 		if rec := call(body); rec.Code != 400 {
 			t.Fatalf("invalid %s: %d", body, rec.Code)
 		}
+	}
+}
+
+func TestCodexSpeedFastWearJudgedPerDay(t *testing.T) {
+	day := func(d string, bSet, bConv, hSet, hConv int) codexspeed.SpeedHour {
+		return codexspeed.SpeedHour{Generation: "g", Hour: time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC),
+			Boost: codexspeed.SpeedCohortDay{Day: d, FastSet: bSet, FastToSlow: bConv},
+			Hold:  codexspeed.SpeedCohortDay{Day: d, FastSet: hSet, FastToSlow: hConv}}
+	}
+	var small []codexspeed.SpeedHour
+	for i := 1; i <= 7; i++ {
+		small = append(small, day(fmt.Sprintf("2026-11-0%d", i), 3, 0, 3, 0))
+	}
+	if got := codexSpeedAcceptanceFor("g", small, codexspeed.SpeedHour{}).Checks[2]; got.Status != "insufficient" {
+		t.Fatalf("7 days of 3 accounts must stay insufficient: %+v", got)
+	}
+	mixed := []codexspeed.SpeedHour{day("2026-11-01", 30, 3, 30, 3), day("2026-11-02", 30, 9, 30, 3), day("2026-11-03", 5, 5, 5, 0)}
+	acc := codexSpeedAcceptanceFor("g", mixed, codexspeed.SpeedHour{})
+	if acc.Checks[2].Status != "fail" || acc.Days[1].WearStatus != "fail" || acc.Days[2].WearStatus != "insufficient" {
+		t.Fatalf("one failing day must fail: %+v %+v", acc.Checks[2], acc.Days)
+	}
+	if got := codexSpeedAcceptanceFor("g", mixed[:1], codexspeed.SpeedHour{}).Checks[2]; got.Status != "pass" {
+		t.Fatalf("all judged days passing: %+v", got)
+	}
+}
+
+func TestCodexSpeedQuotaReadingsKeepDuplicates(t *testing.T) {
+	rows := map[string]codexquota.AccountRow{
+		"a.json": {AccountKey: "acct", Duplicate: true, Windows: []codexquota.RowWindow{{Minutes: 43200, UsedPercent: 12}}},
+		"b.json": {AccountKey: "acct", Duplicate: true, Windows: []codexquota.RowWindow{{Minutes: 43200, UsedPercent: 12}}},
+		"c.json": {AccountKey: "other", Invalid: true, Windows: []codexquota.RowWindow{{Minutes: 43200, UsedPercent: 5}}},
+		"d.json": {AccountKey: "pend", Windows: []codexquota.RowWindow{{Minutes: 43200, Pending: true}}},
+	}
+	got := codexSpeedQuotaReadings(rows)
+	if len(got) != 2 || got["a.json"].AccountKey != "acct" || got["b.json"].UsedPercent != 12 {
+		t.Fatalf("readings = %+v", got)
 	}
 }

@@ -80,12 +80,31 @@ type codexSpeedAB struct {
 	treat     codexspeed.SpeedGroupHour
 	control   codexspeed.SpeedGroupHour
 	pending   []codexSpeedFinishedHour
+	// hourGen and hourGenStart are the generation the open hour's data belongs to.
+	hourGen      string
+	hourGenStart time.Time
 }
 
 type codexSpeedFinishedHour struct {
-	start   time.Time
-	treat   codexspeed.SpeedGroupHour
-	control codexspeed.SpeedGroupHour
+	start      time.Time
+	generation string
+	genStart   time.Time
+	treat      codexspeed.SpeedGroupHour
+	control    codexspeed.SpeedGroupHour
+}
+
+func codexSpeedGenerationLabel(hash string, start time.Time) string {
+	return hash + "@" + start.UTC().Format("20060102T150405Z")
+}
+
+func (ab *codexSpeedAB) sealLocked() {
+	ab.pending = append(ab.pending, codexSpeedFinishedHour{start: ab.hourStart, generation: ab.hourGen, genStart: ab.hourGenStart, treat: ab.treat, control: ab.control})
+	ab.treat = codexspeed.SpeedGroupHour{}
+	ab.control = codexspeed.SpeedGroupHour{}
+}
+
+func (ab *codexSpeedAB) hourHasDataLocked() bool {
+	return ab.treat.Attempts+ab.treat.Requests+ab.control.Attempts+ab.control.Requests > 0
 }
 
 // closeHourLocked moves the open hour to pending when now is in a later hour.
@@ -94,8 +113,10 @@ func (ab *codexSpeedAB) closeHourLocked(now time.Time) {
 	if !hour.After(ab.hourStart) {
 		return
 	}
-	if ab.treat.Attempts+ab.treat.Requests+ab.control.Attempts+ab.control.Requests > 0 || len(ab.pending) == 0 {
-		ab.pending = append(ab.pending, codexSpeedFinishedHour{start: ab.hourStart, treat: ab.treat, control: ab.control})
+	// An hour without A/B data is still sealed when nothing else is pending, so probe-only
+	// hours keep their record (cohorts, probes, quota burn).
+	if ab.hourHasDataLocked() || len(ab.pending) == 0 || ab.pending[len(ab.pending)-1].start.Before(ab.hourStart) {
+		ab.sealLocked()
 	}
 	ab.hourStart = hour
 	ab.treat = codexspeed.SpeedGroupHour{}
@@ -141,6 +162,14 @@ func (ab *codexSpeedAB) applyConfig(cfg internalconfig.CodexSpeedPriorityConfig,
 }
 
 func (ab *codexSpeedAB) startGenerationLocked(hash string, start, now time.Time) {
+	// Seal finished hours under their own generation, then the open hour's data so far; the
+	// new generation starts counting from now within the same hour.
+	if !ab.hourStart.IsZero() {
+		ab.closeHourLocked(now)
+		if ab.hourHasDataLocked() {
+			ab.sealLocked()
+		}
+	}
 	ab.genID++
 	ab.genHash = hash
 	ab.genStart = start
@@ -150,6 +179,8 @@ func (ab *codexSpeedAB) startGenerationLocked(hash string, start, now time.Time)
 	ab.hourStart = now.Truncate(time.Hour)
 	ab.treat = codexspeed.SpeedGroupHour{}
 	ab.control = codexspeed.SpeedGroupHour{}
+	ab.hourGen = codexSpeedGenerationLabel(hash, start)
+	ab.hourGenStart = start
 }
 
 // restoreGeneration keeps a persisted generation start when the config hash is unchanged.
@@ -158,7 +189,16 @@ func (ab *codexSpeedAB) restoreGeneration(hash string, start time.Time) {
 	defer ab.mu.Unlock()
 	if hash != "" && hash == ab.genHash && !start.IsZero() {
 		ab.genStart = start
+		ab.hourGen = codexSpeedGenerationLabel(hash, start)
+		ab.hourGenStart = start
 	}
+}
+
+// openGeneration is the generation the open hour's data belongs to.
+func (ab *codexSpeedAB) openGeneration() (string, time.Time) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+	return ab.hourGen, ab.hourGenStart
 }
 
 func (ab *codexSpeedAB) generation() (uint64, string, time.Time) {

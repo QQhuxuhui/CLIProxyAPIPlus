@@ -83,6 +83,7 @@ func (m *Manager) CodexSpeedAuthInfos(model string) []CodexSpeedAuthInfo {
 		return nil
 	}
 	now := time.Now()
+	reg := registry.GetGlobalRegistry()
 	var out []CodexSpeedAuthInfo
 	for _, p := range pools.table.Load().pools {
 		p.lock()
@@ -92,7 +93,8 @@ func (m *Manager) CodexSpeedAuthInfos(model string) []CodexSpeedAuthInfo {
 			}
 			schedulable := !a.Disabled && a.Status != StatusDisabled && codexSpeedTokenUsable(a, now)
 			if schedulable {
-				if blocked, _, _ := isAuthBlockedForModel(a, model, now); blocked {
+				// Match AcquireCodexProbeAuthByID so rejected accounts never head the probe queue.
+				if blocked, _, _ := isAuthBlockedForModel(a, model, now); blocked || !m.authSupportsRouteModel(reg, a, model) {
 					schedulable = false
 				}
 			}

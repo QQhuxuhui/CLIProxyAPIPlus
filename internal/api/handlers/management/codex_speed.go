@@ -65,17 +65,38 @@ type codexSpeedCheck struct {
 }
 
 type codexSpeedDay struct {
-	Day             string  `json:"day"`
-	BoostFastSet    int     `json:"boost_fast_set"`
-	BoostFastToSlow int     `json:"boost_fast_to_slow"`
-	HoldFastSet     int     `json:"hold_fast_set"`
-	HoldFastToSlow  int     `json:"hold_fast_to_slow"`
-	BoostSlowSet    int     `json:"boost_slow_set"`
-	BoostSlowToFast int     `json:"boost_slow_to_fast"`
-	HoldSlowSet     int     `json:"hold_slow_set"`
-	HoldSlowToFast  int     `json:"hold_slow_to_fast"`
-	QuotaBoost      float64 `json:"quota_boost_per_account_hour"`
-	QuotaHold       float64 `json:"quota_hold_per_account_hour"`
+	Day             string   `json:"day"`
+	BoostFastSet    int      `json:"boost_fast_set"`
+	BoostFastToSlow int      `json:"boost_fast_to_slow"`
+	HoldFastSet     int      `json:"hold_fast_set"`
+	HoldFastToSlow  int      `json:"hold_fast_to_slow"`
+	BoostSlowSet    int      `json:"boost_slow_set"`
+	BoostSlowToFast int      `json:"boost_slow_to_fast"`
+	HoldSlowSet     int      `json:"hold_slow_set"`
+	HoldSlowToFast  int      `json:"hold_slow_to_fast"`
+	QuotaBoost      float64  `json:"quota_boost_per_account_hour"`
+	QuotaHold       float64  `json:"quota_hold_per_account_hour"`
+	BoostRate       *float64 `json:"boost_rate"`
+	HoldRate        *float64 `json:"hold_rate"`
+	WearStatus      string   `json:"wear_status"`
+}
+
+// evaluateWear judges one day: both cohorts need at least codexSpeedAcceptMinCohort fast accounts.
+func (d *codexSpeedDay) evaluateWear() {
+	d.WearStatus = "insufficient"
+	if d.BoostFastSet > 0 {
+		v := float64(d.BoostFastToSlow) / float64(d.BoostFastSet)
+		d.BoostRate = &v
+	}
+	if d.HoldFastSet > 0 {
+		v := float64(d.HoldFastToSlow) / float64(d.HoldFastSet)
+		d.HoldRate = &v
+	}
+	if d.BoostFastSet < codexSpeedAcceptMinCohort || d.HoldFastSet < codexSpeedAcceptMinCohort {
+		return
+	}
+	b, h := *d.BoostRate, *d.HoldRate
+	d.WearStatus = statusOf((b == 0 && h == 0) || (h > 0 && b <= h*codexSpeedAcceptWearRatio))
 }
 
 type codexSpeedAcceptance struct {
@@ -255,9 +276,7 @@ func (h *Handler) codexSpeedPriorityView(cfg *config.Config, records []codexspee
 	}
 	var speedHours []codexspeed.SpeedHour
 	for _, rec := range records {
-		if rec.Speed != nil {
-			speedHours = append(speedHours, *rec.Speed)
-		}
+		speedHours = append(speedHours, rec.SpeedSegments()...)
 	}
 	current := tracker.Snapshot().Current
 	view.Acceptance = codexSpeedAcceptanceFor(live.Generation, speedHours, current)
@@ -335,15 +354,23 @@ func codexSpeedAcceptanceFor(generation string, hours []codexspeed.SpeedHour, cu
 		failures.Status = statusOf(tOv <= cOv && t529 <= c529)
 		failures.Detail = fmt.Sprintf("过载率 %.1f%% vs %.1f%%，529 率 %.2f%% vs %.2f%%", 100*tOv, 100*cOv, 100*t529, 100*c529)
 	}
-	var bSet, bConv, hSet, hConv int
-	for _, d := range out.Days {
-		bSet, bConv, hSet, hConv = bSet+d.BoostFastSet, bConv+d.BoostFastToSlow, hSet+d.HoldFastSet, hConv+d.HoldFastToSlow
+	var judged, failed, insufficient int
+	for i := range out.Days {
+		out.Days[i].evaluateWear()
+		switch out.Days[i].WearStatus {
+		case "pass":
+			judged++
+		case "fail":
+			judged++
+			failed++
+		default:
+			insufficient++
+		}
 	}
-	wear := codexSpeedCheck{Name: "fast_wear", Status: "insufficient", Detail: "两组快号观察集合各需要至少 20 个账号"}
-	if bSet >= codexSpeedAcceptMinCohort && hSet >= codexSpeedAcceptMinCohort {
-		bRate, hRate := float64(bConv)/float64(bSet), float64(hConv)/float64(hSet)
-		wear.Status = statusOf(bRate <= hRate*codexSpeedAcceptWearRatio || (bRate == 0 && hRate == 0))
-		wear.Detail = fmt.Sprintf("boost 组快号转慢 %.1f%%，hold 组 %.1f%%（%d 天）", 100*bRate, 100*hRate, len(out.Days))
+	wear := codexSpeedCheck{Name: "fast_wear", Status: "insufficient", Detail: fmt.Sprintf("没有两组快号观察集合都达到 %d 个账号的日子（样本不足 %d 天）", codexSpeedAcceptMinCohort, insufficient)}
+	if judged > 0 {
+		wear.Status = statusOf(failed == 0)
+		wear.Detail = fmt.Sprintf("逐日判定：参与 %d 天，未达标 %d 天，样本不足 %d 天（不参与）", judged, failed, insufficient)
 	}
 	out.Checks = append(out.Checks, ttft, failures, wear)
 	out.Treatment.Hist, out.Control.Hist = nil, nil

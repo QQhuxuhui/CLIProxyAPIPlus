@@ -59,3 +59,20 @@ func TestCodexSpeedOverloadClassification(t *testing.T) {
 		t.Fatal("image detection")
 	}
 }
+
+func TestCodexSpeedTimingSkipsEmptyDelta(t *testing.T) {
+	r := &UsageReporter{provider: "codex"}
+	r.StartResponseTTFT()
+	ObserveResponsesTokenEvent(r, []byte(`{"type":"response.created"}`))
+	r.speedCreatedAt = r.speedCreatedAt.Add(-time.Second)
+	for _, empty := range []string{`{"type":"response.output_text.delta","delta":""}`, `{"type":"response.output_text.delta"}`, `{"type":"response.reasoning_text.delta","delta":null}`} {
+		ObserveResponsesTimingEvent(r, []byte(empty))
+	}
+	if !r.speedOutputAt.IsZero() {
+		t.Fatal("empty deltas must not mark the first output")
+	}
+	ObserveResponsesTimingEvent(r, []byte(`{"type":"response.output_text.delta","delta":" "}`))
+	if r.speedOutputAt.IsZero() {
+		t.Fatal("a whitespace delta is real output")
+	}
+}

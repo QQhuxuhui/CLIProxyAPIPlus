@@ -119,7 +119,7 @@ func TestCodexPoolBindingRechecksConcurrentCooldown(t *testing.T) {
 	opts.EnsureMetadata()
 	key, affinity := m.poolSessionKey("pool-model", opts)
 	m.MarkResult(context.Background(), Result{AuthID: selected.ID, Provider: "codex", Model: "pool-model", Error: &Error{HTTPStatus: 503, Message: "fixture overload"}})
-	_, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, selected, nil, nil)
+	_, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, selected, nil, nil, nil)
 	ctx, tried, retry := staleSelectionRetry(context.Background(), err, nil, selected.ID)
 	if !retry {
 		t.Fatalf("binding race must trigger reselection, got %v", err)
