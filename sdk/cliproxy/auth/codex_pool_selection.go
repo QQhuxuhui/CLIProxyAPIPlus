@@ -520,6 +520,10 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 					}
 				}
 				notePick(ctx, "")
+				if !preview {
+					// Reusing the binding keeps its replacement mark alive with it.
+					speed.sessions.touch(key, codexSpeedMarkTTL(affinity), speed.now())
+				}
 				opts.Metadata[poolStickyMetadataKey] = true
 				return a, e, nil
 			}
@@ -615,6 +619,14 @@ func (m *Manager) pickCodexPoolOnce(ctx context.Context, model string, opts exec
 		return m.bindPoolSelection(ctx, key, model, opts, affinity, chosen, tried, nil)
 	}
 	return chosen, executor, nil
+}
+
+// codexSpeedMarkTTL is the lifetime of a session's replacement mark: the binding TTL.
+func codexSpeedMarkTTL(affinity *SessionAffinitySelector) time.Duration {
+	if affinity != nil && affinity.cache != nil {
+		return affinity.cache.ttl
+	}
+	return codexSpeedSessionTTL
 }
 
 // poolSpeedReplaceMetadataKey carries a binding that a mixed-provider preview decided to replace
@@ -772,6 +784,8 @@ func (m *Manager) updatePoolAffinity(result Result, epoch uint64) {
 	if result.Success {
 		binding.expires = time.Now().Add(affinity.cache.ttl)
 		p.putBindingLocked(bindingKey, binding)
+		speed := CodexSpeed()
+		speed.sessions.touch(key, affinity.cache.ttl, speed.now())
 	} else if !shouldSkipCredentialCooldown(result.Error) {
 		p.deleteBindingLocked(bindingKey)
 	}

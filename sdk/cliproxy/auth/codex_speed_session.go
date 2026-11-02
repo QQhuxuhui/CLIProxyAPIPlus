@@ -35,6 +35,19 @@ func (s *codexSpeedSessions) markRebound(key string, ttl time.Duration, now time
 	s.entries[key] = now.Add(ttl)
 }
 
+// touch extends an existing, unexpired replacement mark so it lives as long as the binding it
+// belongs to; sessions without a mark are left alone.
+func (s *codexSpeedSessions) touch(key string, ttl time.Duration, now time.Time) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if expires, ok := s.entries[key]; ok && now.Before(expires) {
+		s.entries[key] = now.Add(ttl)
+	}
+}
+
 // prune drops expired sessions.
 func (s *codexSpeedSessions) prune(now time.Time) {
 	s.mu.Lock()

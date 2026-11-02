@@ -570,3 +570,35 @@ func TestCodexSpeedConcurrentRecomputeAndObserve(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// An active session keeps its replacement mark as long as its binding: after more than one TTL
+// of steady use, the account turning slow does not trigger a second replacement.
+func TestCodexSpeedReplacementMarkFollowsActiveSession(t *testing.T) {
+	m, tr, clock, ids := speedSelectionManager(t, 24)
+	m.SetSelector(NewSessionAffinitySelector(&RoundRobinSelector{}))
+	opts := sessionOpts("long")
+	key, affinity := m.poolSessionKey("pool-model", opts)
+	slow, _ := m.GetByID(ids[23])
+	if _, _, err := m.bindPoolSelection(context.Background(), key, "pool-model", opts, affinity, slow, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := m.pickCodexPool(context.Background(), "pool-model", sessionOpts("long"), nil)
+	if err != nil || !tr.sessions.rebound(key, clock.Now()) {
+		t.Fatalf("setup: first replacement: %v %v", first, err)
+	}
+	ttl := codexSpeedMarkTTL(affinity)
+	for elapsed := time.Duration(0); elapsed < ttl+30*time.Minute; elapsed += 10 * time.Minute {
+		clock.Advance(10 * time.Minute)
+		if _, _, err = m.pickCodexPool(context.Background(), "pool-model", sessionOpts("long"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tr.demoted.Store(first.ID, clock.Now().Add(time.Hour))
+	again, _, err := m.pickCodexPool(context.Background(), "pool-model", sessionOpts("long"), nil)
+	if err != nil || again.ID != first.ID {
+		t.Fatalf("an active session must not be replaced twice: %v %v", again, err)
+	}
+	if !tr.sessions.rebound(key, clock.Now()) {
+		t.Fatal("the mark must still be alive")
+	}
+}
