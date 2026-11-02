@@ -196,6 +196,10 @@ type AntigravityConnectionPoolConfig struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexRetryBudgetConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
+	// MaxAccounts caps the accounts one logical request may try. 0 means 6, capped at 30.
+	MaxAccounts int `yaml:"max-accounts,omitempty" json:"max-accounts,omitempty"`
+	// WindowSeconds is the soft retry window. 0 means 20, capped at 120.
+	WindowSeconds int `yaml:"window-seconds,omitempty" json:"window-seconds,omitempty"`
 }
 
 // CodexConfig configures provider-wide Codex request behavior.

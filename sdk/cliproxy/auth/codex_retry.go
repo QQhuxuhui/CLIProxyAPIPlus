@@ -15,12 +15,49 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const codexRetryAccounts = 6
-const codexRetryWindow = 20 * time.Second
+const (
+	defaultCodexRetryAccounts = 6
+	defaultCodexRetryWindow   = 20 * time.Second
+	maxCodexRetryAccounts     = 30
+	maxCodexRetryWindow       = 120 * time.Second
+)
+
+// codexRetryAccountLimit and codexRetryWindowLimit hold the configured budget.
+// WithCodexRetryBudget runs in handlers that have no Manager, so the values are
+// published on config updates and each logical request snapshots them once.
+var (
+	codexRetryAccountLimit atomic.Int64
+	codexRetryWindowLimit  atomic.Int64
+)
+
+// setCodexRetryBudgetLimits publishes the limits; non-positive values mean default.
+func setCodexRetryBudgetLimits(accounts, windowSeconds int) {
+	if accounts > maxCodexRetryAccounts {
+		accounts = maxCodexRetryAccounts
+	}
+	window := time.Duration(windowSeconds) * time.Second
+	if window > maxCodexRetryWindow {
+		window = maxCodexRetryWindow
+	}
+	codexRetryAccountLimit.Store(int64(max(accounts, 0)))
+	codexRetryWindowLimit.Store(int64(max(window, 0)))
+}
+
+func currentCodexRetryBudgetLimits() (int, time.Duration) {
+	accounts, window := int(codexRetryAccountLimit.Load()), time.Duration(codexRetryWindowLimit.Load())
+	if accounts <= 0 {
+		accounts = defaultCodexRetryAccounts
+	}
+	if window <= 0 {
+		window = defaultCodexRetryWindow
+	}
+	return accounts, window
+}
 
 type codexRetryKey struct{}
 type codexRetryBudget struct {
 	upstreamCalls      atomic.Uint64
+	maxAccounts        int
 	admittedDispatches int
 	mu                 sync.Mutex
 	now                func() time.Time
@@ -56,7 +93,8 @@ func WithCodexRetryBudget(ctx context.Context, parents ...context.Context) conte
 			return context.WithValue(ctx, codexRetryKey{}, b)
 		}
 	}
-	return context.WithValue(ctx, codexRetryKey{}, &codexRetryBudget{now: time.Now, deadline: time.Now().Add(codexRetryWindow), attempted: make(map[string]struct{})})
+	accounts, window := currentCodexRetryBudgetLimits()
+	return context.WithValue(ctx, codexRetryKey{}, &codexRetryBudget{now: time.Now, maxAccounts: accounts, deadline: time.Now().Add(window), attempted: make(map[string]struct{})})
 }
 func withCodexEgressRetryFlag(ctx context.Context, parents ...context.Context) context.Context {
 	if codexEgressRetryFlag(ctx) != nil {
@@ -83,6 +121,12 @@ func codexBudget(ctx context.Context) *codexRetryBudget {
 	b, _ := ctx.Value(codexRetryKey{}).(*codexRetryBudget)
 	return b
 }
+func (b *codexRetryBudget) accountLimit() int {
+	if b.maxAccounts > 0 {
+		return b.maxAccounts
+	}
+	return defaultCodexRetryAccounts
+}
 func (b *codexRetryBudget) remaining() time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -104,7 +148,7 @@ func (b *codexRetryBudget) exclusions() map[string]struct{} {
 func (b *codexRetryBudget) claim(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if (len(b.attempted) > 0 && !b.now().Before(b.deadline)) || len(b.attempted) >= codexRetryAccounts {
+	if (len(b.attempted) > 0 && !b.now().Before(b.deadline)) || len(b.attempted) >= b.accountLimit() {
 		return false
 	}
 	if _, seen := b.attempted[id]; seen {
@@ -330,7 +374,7 @@ func runCodexRetry[T any](m *Manager, ctx context.Context, model string, opts ex
 	}
 	_, _, maxWait := m.retrySettings()
 	var last error
-	for b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0) {
+	for b.count() < b.accountLimit() && (b.count() == 0 || b.remaining() > 0) {
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
@@ -505,7 +549,7 @@ func (m *Manager) codexRetryOverride(ctx context.Context, opts exec.Options, mod
 	if lastProvider != "codex" {
 		return 0, false, false
 	}
-	if b.count() >= codexRetryAccounts || b.remaining() <= 0 {
+	if b.count() >= b.accountLimit() || b.remaining() <= 0 {
 		return 0, false, true
 	}
 	wait, ok := m.codexRetryWait(ctx, model, opts, maxWait)
@@ -549,7 +593,7 @@ func codexFinalHeaders(err error, fallback http.Header) http.Header {
 
 func codexEligibleProviders(ctx context.Context, providers []string) []string {
 	b := codexBudget(ctx)
-	if b == nil || (b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0)) {
+	if b == nil || (b.count() < b.accountLimit() && (b.count() == 0 || b.remaining() > 0)) {
 		return providers
 	}
 	others := make([]string, 0, len(providers))

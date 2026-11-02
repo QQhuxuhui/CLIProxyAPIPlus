@@ -1455,7 +1455,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 			}
 			if len(others) < len(providers) {
 				cw, cr := time.Duration(0), false
-				if b.count() < codexRetryAccounts && (b.count() == 0 || b.remaining() > 0) {
+				if b.count() < b.accountLimit() && (b.count() == 0 || b.remaining() > 0) {
 					cw, cr = m.codexRetryWait(ctx, model, opts, maxWait)
 				}
 				legacyCtx := context.WithValue(ctx, codexRetryKey{}, (*codexRetryBudget)(nil))

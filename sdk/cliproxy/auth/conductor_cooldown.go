@@ -229,6 +229,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	} else {
 		cfg = cfg.CloneForRuntime()
 	}
+	setCodexRetryBudgetLimits(cfg.Codex.RetryBudget.MaxAccounts, cfg.Codex.RetryBudget.WindowSeconds)
 	m.mu.RLock()
 	oldCooldownStore := m.cooldownStore
 	m.mu.RUnlock()

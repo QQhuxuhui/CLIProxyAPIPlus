@@ -362,6 +362,10 @@ codex:
   # Optional retry policy; hot-reloadable. Disabled preserves legacy retry behavior.
   retry-budget:
     enable: false
+    # Accounts one logical request may try (default 6, max 30).
+    # max-accounts: 6
+    # Soft retry window in seconds (default 20, max 120).
+    # window-seconds: 20
   # Per-account in-flight limit for Codex OAuth accounts; hot-reloadable. Disabled keeps
   # scheduling and errors unchanged while still counting in-flight requests for the panel.
   # When every eligible account is full, requests fail with 529 instead of queueing.
