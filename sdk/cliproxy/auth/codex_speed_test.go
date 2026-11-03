@@ -264,6 +264,58 @@ func TestCodexSpeedOverflowOrderPutsUnscoredBeforePenalized(t *testing.T) {
 	}
 }
 
+func TestCodexSpeedUnscoredOverloadedAccountsSortWithPenalized(t *testing.T) {
+	tr, clock := newTestSpeedTracker(t, nil)
+	ids := rankPool(tr, "acct", 40)
+	// "storm" never succeeded: no score, but every attempt overloaded.
+	for i := 0; i < 3; i++ {
+		tr.ObserveAttempt(CodexSpeedAttempt{AuthID: "storm", Overload: true})
+	}
+	feed(tr, "fresh", 1, time.Second)
+	// The fastest account is demoted, then its samples expire while the cooldown is still on.
+	fast := ids[0]
+	tr.ObserveAttempt(CodexSpeedAttempt{AuthID: fast, Overload: true})
+	tr.ObserveAttempt(CodexSpeedAttempt{AuthID: fast, Overload: true})
+	if tr.inFast(fast, clock.Now()) {
+		t.Fatal("setup: two overloads must demote the fast account")
+	}
+	clock.Advance(9 * time.Minute)
+	all := append(append([]string{}, ids...), "storm", "fresh")
+	tr.Recompute(infosOf(all...))
+	view := tr.view.Load()
+	if _, scored := view.score["storm"]; scored || !view.penalized["storm"] {
+		t.Fatalf("an unscored account that only overloads must be penalized")
+	}
+	if view.unscored != 2 || view.fast["storm"] {
+		t.Fatalf("an unscored penalized account stays unscored and out of the fast group: unscored=%d", view.unscored)
+	}
+	fresh, _ := tr.overflowKey(view, "fresh", clock.Now())
+	storm, stormScore := tr.overflowKey(view, "storm", clock.Now())
+	if !(fresh < storm) {
+		t.Fatalf("an overloaded unscored account must sort after a healthy unscored one: %d %d", fresh, storm)
+	}
+	if got := tr.pickRanked([]*Auth{{ID: "storm"}, {ID: "fresh"}}, false); got == nil || got.ID != "fresh" {
+		t.Fatalf("overflow must prefer the healthy unscored account: %v", got)
+	}
+	// Samples older than the 30-minute window leave the demoted account without a score.
+	sh := tr.shard(fast)
+	sh.mu.Lock()
+	acct := sh.accounts[fast]
+	for i := 0; i < acct.count; i++ {
+		acct.samples[i].at = clock.Now().Add(-time.Hour)
+	}
+	sh.mu.Unlock()
+	tr.Recompute(infosOf(all...))
+	view = tr.view.Load()
+	if _, scored := view.score[fast]; scored {
+		t.Fatal("setup: the demoted account's samples must have expired")
+	}
+	demoted, demotedScore := tr.overflowKey(view, fast, clock.Now())
+	if demoted != storm || demoted <= fresh || demotedScore != stormScore {
+		t.Fatalf("a demoted account without a score must sort with the penalized ones: %d", demoted)
+	}
+}
+
 func TestCodexSpeedOverloadThresholdIsStrict(t *testing.T) {
 	tr, _ := newTestSpeedTracker(t, nil)
 	ids := rankPool(tr, "acct", 30)

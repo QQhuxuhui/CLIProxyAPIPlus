@@ -540,14 +540,18 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 			if _, ok := schedulable[id]; !ok {
 				continue
 			}
+			// Overload and demotion are recorded with or without a score, so an overloaded account
+			// that never collected enough samples still sorts with the penalized ones.
+			penalized := a.overloadRateLocked(now, halfLife) > float64(cfg.ScoreOverloadPercent) || now.Before(a.demotedUntil)
+			if penalized {
+				view.penalized[id] = true
+			}
 			score, ok := a.scoreLocked(cfg, now, probeValid)
 			if !ok {
 				continue
 			}
 			view.score[id] = score
-			penalized := a.overloadRateLocked(now, halfLife) > float64(cfg.ScoreOverloadPercent) || now.Before(a.demotedUntil)
 			if penalized {
-				view.penalized[id] = true
 				continue
 			}
 			rankable = append(rankable, ranked{id, score})
@@ -700,14 +704,18 @@ func codexSpeedBins(schedulable map[string]CodexSpeedAuthInfo, view *codexSpeedV
 }
 
 // overflowKey orders non-fast candidates: healthy scored accounts by score, then accounts
-// without a score (speed unknown), then penalized or just-demoted scored accounts by score.
+// without a score (speed unknown), then penalized or just-demoted accounts, scored ones by score
+// and unscored ones last. Overload and demotion are checked before the score.
 func (t *CodexSpeedTracker) overflowKey(view *codexSpeedView, id string, now time.Time) (int, time.Duration) {
 	score, ok := view.score[id]
 	switch {
+	case view.penalized[id] || t.demotedActive(id, now):
+		if !ok {
+			return 2, time.Duration(math.MaxInt64)
+		}
+		return 2, score
 	case !ok:
 		return 1, 0
-	case view.penalized[id] || t.demotedActive(id, now):
-		return 2, score
 	default:
 		return 0, score
 	}
