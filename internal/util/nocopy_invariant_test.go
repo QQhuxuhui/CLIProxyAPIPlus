@@ -112,6 +112,7 @@ var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
 	"internal/home/client.go":                               {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
 	"internal/pluginstore/auth.go":                          {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},
 	"internal/api/handlers/management/quota_summary.go":     {1, "initialises a local map of bucket counters; no payload buffer is involved"},
+	"sdk/cliproxy/auth/codex_speed.go":                      {1, "shifts a fixed-size array of time.Duration gaps; no byte buffer is involved"},
 }
 
 // TestInPlaceByteWritesAreReviewed keeps the set of in-place byte writes small

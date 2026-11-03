@@ -992,7 +992,7 @@
           <h4>快号优先</h4><p class="pv-note">按速度排名分快组 / 慢组，请求先用快组，满了按排名用慢组</p>
           <div class="pool-switches"><label><input id="speed-sp-enable" type="checkbox"> 启用快号优先（需要 Codex 分池）</label></div>
           <div class="pool-fields">
-            <label>快组比例（%）<input id="speed-sp-fast-percent" type="number" min="1" max="90" step="1" required data-tip="按速度排名的前 X% 账号进入快组；也可以在快慢池图上拖动竖线"></label>
+            <label>快组比例（%）<input id="speed-sp-fast-percent" type="number" min="1" max="90" step="1" required data-tip="有测速分数的账号里，按速度排名的前 X% 进入快组（没分数的号不计入）；也可以在快慢池图上拖动竖线"></label>
             <label>慢号探测间隔（分钟）<input id="speed-sp-probe-interval" type="number" min="1" max="60" step="1" required data-tip="快组以外的账号多久探测一次，用来发现恢复变快的账号"></label>
             <button id="speed-sp-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
           </div>
@@ -2646,29 +2646,39 @@
       var self = this;
       return (bins || []).reduce(function (sum, b) { return sum + (b.score_ms != null && b.score_ms < self.FAST_MS ? (b.accounts || 0) : 0); }, 0);
     },
-    // cliff finds the first jump between neighbouring scored bins and proposes the cut just before it.
-    cliff: function (bins, ready) {
+    // cutPos maps a fast percent (of scored accounts) to the board's rank position (percent of all
+    // schedulable accounts, unscored last); cutFromPos is its inverse, snapped to the 1-90 range.
+    cutPos: function (cut, scored, total) {
+      return scored > 0 && total > 0 ? cut * scored / total : 0;
+    },
+    cutFromPos: function (pos, scored, total) {
+      return scored > 0 && total > 0 ? SpeedViewLogic.snapPercent(pos * total / scored) : null;
+    },
+    // cliff finds the first jump between neighbouring scored bins and proposes the cut just before it:
+    // pos is the true bin edge on the board, percent the matching fast percent of scored accounts.
+    cliff: function (bins, ready, scored, total) {
       if (!ready) return {reason: '测速还没就绪'};
       bins = bins || [];
       for (var i = 0; i + 1 < bins.length; i++) {
         var a = bins[i].score_ms, b = bins[i + 1].score_ms;
         if (a == null || b == null || !(a > 0)) continue;
         if (b / a >= this.CLIFF_RATIO && b - a >= this.CLIFF_GAP_MS) {
-          var percent = Math.min(90, Math.max(1, (i + 1) * 2));
-          return {percent: percent, fromMs: a, toMs: b};
+          var pos = (i + 1) * 2;
+          return {pos: pos, percent: this.cutFromPos(pos, scored, total), fromMs: a, toMs: b};
         }
       }
       return {reason: '现在没有明显断崖（相邻两段首字没有翻倍并且多 1.5 秒以上）'};
     },
-    // cutReadout describes a candidate cut: how many accounts it holds and how many slow ones sneak in.
-    cutReadout: function (bins, cut, total, saved) {
+    // cutReadout describes a candidate cut: its target size among scored accounts and how many slow
+    // ones sneak into the bins left of the line. edgeMs is null when no covered bin has a score.
+    cutReadout: function (bins, cut, total, saved, scored) {
       bins = bins || [];
-      var covered = Math.min(bins.length, Math.round(cut / 2)), slow = 0, edge = null;
+      var covered = Math.min(bins.length, Math.round(this.cutPos(cut, scored, total) / 2)), slow = 0, edge = null;
       for (var i = 0; i < covered; i++) {
         var b = bins[i];
         if (b.score_ms != null) { edge = b.score_ms; if (b.score_ms >= this.FAST_MS) slow += b.accounts || 0; }
       }
-      return {cut: cut, accounts: Math.round(cut / 100 * (total || 0)), edgeMs: edge, slowInFast: slow, trueFast: this.trueFastCount(bins), dirty: cut !== saved};
+      return {cut: cut, accounts: Math.round(cut / 100 * (scored || 0)), edgeMs: edge, slowInFast: slow, trueFast: this.trueFastCount(bins), dirty: cut !== saved};
     },
     // peak returns the point holding the largest value; ties go to the most recent minute.
     peak: function (points, field) {
@@ -2740,6 +2750,7 @@
     // boardOption draws the speed stairs, the fast-member strip and the capacity tanks on one shared cut.
     boardOption: function (sp, cut, width) {
       var self = this, live = (sp && sp.live) || {}, bins = live.bins || [], total = live.total || 0, max = this.BOARD_MAX_S;
+      var pos = this.cutPos(cut, live.scored || 0, total);
       var narrow = width < 600, bw = Math.max(2, (width - 68) / 50 * 0.78);
       var x = function (i) { return i * 2 + 1; };
       var water = function (b) { return b.util == null ? 0 : Math.max(0.6, Math.min(100, 100 * b.util)); };
@@ -2748,8 +2759,8 @@
         return {value: [x(i), tone ? Math.min(b.score_ms / 1000, max) : max], itemStyle: {color: tone ? self.COLORS[tone] : self.COLORS.none}};
       });
       var strip = bins.map(function (b, i) { var share = b.accounts ? b.fast / b.accounts : 0; return {value: [x(i), 1], itemStyle: {color: 'rgba(60,207,142,' + (0.08 + 0.92 * share).toFixed(2) + ')'}}; });
-      var mark = function (label) { return {symbol: 'none', silent: true, animation: false, lineStyle: {color: self.COLORS.cut, width: 2.5, type: 'solid'}, label: {show: label, formatter: '快组 ' + cut + '%', color: self.COLORS.cut, position: 'end'}, data: [{xAxis: cut}]}; };
-      var area = {silent: true, itemStyle: {color: 'rgba(60,207,142,.06)'}, data: [[{xAxis: 0}, {xAxis: cut}]]};
+      var mark = function (label) { return {symbol: 'none', silent: true, animation: false, lineStyle: {color: self.COLORS.cut, width: 2.5, type: 'solid'}, label: {show: label, formatter: '快组目标 ' + cut + '%', color: self.COLORS.cut, position: 'end'}, data: [{xAxis: pos}]}; };
+      var area = {silent: true, itemStyle: {color: 'rgba(60,207,142,.06)'}, data: [[{xAxis: 0}, {xAxis: pos}]]};
       var axis = function (gi, show) { return {gridIndex: gi, type: 'value', min: 0, max: 100, interval: narrow ? 50 : 20, splitLine: {show: false}, axisTick: {show: false}, axisLine: {show: false},
         axisLabel: {show: show, alignMinLabel: 'left', alignMaxLabel: 'right', formatter: function (v) { return narrow ? v + '%' : v + '%（' + self.num(Math.round(v / 100 * total)) + ' 个）'; }}}; };
       var unscored = bins.some(function (b) { return b.score_ms == null; });
@@ -2875,12 +2886,12 @@
     var live=sp.live||{}, answer=PoolViewLogic.speedAnswer(sp);
     poolAnswer('answer-speed',answer);
     speedEl('sp-state').innerHTML='<b>'+escapeHtml(answer.state)+'</b><span>'+escapeHtml(SpeedViewLogic.statusText(sp))+'</span>';
-    speedEl('sp-bucket-note').innerHTML='共 <b>'+PoolViewLogic.num(live.total||0)+'</b> 个可调度账号，现在快组实际 <b>'+PoolViewLogic.num(live.fast||0)+'</b> 个（分界附近有缓冲，成员不一定连续）· 快组平均用掉 <b>'+PoolViewLogic.pct(live.fast_util)+'</b> 容量，慢组 <b>'+PoolViewLogic.pct(live.slow_util)+'</b> · 本小时探测慢号 <b>'+PoolViewLogic.num(live.probes||0)+'</b> 次'+
+    speedEl('sp-bucket-note').innerHTML='共 <b>'+PoolViewLogic.num(live.total||0)+'</b> 个可调度账号，其中有测速分数 <b>'+PoolViewLogic.num(live.scored||0)+'</b> 个；快组比例只按有分数的账号算，竖线是目标位置。现在快组实际 <b>'+PoolViewLogic.num(live.fast||0)+'</b> 个（过载或刚降级的号会被跳过，分界附近还有缓冲，所以实际成员可能越过竖线，也可能比目标少）· 快组平均用掉 <b>'+PoolViewLogic.pct(live.fast_util)+'</b> 容量，慢组 <b>'+PoolViewLogic.pct(live.slow_util)+'</b> · 本小时探测慢号 <b>'+PoolViewLogic.num(live.probes||0)+'</b> 次'+
       (live.probe_cycle_minutes?'，一轮约 '+Math.round(live.probe_cycle_minutes)+' 分钟（设定 '+(live.probe_interval_minutes||sp.config.probe_interval_minutes)+' 分钟，'+(live.probe_behind?'<span class="speed-warn">排不过来</span>':'排得过来')+'）':'');
-    var cliff=PoolViewLogic.cliff(live.bins,live.active && live.ready);
+    var cliff=PoolViewLogic.cliff(live.bins,live.active && live.ready,live.scored||0,live.total||0);
     speedState.cliff=cliff;
     speedEl('sp-cliff').disabled=cliff.percent==null;
-    speedEl('sp-cliff-note').textContent=cliff.percent==null?cliff.reason:'断崖在 '+cliff.percent+'% 处：'+(cliff.fromMs/1000).toFixed(1)+' 秒 → '+(cliff.toMs/1000).toFixed(1)+' 秒';
+    speedEl('sp-cliff-note').textContent=cliff.percent==null?(cliff.reason||'还没有测速分数'):'断崖在快组 '+cliff.percent+'% 处：'+(cliff.fromMs/1000).toFixed(1)+' 秒 → '+(cliff.toMs/1000).toFixed(1)+' 秒';
     if (!speedState.spDirty && !speedState.spSaving) speedSpStatus(SpeedViewLogic.statusText(sp),false);
     syncSpeedCut();
   }
@@ -2893,9 +2904,13 @@
     speedEl('sp-cut-range').value=cut;speedEl('sp-cut-num').value=cut;
     speedEl('sp-cut-range').disabled=speedState.spSaving;speedEl('sp-cut-num').disabled=speedState.spSaving;
     speedEl('sp-cut-save').disabled=!speedState.spDirty || speedState.spSaving;
-    var r=PoolViewLogic.cutReadout(live.bins,cut,live.total,saved);
-    var text='快组 <b>'+cut+'%</b>（约 '+PoolViewLogic.num(r.accounts)+' 个号），分界处首字约 <b>'+PoolViewLogic.sec(r.edgeMs)+'</b>。';
-    if ((live.bins||[]).length) text+=r.slowInFast?' <span class="speed-fail">快组里混进约 '+PoolViewLogic.num(r.slowInFast)+' 个 1.5 秒以上的号</span>，真快号只有约 '+PoolViewLogic.num(r.trueFast)+' 个。':' <span class="speed-pass">快组全是 1.5 秒以内的号。</span>';
+    var r=PoolViewLogic.cutReadout(live.bins,cut,live.total,saved,live.scored||0);
+    var text='快组目标 <b>'+cut+'%</b>（有分数 '+PoolViewLogic.num(live.scored||0)+' 个里约 '+PoolViewLogic.num(r.accounts)+' 个）';
+    if (r.edgeMs==null) text+='，分界内数据不足。';
+    else {
+      text+='，分界处首字约 <b>'+PoolViewLogic.sec(r.edgeMs)+'</b>。';
+      text+=r.slowInFast?' <span class="speed-fail">分界内混进约 '+PoolViewLogic.num(r.slowInFast)+' 个 1.5 秒以上的号</span>，真快号只有约 '+PoolViewLogic.num(r.trueFast)+' 个。':' <span class="speed-pass">分界内全是 1.5 秒以内的号。</span>';
+    }
     if (r.dirty) text+=' 现在保存的是 '+saved+'%，点“保存分界”生效。';
     speedEl('sp-readout').innerHTML=text;
     renderBucketChart();
@@ -2926,7 +2941,11 @@
   }
   function bindBucketDrag(chart) {
     var zr=chart.getZr(),dragging=false;
-    var apply=function(e){var v=chart.convertFromPixel({xAxisIndex:0},e.offsetX);if(v!=null && isFinite(v))setSpeedCut(v);};
+    var apply=function(e){
+      var v=chart.convertFromPixel({xAxisIndex:0},e.offsetX), live=(speedState.data && speedState.data.speed && speedState.data.speed.live)||{};
+      var cut=v!=null && isFinite(v)?PoolViewLogic.cutFromPos(v,live.scored||0,live.total||0):null;
+      if(cut!=null)setSpeedCut(cut);
+    };
     zr.on('mousedown',function(e){var at=[e.offsetX,e.offsetY];if(![0,1,2].some(function(i){return chart.containPixel({gridIndex:i},at);}))return;dragging=true;apply(e);});
     zr.on('mousemove',function(e){if(dragging)apply(e);});
     zr.on('mouseup',function(){dragging=false;});

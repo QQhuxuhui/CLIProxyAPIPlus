@@ -137,6 +137,133 @@ func TestCodexSpeedRecomputeRanksAndWaitsForScores(t *testing.T) {
 	}
 }
 
+// peakSpeedPool builds the 2026-11-03 peak shape: total schedulable accounts, the first scored of
+// them with a score (gap grows with the index), rankable of those spread evenly and the rest
+// penalized by a 40% overload rate, and the remaining accounts with one sample (no score).
+func peakSpeedPool(tr *CodexSpeedTracker, total, scored, rankable int) (ids, ranked, penalized []string) {
+	ids = make([]string, total)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("peak-%04d", i)
+		if i >= scored {
+			feed(tr, ids[i], 1, time.Second)
+			continue
+		}
+		feed(tr, ids[i], 3, time.Duration(i+1)*10*time.Millisecond)
+		if (i+1)*rankable/scored > i*rankable/scored {
+			ranked = append(ranked, ids[i])
+			continue
+		}
+		penalized = append(penalized, ids[i])
+		tr.ObserveAttempt(CodexSpeedAttempt{AuthID: ids[i], Overload: true})
+		tr.ObserveAttempt(CodexSpeedAttempt{AuthID: ids[i], Overload: true})
+	}
+	return ids, ranked, penalized
+}
+
+func TestCodexSpeedFastGroupCountsOnlyScoredAccounts(t *testing.T) {
+	tr, _ := newTestSpeedTracker(t, func(c *internalconfig.CodexSpeedPriorityConfig) { c.FastPercent = 28 })
+	ids, ranked, penalized := peakSpeedPool(tr, 1620, 961, 349)
+	if len(ranked) != 349 || len(penalized) != 612 {
+		t.Fatalf("setup: ranked=%d penalized=%d", len(ranked), len(penalized))
+	}
+	tr.Recompute(infosOf(ids...))
+	view := tr.view.Load()
+	if view.total != 1620 || view.scored != 961 || view.unscored != 659 {
+		t.Fatalf("counts: total=%d scored=%d unscored=%d", view.total, view.scored, view.unscored)
+	}
+	if view.fastCount != 269 {
+		t.Fatalf("fast group must be 28%% of 961 scored accounts (269), got %d", view.fastCount)
+	}
+	for i, id := range ranked {
+		if view.fast[id] != (i < 269) {
+			t.Fatalf("fast group must be the 269 best-ranked rankable accounts; rank %d fast=%v", i, view.fast[id])
+		}
+	}
+	// peak-0000 has the lowest score of all but is penalized, so it never takes a fast seat.
+	if !view.penalized[penalized[0]] || view.fast[penalized[0]] {
+		t.Fatalf("a penalized account with a low score must stay out of the fast group")
+	}
+	if view.slowCount != 961-269 || view.fastCount+view.slowCount+view.unscored != view.total {
+		t.Fatalf("slow must be scored minus fast: fast=%d slow=%d unscored=%d total=%d", view.fastCount, view.slowCount, view.unscored, view.total)
+	}
+}
+
+func TestCodexSpeedFastMembersHysteresisOnScoredDenominator(t *testing.T) {
+	ranked := make([]string, 349)
+	for i := range ranked {
+		ranked[i] = fmt.Sprintf("r%03d", i)
+	}
+	first := codexSpeedFastMembers(ranked, nil, 961, 28)
+	if len(first) != 269 {
+		t.Fatalf("first build fills the target: %d", len(first))
+	}
+	// keep = ceil(33% of 961) = 318: a member moved to rank 317 stays, one moved to 318 leaves.
+	moved := append([]string{}, ranked[1:318]...)
+	moved = append(moved, ranked[0])
+	moved = append(moved, ranked[318:]...)
+	if second := codexSpeedFastMembers(moved, first, 961, 28); !second[ranked[0]] || len(second) > 318 {
+		t.Fatalf("a member inside keep must stay: %v size %d", second[ranked[0]], len(second))
+	}
+	beyond := append([]string{}, ranked[1:319]...)
+	beyond = append(beyond, ranked[0])
+	beyond = append(beyond, ranked[319:]...)
+	third := codexSpeedFastMembers(beyond, first, 961, 28)
+	if third[ranked[0]] || len(third) > 318 {
+		t.Fatalf("a member beyond keep must leave: %v size %d", third[ranked[0]], len(third))
+	}
+	for i, id := range beyond {
+		if i >= 318 && third[id] {
+			t.Fatalf("no account ranked at or beyond keep may be fast: rank %d", i)
+		}
+	}
+}
+
+func TestCodexSpeedUnscoredAccountsLeaveTargetAndSlowAlone(t *testing.T) {
+	tr, _ := newTestSpeedTracker(t, nil)
+	ids := rankPool(tr, "acct", 40)
+	infos := infosOf(ids...)
+	for i := range infos {
+		infos[i].ConcurrencyLimit = 4
+	}
+	for i := 0; i < 60; i++ {
+		id := fmt.Sprintf("new-%03d", i)
+		feed(tr, id, 1, time.Second)
+		infos = append(infos, CodexSpeedAuthInfo{ID: id, Schedulable: true, QuotaUsed: -1, InFlight: 4, ConcurrencyLimit: 4})
+	}
+	tr.Recompute(infos)
+	view := tr.view.Load()
+	if view.total != 100 || view.fastCount != 12 || view.slowCount != 28 || view.unscored != 60 {
+		t.Fatalf("unscored accounts must not change the target or count as slow: total=%d fast=%d slow=%d unscored=%d", view.total, view.fastCount, view.slowCount, view.unscored)
+	}
+	if view.slowUtil == nil || *view.slowUtil != 0 {
+		t.Fatalf("slow utilization must cover only scored slow accounts: %v", view.slowUtil)
+	}
+}
+
+func TestCodexSpeedOverflowOrderPutsUnscoredBeforePenalized(t *testing.T) {
+	tr, clock := newTestSpeedTracker(t, nil)
+	ids := rankPool(tr, "acct", 40)
+	bad := ids[39]
+	tr.ObserveAttempt(CodexSpeedAttempt{AuthID: bad, Overload: true})
+	tr.ObserveAttempt(CodexSpeedAttempt{AuthID: bad, Overload: true})
+	feed(tr, "fresh", 1, time.Second)
+	tr.Recompute(infosOf(append(ids, "fresh")...))
+	view := tr.view.Load()
+	if !view.penalized[bad] {
+		t.Fatal("setup: the overloaded account must be penalized")
+	}
+	healthy, _ := tr.overflowKey(view, ids[30], clock.Now())
+	unscored, _ := tr.overflowKey(view, "fresh", clock.Now())
+	penalized, _ := tr.overflowKey(view, bad, clock.Now())
+	if !(healthy < unscored && unscored < penalized) {
+		t.Fatalf("overflow order must be healthy < unscored < penalized: %d %d %d", healthy, unscored, penalized)
+	}
+	auths := []*Auth{{ID: bad}, {ID: "fresh"}}
+	if got := tr.pickRanked(auths, false); got == nil || got.ID != "fresh" {
+		t.Fatalf("overflow must prefer an unscored account over a penalized one: %v", got)
+	}
+}
+
 func TestCodexSpeedOverloadThresholdIsStrict(t *testing.T) {
 	tr, _ := newTestSpeedTracker(t, nil)
 	ids := rankPool(tr, "acct", 30)
@@ -177,8 +304,8 @@ func TestCodexSpeedInstantDemotionAndCooldown(t *testing.T) {
 	if got := tr.stats.current(clock.Now()).InstantDemotions; got != 1 {
 		t.Fatalf("a demotion counts once during its cooldown: %d", got)
 	}
-	if class, _ := tr.overflowKey(tr.view.Load(), fast, clock.Now()); class != 1 {
-		t.Fatalf("a just-demoted account must sort after healthy accounts: class %d", class)
+	if class, _ := tr.overflowKey(tr.view.Load(), fast, clock.Now()); class != 2 {
+		t.Fatalf("a just-demoted account must sort after healthy and unscored accounts: class %d", class)
 	}
 	tr.Recompute(infosOf(ids...))
 	if tr.view.Load().fast[fast] {

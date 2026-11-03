@@ -704,26 +704,38 @@ test('pool view grades speed and counts true fast accounts', () => {
 
 test('pool view finds the first cliff and explains when there is none', () => {
   const v = poolView();
-  assert.deepEqual(plain(v.cliff([bin(400), bin(600), bin(5000), bin(9000)], true)), { percent: 4, fromMs: 600, toMs: 5000 });
+  assert.deepEqual(plain(v.cliff([bin(400), bin(600), bin(5000), bin(9000)], true, 100, 100)), { pos: 4, percent: 4, fromMs: 600, toMs: 5000 });
   // A doubling below 1.5 seconds is not a cliff; neither is a big gap that does not double.
-  assert.ok(v.cliff([bin(300), bin(700), bin(5000), bin(8000)], true).percent === 4);
+  assert.ok(v.cliff([bin(300), bin(700), bin(5000), bin(8000)], true, 100, 100).percent === 4);
+  // The edge is a board position over all accounts; half of them scored doubles the fast percent.
+  assert.equal(v.cliff([bin(400), bin(600), bin(5000)], true, 50, 100).percent, 8);
   assert.ok(v.cliff([bin(300), bin(700)], true).reason.includes('没有明显断崖'));
   assert.ok(v.cliff([bin(4000), bin(7000)], true).reason.includes('没有明显断崖'));
   // Unscored bins never form a cliff with their neighbours.
   assert.ok(v.cliff([bin(500), bin(null), bin(9000)], true).reason.includes('没有明显断崖'));
   assert.equal(v.cliff([bin(400), bin(5000)], false).reason, '测速还没就绪');
   const late = Array.from({ length: 50 }, (_, i) => bin(i < 48 ? 500 : 9000));
-  assert.equal(v.cliff(late, true).percent, 90);
+  // The true edge (96%) is kept and only the converted percent is snapped to 90.
+  assert.equal(v.cliff(late, true, 100, 100).pos, 96);
+  assert.equal(v.cliff(late, true, 100, 100).percent, 90);
+  assert.equal(v.cliff(late, true, 0, 100).percent, null);
 });
 
 test('pool view cut readout counts slow accounts inside the fast group', () => {
   const v = poolView();
   const bins = [bin(500, 10), bin(1200, 10), bin(2000, 10), bin(null, 10)];
-  const r = plain(v.cutReadout(bins, 6, 200, 4));
+  const r = plain(v.cutReadout(bins, 6, 200, 4, 200));
   assert.deepEqual(r, { cut: 6, accounts: 12, edgeMs: 2000, slowInFast: 10, trueFast: 20, dirty: true });
-  assert.equal(v.cutReadout(bins, 4, 200, 4).slowInFast, 0);
-  assert.equal(v.cutReadout(bins, 4, 200, 4).dirty, false);
-  assert.equal(v.cutReadout([], 30, 0, 30).edgeMs, null);
+  assert.equal(v.cutReadout(bins, 4, 200, 4, 200).slowInFast, 0);
+  assert.equal(v.cutReadout(bins, 4, 200, 4, 200).dirty, false);
+  assert.equal(v.cutReadout([], 30, 0, 30, 0).edgeMs, null);
+  // The target counts scored accounts only, and the covered bins shrink with them.
+  const half = plain(v.cutReadout(bins, 4, 200, 4, 100));
+  assert.equal(half.accounts, 4);
+  assert.equal(half.edgeMs, 500);
+  // A cut covering less than half a bin has no data behind a verdict.
+  assert.equal(v.cutReadout(bins, 28, 1620, 28, 20).edgeMs, null);
+  assert.equal(v.cutReadout([bin(null, 10), bin(500, 10)], 2, 200, 2, 200).edgeMs, null);
 });
 
 test('pool view peak keeps the latest of equal maxima and ignores empty minutes', () => {
@@ -766,6 +778,19 @@ test('pool view speed answer follows the overflow grade only while ranking runs'
   assert.equal(v.speedAnswer({ config: {}, live: { active: false } }).label, '未生效');
 });
 
+test('pool view converts the cut between scored percent and board position', () => {
+  const v = poolView();
+  assert.equal(v.cutPos(28, 961, 1620), 28 * 961 / 1620);
+  assert.equal(v.cutFromPos(v.cutPos(28, 961, 1620), 961, 1620), 28);
+  assert.equal(v.cutPos(30, 0, 1620), 0);
+  assert.equal(v.cutFromPos(10, 0, 1620), null);
+  assert.equal(v.cutFromPos(10, 5, 0), null);
+  // One or 19 scored accounts still convert, so a cut can be preset before ranking is ready.
+  assert.equal(v.cutFromPos(0.05, 1, 1620), 81);
+  assert.equal(v.cutFromPos(50, 19, 1620), 90);
+  assert.equal(v.cutFromPos(0.2, 19, 1620), 17);
+});
+
 test('pool view board shares one cut across stairs, members and tanks', () => {
   const v = poolView();
   const sp = { live: { total: 1000, unscored: 10, bins: [bin(300, 20, 20, 0.5), bin(2000, 20, 5, null), bin(null, 20, 0, 0.02)] } };
@@ -775,7 +800,12 @@ test('pool view board shares one cut across stairs, members and tanks', () => {
   assert.deepEqual(o.series[0].data.map(d => d.itemStyle.color), ['#3ccf8e', '#f2a93b', '#2a3442']);
   assert.deepEqual(o.series[2].data, [[1, 50], [3, 0], [5, 2]]);
   assert.deepEqual(o.series[3].data, [[1, 50], [3, 100], [5, 98]]);
-  for (const i of [0, 1, 2]) assert.equal(o.series[i].markLine.data[0].xAxis, 20);
+  for (const i of [0, 1, 2]) assert.equal(o.series[i].markLine.data[0].xAxis, 0);
+  // fast percent 20 of 500 scored accounts out of 1000 sits at rank position 10.
+  const scored = plain(v.boardOption({ live: { ...sp.live, scored: 500 } }, 20, 1000));
+  for (const i of [0, 1, 2]) assert.equal(scored.series[i].markLine.data[0].xAxis, 10);
+  assert.deepEqual(scored.series[0].markArea.data[0].map(p => p.xAxis), [0, 10]);
+  assert.equal(scored.series[0].markLine.label.formatter, '快组目标 20%');
   assert.equal(o.xAxis[2].interval, 20);
   const narrow = plain(v.boardOption(sp, 20, 360));
   assert.equal(narrow.xAxis[2].interval, 50);

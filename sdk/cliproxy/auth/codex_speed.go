@@ -479,7 +479,8 @@ func (a *codexSpeedAccount) overloadRateLocked(now time.Time, halfLife time.Dura
 
 // codexSpeedFastMembers applies the hysteresis band to the ranked IDs (fastest first): previous
 // members stay while inside keep, others enter inside enter, and the group fills up to its
-// target by rank while below it.
+// target by rank while below it. total is the denominator of percent: the number of scored
+// accounts, so accounts without a score never inflate the target.
 func codexSpeedFastMembers(ranked []string, prev map[string]bool, total int, percent int) map[string]bool {
 	x := float64(percent)
 	band := min(codexSpeedBandPoints, x/2)
@@ -504,7 +505,8 @@ func codexSpeedFastMembers(ranked []string, prev map[string]bool, total int, per
 }
 
 // Recompute ranks every schedulable account and publishes the new view. infos lists the current
-// Codex OAuth accounts.
+// Codex OAuth accounts. The fast group is fast-percent of the scored accounts (penalized ones
+// included); slow is the rest of the scored accounts, and unscored accounts belong to neither.
 func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 	if t == nil {
 		return
@@ -564,10 +566,10 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 	for i, r := range rankable {
 		order[i] = r.id
 	}
-	view.fast = codexSpeedFastMembers(order, prev.fast, view.total, cfg.FastPercent)
+	view.fast = codexSpeedFastMembers(order, prev.fast, view.scored, cfg.FastPercent)
 	view.fastCount = len(view.fast)
 	view.unscored = view.total - view.scored
-	view.slowCount = view.total - view.fastCount
+	view.slowCount = view.scored - view.fastCount
 
 	var slowScores []time.Duration
 	for id, score := range view.score {
@@ -585,7 +587,7 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 		if util, ok := info.utilization(); ok {
 			if view.fast[id] {
 				fastUtil.add(util)
-			} else {
+			} else if _, scored := view.score[id]; scored {
 				slowUtil.add(util)
 			}
 		}
@@ -697,15 +699,15 @@ func codexSpeedBins(schedulable map[string]CodexSpeedAuthInfo, view *codexSpeedV
 	return bins
 }
 
-// overflowKey orders non-fast candidates: healthy scored accounts by score, then penalized or
-// just-demoted scored accounts by score, then accounts without a score.
+// overflowKey orders non-fast candidates: healthy scored accounts by score, then accounts
+// without a score (speed unknown), then penalized or just-demoted scored accounts by score.
 func (t *CodexSpeedTracker) overflowKey(view *codexSpeedView, id string, now time.Time) (int, time.Duration) {
 	score, ok := view.score[id]
 	switch {
 	case !ok:
-		return 2, 0
+		return 1, 0
 	case view.penalized[id] || t.demotedActive(id, now):
-		return 1, score
+		return 2, score
 	default:
 		return 0, score
 	}
