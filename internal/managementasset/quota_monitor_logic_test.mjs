@@ -802,3 +802,29 @@ test('pool view capacity and request charts align concurrency by minute and spli
   assert.equal(v.capacityRead({}), '');
   assert.deepEqual(plain(v.commonLimit({ limits: [{ limit: 20, accounts: 5 }, { limit: 21, accounts: 9 }] })), { limit: 21, accounts: 9 });
 });
+
+test('pool view aligns concurrency samples on the absolute minute', () => {
+  const v = poolView();
+  // Same wall-clock minute on two different days, and one sample in another time zone notation.
+  const d = {
+    points: [{ time: '2026-11-02T23:59:00+08:00', attempts: 10, capacity: 100 }, { time: '2026-11-03T00:00:00+08:00', attempts: 20, capacity: 100 }],
+    concurrency_points: [
+      { time: '2026-11-01T23:59:00+08:00', in_flight_peak: 99, concurrency_capacity: 100, concurrency_full_accounts: 9, concurrency_rejections: 9 },
+      { time: '2026-11-02T16:00:00Z', in_flight_peak: 30, concurrency_capacity: 100, concurrency_full_accounts: 3, concurrency_rejections: 1 },
+    ],
+  };
+  const cap = plain(v.capacityOption(d));
+  assert.deepEqual(cap.series[1].data, [null, 30]);
+  assert.deepEqual(cap.series[2].data, [null, 3]);
+  assert.deepEqual(cap.series[3].data, [0, 1]);
+  assert.equal(v.minuteKey('not a time'), null);
+});
+
+test('pool view keeps local counters out of the Home mode capacity answer', () => {
+  const v = poolView();
+  const a = plain(v.capacityAnswer({ home_mode: true, success_rate: 0.5, rpm: 10, capacity: 20 }));
+  assert.equal(a.tone, 'off');
+  assert.equal(a.verdict, '容量由 Home 调度端管理');
+  assert.equal(a.big, '—');
+  assert.equal(v.capacityRead({ home_mode: true, capacity: 10, points: [{ time: 'x', attempts: 9 }] }), '');
+});

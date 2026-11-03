@@ -2682,7 +2682,9 @@
       if (rate >= 0.85) return {tone: 'warn', label: '成功率偏低'};
       return {tone: 'danger', label: '不稳定'};
     },
+    minuteKey: function (iso) { var ms = new Date(iso).getTime(); return isFinite(ms) ? Math.floor(ms / 60000) : null; },
     capacityAnswer: function (d) {
+      if (d.home_mode) return {tone: 'off', label: 'Home 模式', verdict: '容量由 Home 调度端管理', big: '—', rows: [['本机数据', '不代表整体容量']]};
       var t = this.successTone(d.success_rate), quota = (d.cooling_reasons || {}).credential_quota || 0, cooling = d.cooling || 0;
       return {
         tone: t.tone, label: t.label,
@@ -2721,6 +2723,7 @@
     rejections: function (d) { return (d.concurrency_points || []).reduce(function (s, p) { return s + (p.concurrency_rejections || 0); }, 0); },
     commonLimit: function (d) { return (d.limits || []).reduce(function (best, b) { return !best || b.accounts > best.accounts ? b : best; }, null); },
     capacityRead: function (d) {
+      if (d.home_mode) return '';
       var rpm = this.peak(d.points, 'attempts'), conc = this.peak(d.concurrency_points, 'in_flight_peak');
       if (!rpm && !conc) return '';
       var rp = this.gauge(0, d.capacity, rpm ? rpm.attempts : 0).peak, cp = this.gauge(0, d.concurrency_capacity, conc ? conc.in_flight_peak : 0).peak;
@@ -2772,8 +2775,9 @@
     // capacityOption plots RPM and concurrency as a share of capacity, with full accounts and rejections on the right axis.
     capacityOption: function (d) {
       var self = this, points = d.points || [], cmap = {};
-      (d.concurrency_points || []).forEach(function (p) { cmap[self.hhmm(p.time)] = p; });
-      var times = points.map(function (p) { return self.hhmm(p.time); });
+      // Align samples on the absolute minute so the date and time zone never mix two readings up.
+      (d.concurrency_points || []).forEach(function (p) { var k = self.minuteKey(p.time); if (k != null) cmap[k] = p; });
+      var times = points.map(function (p) { return self.hhmm(p.time); }), keys = points.map(function (p) { return self.minuteKey(p.time); });
       var share = function (a, b) { return b ? Math.round(1000 * a / b) / 10 : null; };
       var line = function (name, data, color, extra) { var s = {name: name, type: 'line', showSymbol: false, connectNulls: false, data: data, itemStyle: {color: color}}; for (var k in extra || {}) s[k] = extra[k]; return s; };
       return {animation: false, tooltip: {trigger: 'axis', renderMode: 'richText'}, legend: {bottom: 0, type: 'scroll'}, grid: {left: 48, right: 44, top: 30, bottom: 50},
@@ -2781,9 +2785,9 @@
         yAxis: [{type: 'value', name: '占容量 %', min: 0, max: 100}, {type: 'value', name: '个 / 次', splitLine: {show: false}}],
         series: [
           line('RPM / 容量', points.map(function (p) { return share(p.attempts || 0, p.capacity); }), '#4aa3ff'),
-          line('并发峰值 / 并发容量', times.map(function (t) { var c = cmap[t]; return c ? share(c.in_flight_peak || 0, c.concurrency_capacity) : null; }), '#f2a93b'),
-          line('并发已满账号', times.map(function (t) { var c = cmap[t]; return c ? c.concurrency_full_accounts || 0 : null; }), '#f2626a', {yAxisIndex: 1, lineStyle: {type: 'dashed', width: 1.4}}),
-          {name: '并发满被拒', type: 'bar', yAxisIndex: 1, itemStyle: {color: '#a78bfa'}, data: times.map(function (t) { var c = cmap[t]; return c ? c.concurrency_rejections || 0 : 0; })}
+          line('并发峰值 / 并发容量', keys.map(function (k) { var c = cmap[k]; return c ? share(c.in_flight_peak || 0, c.concurrency_capacity) : null; }), '#f2a93b'),
+          line('并发已满账号', keys.map(function (k) { var c = cmap[k]; return c ? c.concurrency_full_accounts || 0 : null; }), '#f2626a', {yAxisIndex: 1, lineStyle: {type: 'dashed', width: 1.4}}),
+          {name: '并发满被拒', type: 'bar', yAxisIndex: 1, itemStyle: {color: '#a78bfa'}, data: keys.map(function (k) { var c = cmap[k]; return c ? c.concurrency_rejections || 0 : 0; })}
         ]};
     },
     // requestsOption stacks successes with each failure kind kept apart.
@@ -3172,10 +3176,17 @@
   function renderPoolNumbers(data) {
     var P=PoolViewLogic, n=P.num, rpmPeak=P.peak(data.points,'attempts'), concPeak=P.peak(data.concurrency_points,'in_flight_peak'), fullPeak=P.peak(data.concurrency_points,'concurrency_full_accounts');
     poolAnswer('answer-capacity',P.capacityAnswer(data));
+    poolEl('capacity-read').textContent=P.capacityRead(data);
+    if (data.home_mode) {
+      // Local counters do not describe the pool Home dispatches, so no gauge pretends otherwise.
+      ['rpm-gauge','conc-gauge'].forEach(function(id){poolEl(id).innerHTML='<p class="pv-note">Home 模式：容量和并发由 Home 调度端管理，本机数字不代表整体。</p>';});
+      poolDl('pool-rpm-kv',[]);poolDl('pool-conc-kv',[]);
+      return;
+    }
     poolGauge('rpm-gauge',data.rpm,data.capacity,'次/分',rpmPeak,'attempts');
     poolGauge('conc-gauge',data.in_flight,data.concurrency_capacity,'个并发',concPeak,'in_flight_peak');
     var limit=P.commonLimit(data), rejections=P.rejections(data);
-    poolDl('pool-rpm-kv',data.home_mode?[['容量','由 Home 调度端管理']]:[
+    poolDl('pool-rpm-kv',[
       ['可调度账号',n(data.schedulable||0)+' 个'],['剩余',n(data.remaining)+' 次/分'],['有效成功容量',n(Math.round(data.effective_capacity||0))+' 次/分'],
       ['RPM 已满账号',n(data.full||0)+' 个',data.full>0?'warn':''],['60 分钟快速失败（529）',n(data.fast_failures||0)+' 次',data.fast_failures>0?'danger':''],
       ['单号上限',limit?'多数 '+limit.limit+' 次/分':'—']]);
@@ -3183,7 +3194,6 @@
       ['剩余',n(data.concurrency_remaining)],['并发已满账号',n(data.concurrency_full_accounts||0)+' 个（60 分钟峰值 '+n(fullPeak?fullPeak.concurrency_full_accounts:0)+'）'],
       ['不限并发的账号',n(data.unlimited_accounts||0)+' 个'],['并发容量',CodexPoolLogic.concurrencyCapacity(data)],
       ['60 分钟因并发满被拒',n(rejections)+' 次',rejections>0?'danger':'']]);
-    poolEl('capacity-read').textContent=P.capacityRead(data);
   }
   // Asset callbacks update charts only; cached snapshots must not rewrite saved form values.
   function renderPoolCharts(data) {
