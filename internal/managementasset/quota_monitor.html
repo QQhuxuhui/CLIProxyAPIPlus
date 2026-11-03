@@ -2683,12 +2683,19 @@
       return {tone: 'danger', label: '不稳定'};
     },
     minuteKey: function (iso) { var ms = new Date(iso).getTime(); return isFinite(ms) ? Math.floor(ms / 60000) : null; },
+    // recentAttempts counts outcomes in the five newest minutes, the window behind success_rate.
+    recentAttempts: function (d) {
+      return (d.points || []).slice().sort(function (a, b) { return new Date(b.time) - new Date(a.time); }).slice(0, 5).reduce(function (s, p) {
+        return s + (p.success || 0) + (p.overload || 0) + (p.rate_limits || 0) + (p.quota_exhausted || 0) + (p.other_failures || 0);
+      }, 0);
+    },
     capacityAnswer: function (d) {
       if (d.home_mode) return {tone: 'off', label: 'Home 模式', verdict: '容量由 Home 调度端管理', big: '—', rows: [['本机数据', '不代表整体容量']]};
-      var t = this.successTone(d.success_rate), quota = (d.cooling_reasons || {}).credential_quota || 0, cooling = d.cooling || 0;
+      var sampled = this.recentAttempts(d) > 0;
+      var t = sampled ? this.successTone(d.success_rate) : {tone: 'off', label: '暂无请求'}, quota = (d.cooling_reasons || {}).credential_quota || 0, cooling = d.cooling || 0;
       return {
         tone: t.tone, label: t.label,
-        verdict: '近 5 分钟成功率 ' + (d.success_rate == null ? '—' : (100 * d.success_rate).toFixed(1) + '%'),
+        verdict: sampled ? '近 5 分钟成功率 ' + (d.success_rate == null ? '—' : (100 * d.success_rate).toFixed(1) + '%') : '近 5 分钟没有请求',
         big: this.num(d.rpm) + '<small>/ ' + this.num(d.capacity) + ' 次/分</small>',
         rows: [
           ['在途并发', this.num(d.in_flight || 0) + ' / ' + this.num(d.concurrency_capacity || 0) + (d.unlimited_accounts > 0 ? ' + ∞×' + d.unlimited_accounts : '')],
@@ -2878,11 +2885,13 @@
     syncSpeedCut();
   }
   function speedFastPercentInput() {return SpeedViewLogic.snapPercent(speedEl('sp-fast-percent').value);}
+  function speedPriorityForm() {return [speedEl('sp-enable').checked,speedEl('sp-fast-percent').value,speedEl('sp-probe-interval').value];}
   // syncSpeedCut mirrors the pending fast percent onto the slider, number box, readout and board.
   function syncSpeedCut() {
     var sp=speedState.data && speedState.data.speed;if(!sp) return;
     var cut=speedFastPercentInput(), live=sp.live||{}, saved=sp.config.fast_percent;
     speedEl('sp-cut-range').value=cut;speedEl('sp-cut-num').value=cut;
+    speedEl('sp-cut-range').disabled=speedState.spSaving;speedEl('sp-cut-num').disabled=speedState.spSaving;
     speedEl('sp-cut-save').disabled=!speedState.spDirty || speedState.spSaving;
     var r=PoolViewLogic.cutReadout(live.bins,cut,live.total,saved);
     var text='快组 <b>'+cut+'%</b>（约 '+PoolViewLogic.num(r.accounts)+' 个号），分界处首字约 <b>'+PoolViewLogic.sec(r.edgeMs)+'</b>。';
@@ -2892,6 +2901,7 @@
     renderBucketChart();
   }
   function setSpeedCut(value) {
+    if (speedState.spSaving) return;
     var next=SpeedViewLogic.snapPercent(value);
     if (String(next)===speedEl('sp-fast-percent').value) return;
     speedEl('sp-fast-percent').value=next;speedState.spDirty=true;
@@ -2901,11 +2911,16 @@
   function saveSpeedPriority(event) {
     event.preventDefault();
     var key=getStoredKey();if(!key || speedState.spSaving || !speedEl('sp-config').reportValidity()) return;
-    speedState.spSaving=true;speedEl('sp-save').disabled=true;speedEl('sp-cut-save').disabled=true;speedSpStatus('保存中…',false);
+    speedState.spSaving=true;speedEl('sp-save').disabled=true;speedSpStatus('保存中…',false);syncSpeedCut();
     var body={speed_priority:{enable:speedEl('sp-enable').checked,fast_percent:speedFastPercentInput(),probe_interval_minutes:Number(speedEl('sp-probe-interval').value)}};
+    var sent=JSON.stringify(speedPriorityForm());
     fetch('/v0/management/codex-speed/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
-      .then(function(){speedState.spDirty=false;speedState.lastFetch=0;speedSpStatus('已保存，约 1 分钟内热更新生效',false);})
+      .then(function(){
+        // Edits made in the drawer while the request was in flight stay pending for another save.
+        if (JSON.stringify(speedPriorityForm())!==sent) {speedSpStatus('已保存上一次修改；之后的修改还没保存',false);return;}
+        speedState.spDirty=false;speedState.lastFetch=0;speedSpStatus('已保存，约 1 分钟内热更新生效',false);
+      })
       .catch(function(e){speedSpStatus('保存失败：'+e.message,true);})
       .finally(function(){speedState.spSaving=false;speedEl('sp-save').disabled=false;syncSpeedCut();});
   }

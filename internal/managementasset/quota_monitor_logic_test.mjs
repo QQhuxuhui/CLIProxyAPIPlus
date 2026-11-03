@@ -738,7 +738,7 @@ test('pool view peak keeps the latest of equal maxima and ignores empty minutes'
 
 test('pool view capacity answer grades success and splits cooling reasons', () => {
   const v = poolView();
-  const a = plain(v.capacityAnswer({ success_rate: 0.9406, rpm: 293, capacity: 33194, in_flight: 56, concurrency_capacity: 3280, cooling: 658, cooling_reasons: { credential_quota: 657, cooldown: 1 } }));
+  const a = plain(v.capacityAnswer({ points: [{ time: '2026-11-03T08:36:00Z', success: 127, other_failures: 8 }], success_rate: 0.9406, rpm: 293, capacity: 33194, in_flight: 56, concurrency_capacity: 3280, cooling: 658, cooling_reasons: { credential_quota: 657, cooldown: 1 } }));
   assert.equal(a.tone, 'warn');
   assert.equal(a.label, '成功率偏低');
   assert.equal(a.verdict, '近 5 分钟成功率 94.1%');
@@ -827,4 +827,18 @@ test('pool view keeps local counters out of the Home mode capacity answer', () =
   assert.equal(a.verdict, '容量由 Home 调度端管理');
   assert.equal(a.big, '—');
   assert.equal(v.capacityRead({ home_mode: true, capacity: 10, points: [{ time: 'x', attempts: 9 }] }), '');
+});
+
+test('pool view does not grade success when the last five minutes had no requests', () => {
+  const v = poolView();
+  const idle = plain(v.capacityAnswer({ success_rate: 0, points: [{ time: '2026-11-03T08:00:00Z', success: 0 }, { time: '2026-11-03T08:01:00Z' }] }));
+  assert.equal(idle.tone, 'off');
+  assert.equal(idle.label, '暂无请求');
+  assert.equal(idle.verdict, '近 5 分钟没有请求');
+  // Only the five newest minutes count, whatever order the points arrive in.
+  const pts = [6, 5, 4, 3, 2, 1].map((m, i) => ({ time: '2026-11-03T08:0' + m + ':00Z', success: i === 5 ? 50 : 0 }));
+  assert.equal(v.recentAttempts({ points: pts }), 0);
+  assert.equal(v.recentAttempts({ points: pts.slice().reverse() }), 0);
+  const busy = plain(v.capacityAnswer({ success_rate: 0, points: [{ time: '2026-11-03T08:01:00Z', other_failures: 3 }] }));
+  assert.equal(busy.tone, 'danger');
 });
