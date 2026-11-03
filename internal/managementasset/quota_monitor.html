@@ -470,6 +470,88 @@
   @media (max-width: 760px) { .quota-verdict { padding: 22px; } .quota-verdict h3 { font-size: 26px; } .quota-verdict-count { text-align: left; } .quota-heading { flex-wrap: wrap; } .quota-heading-side { justify-items: start; } }
   @media (max-width: 760px) { .pool-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pool-charts { grid-template-columns: 1fr; } }
 
+  /* Codex pool view: three answer cards, one section per question, settings in a drawer. */
+  #tab-pool { display: grid; gap: 18px; }
+  #tab-pool[hidden] { display: none; }
+  .pv-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+  .pv-updated span:not(:empty) + span:not(:empty)::before { content: " · "; }
+  .pv-btn { padding: 6px 14px; font-size: 13px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 8px; }
+  .pv-btn:hover:not(:disabled) { border-color: var(--line-3); }
+  .pv-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .pv-btn.pv-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
+  .pv-alert { padding: 8px 12px; font-size: 13px; color: var(--danger); background: var(--danger-soft); border: 1px solid rgba(242, 98, 106, .3); border-radius: 8px; }
+  .pv-answers { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .pv-answer { position: relative; display: grid; gap: 10px; align-content: start; min-width: 0; padding: 18px 20px; overflow: hidden; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+  .pv-answer::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--tone); }
+  .pv-answer header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .pv-answer h3 { font-size: 13px; font-weight: 500; color: var(--text-3); letter-spacing: .03em; }
+  .pv-pill { padding: 1px 10px; font-size: 12px; font-weight: 600; color: var(--tone); white-space: nowrap; background: color-mix(in srgb, var(--tone) 14%, transparent); border-radius: 999px; }
+  .pv-pill:empty { display: none; }
+  .pv-verdict { font-size: 15px; font-weight: 600; color: var(--text); }
+  .pv-big { font-family: var(--mono); font-size: 30px; line-height: 1.15; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  .pv-big small { margin-left: 6px; font-family: inherit; font-size: 13px; font-weight: 400; color: var(--text-3); }
+  .pv-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0; font-size: 13px; }
+  .pv-kv dt { color: var(--text-3); }
+  .pv-kv dd { margin: 0; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+  .pv-kv dd.pv-warn { color: var(--warn); } .pv-kv dd.pv-bad { color: var(--danger); }
+  .pv-link { font-size: 12.5px; color: var(--accent); text-decoration: none; }
+  .pv-note { font-size: 12.5px; color: var(--text-3); }
+  .pv-note b { color: var(--text-2); font-weight: 600; }
+  .pv-note:empty { display: none; }
+  .pv-section { display: grid; gap: 16px; min-width: 0; padding: 18px 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .pv-section > header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 14px; }
+  .pv-section h3 { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: .02em; }
+  .pv-section h3::before { content: ""; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
+  .pv-section h4, .pv-drawer h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: .02em; }
+  .pv-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+  .pv-block { display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .pv-callout { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 12px; font-size: 13px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; }
+  .pv-callout b { color: var(--text); }
+  .pv-callout .quota-reset-link { display: inline; width: auto; min-height: 0; margin: 0; padding: 0; font-size: 13px; background: none; border: 0; }
+  .pv-section .quota-states { margin: 0; }
+  .pv-section .quota-states h4 { margin-bottom: 10px; }
+  .pv-section .quota-state-bar { height: 22px; }
+  .pv-section .quota-state-legend { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-top: 10px; }
+  .pv-section .quota-state-count { font-size: 18px; }
+  .pv-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .pv-meters .quota-card { padding: 10px 12px; background: var(--surface-2); }
+  .pv-meters .quota-meter-head { font-size: 12.5px; font-weight: 500; color: var(--text-3); }
+  .pv-meters .quota-meter-value { margin-top: 4px; font-size: 18px; }
+  .pv-meters .quota-meter-track { height: 6px; margin-top: 6px; }
+  .pv-meters .quota-card-note { font-size: 12px; }
+  .pv-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; font-size: 13px; }
+  .pv-controls label { display: flex; align-items: center; gap: 8px; }
+  .pv-controls input[type=range] { width: min(280px, 56vw); accent-color: var(--accent); }
+  .pv-controls input[type=number] { width: 72px; padding: 5px 8px; font-family: var(--mono); border: 1px solid var(--line-2); border-radius: 7px; }
+  .pv-readout { padding: 8px 12px; font-size: 13px; color: var(--text-2); background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; }
+  .pv-readout b { color: var(--text); }
+  .pv-readout:empty { display: none; }
+  .pv-board { width: 100%; height: 430px; cursor: ew-resize; touch-action: pan-y; }
+  .pv-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--text-3); }
+  .pv-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; border-radius: 3px; }
+  .pv-section > * { min-width: 0; }
+  .pv-more { min-width: 0; padding-top: 12px; border-top: 1px dashed var(--line-2); }
+  .pv-more > summary { font-size: 13px; color: var(--accent); }
+  .pv-more[open] > summary { margin-bottom: 14px; }
+  .pv-more .pool-cards { margin: 0 0 16px; }
+  .pv-gauge { display: grid; gap: 8px; }
+  .pv-gauge-num { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .pv-gauge-num b { font-family: var(--mono); font-size: 26px; font-weight: 600; color: var(--text); }
+  .pv-gauge-num span, .pv-gauge-foot { font-size: 12.5px; color: var(--text-3); }
+  .pv-gauge-track { position: relative; height: 12px; background: var(--surface-3); border-radius: 6px; }
+  .pv-gauge-track span { display: block; height: 100%; min-width: 3px; background: var(--accent); border-radius: 6px; }
+  .pv-gauge-track i { position: absolute; top: -4px; width: 2px; height: 20px; background: var(--warn); border-radius: 1px; }
+  .pv-gauge-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+  .pv-scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .45); }
+  .pv-drawer { position: fixed; inset: 0 0 0 auto; z-index: 41; display: grid; gap: 14px; align-content: start; width: min(500px, 100%); padding: 20px; overflow-y: auto; background: var(--bg-raise); border-left: 1px solid var(--line-2); }
+  .pv-drawer > header { display: flex; justify-content: space-between; align-items: center; }
+  .pv-drawer > header h3 { font-size: 16px; font-weight: 600; color: var(--text); }
+  .pv-group { display: grid; gap: 10px; margin: 0; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .pv-drawer .pool-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 0; }
+  .pv-drawer .pool-switches { display: grid; gap: 6px; margin: 0; }
+  .pv-drawer .quota-switch { min-height: 32px; font-size: 13px; }
+  @media (max-width: 520px) { .pv-board { height: 470px; } .pv-big { font-size: 26px; } .pv-grid2 { grid-template-columns: minmax(0, 1fr); } .pv-section { padding: 16px 14px; } }
+
   @media (prefers-reduced-motion: reduce) {
     *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   }
@@ -785,57 +867,176 @@
     </section>
 
     <section id="tab-pool" hidden>
-      <div class="pool-heading quota-heading">
-        <div><h2 class="text-lg font-semibold text-slate-900">Codex 号池</h2><p id="quota-updated" class="muted text-xs"></p></div>
-        <div class="quota-heading-side">
-          <label class="quota-switch"><span>自动刷新额度</span><input id="quota-scan-enabled" type="checkbox" role="switch" form="quota-settings" disabled><i aria-hidden="true"></i></label>
-          <p id="quota-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
-        </div>
+      <div class="pv-head">
+        <div><h2 class="text-lg font-semibold text-slate-900">Codex 号池</h2><p class="muted text-xs pv-updated"><span id="quota-updated"></span><span id="pool-updated"></span><span id="speed-updated"></span></p></div>
+        <button id="pool-settings-open" type="button" class="pv-btn" aria-haspopup="dialog" aria-controls="pool-settings-drawer">⚙ 设置</button>
       </div>
-      <section id="quota-panel" aria-label="额度与加号建议">
-        <div id="quota-advice" class="quota-verdict quota-tone-off">
-          <div class="quota-verdict-main">
-            <p id="quota-verdict-tone" class="quota-verdict-tone"></p>
-            <h3 id="quota-headline">加载中…</h3>
-            <p id="quota-detail" class="quota-verdict-detail"></p>
+      <p id="pool-page-alert" class="pv-alert" role="alert" hidden></p>
+      <p id="pool-charts-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
+
+      <div class="pv-answers" aria-label="号池概况">
+        <article id="quota-advice" class="pv-answer quota-tone-off">
+          <header><h3>额度够不够</h3><span id="quota-verdict-tone" class="pv-pill"></span></header>
+          <p id="quota-headline" class="pv-verdict">加载中…</p>
+          <p id="answer-quota-big" class="pv-big">—</p>
+          <dl class="pv-kv">
+            <dt>建议加号</dt><dd><span id="quota-advice-count">—</span> 个</dd>
+            <dt>按现在用量还能撑</dt><dd id="answer-quota-runway">—</dd>
+            <dt>24 小时内恢复</dt><dd id="answer-quota-recover">—</dd>
+            <dt>高峰需要 / 能承载</dt><dd id="answer-quota-peak">—</dd>
+          </dl>
+          <p id="quota-detail" class="pv-note"></p>
+          <a class="pv-link" href="#pool-sec-accounts">看账号与额度 →</a>
+        </article>
+        <article id="answer-speed" class="pv-answer quota-tone-off">
+          <header><h3>用户快不快</h3><span id="answer-speed-pill" class="pv-pill"></span></header>
+          <p id="answer-speed-verdict" class="pv-verdict">加载中…</p>
+          <p id="answer-speed-big" class="pv-big">—</p>
+          <dl id="answer-speed-rows" class="pv-kv"></dl>
+          <a class="pv-link" href="#pool-sec-speed">看快慢池 →</a>
+        </article>
+        <article id="answer-capacity" class="pv-answer quota-tone-off">
+          <header><h3>容量与稳定</h3><span id="answer-capacity-pill" class="pv-pill"></span></header>
+          <p id="answer-capacity-verdict" class="pv-verdict">加载中…</p>
+          <p id="answer-capacity-big" class="pv-big">—</p>
+          <dl id="answer-capacity-rows" class="pv-kv"></dl>
+          <a class="pv-link" href="#pool-sec-capacity">看容量 →</a>
+        </article>
+      </div>
+
+      <section id="pool-sec-accounts" class="pv-section" aria-labelledby="pv-h-accounts">
+        <header><h3 id="pv-h-accounts">账号与额度</h3><span id="quota-detail-note" class="pv-note"></span></header>
+        <div class="pv-callout"><span id="quota-scan-line"></span><button id="quota-reset-link" type="button" class="quota-reset-link" hidden></button><span id="quota-reset-none" class="pv-note">没有可重置额度的号</span></div>
+        <div class="pv-grid2">
+          <div class="pv-block">
+            <div id="quota-states" class="quota-states" hidden>
+              <h4 id="quota-state-title"></h4>
+              <div id="quota-state-bar" class="quota-state-bar" role="img"></div>
+              <div id="quota-state-legend" class="quota-state-legend"></div>
+              <p id="quota-state-extra" class="quota-state-extra"></p>
+            </div>
+            <div id="quota-meters" class="pv-meters"></div>
           </div>
-          <div class="quota-verdict-count">建议加号<strong id="quota-advice-count">—</strong>个账号</div>
+          <div class="pv-block"><h4>近 24 小时能用账号</h4><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时可用账号数折线图"></div></div>
         </div>
-        <div id="quota-tiles" class="quota-grid"></div>
-        <button id="quota-reset-link" type="button" class="quota-reset-link" hidden></button>
-        <div id="quota-states" class="quota-card quota-states" hidden>
-          <h3 id="quota-state-title"></h3>
-          <div id="quota-state-bar" class="quota-state-bar" role="img"></div>
-          <div id="quota-state-legend" class="quota-state-legend"></div>
-          <p id="quota-state-extra" class="quota-state-extra"></p>
-        </div>
-        <div id="quota-meters" class="quota-grid"></div>
-        <details id="quota-details" class="quota-details">
-          <summary>查看明细和设置</summary>
-          <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-x-auto quota-plan-table">
+        <details id="quota-details" class="pv-more">
+          <summary>按套餐看</summary>
+          <div class="overflow-x-auto">
             <table class="data-table">
-              <thead><tr><th>套餐</th><th>账号</th><th>可用</th><th>平均剩余</th></tr></thead>
+              <thead><tr><th>套餐</th><th>账号</th><th>可用</th><th>平均剩余</th><th>24 小时内恢复</th></tr></thead>
               <tbody id="quota-plan-rows"></tbody>
             </table>
           </div>
-          <p id="quota-detail-note" class="quota-detail-note"></p>
-          <div class="pool-chart-card"><h3>近 24 小时可用账号</h3><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时可用账号数折线图"></div></div>
-          <form id="quota-settings" class="pool-settings">
-            <div class="pool-fields">
-              <label>刷新并发<input id="quota-concurrency" type="number" min="1" max="50" required></label>
-              <label>数据过期（分钟）<input id="quota-stale" type="number" min="5" max="1440" required></label>
-              <label>请求量余量（%）<input id="quota-headroom" type="number" min="0" max="200" required></label>
-              <label>预测时长（小时）<input id="quota-horizon" type="number" min="1" max="720" required></label>
-              <button id="quota-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
-            </div>
-            <p id="quota-scan-line" class="text-xs text-slate-500 quota-scan-line"></p>
-          </form>
         </details>
       </section>
-      <section id="speed-panel" class="speed-panel" aria-label="速度策略">
-        <div class="pool-heading"><div><h3>速度策略</h3><p class="muted text-xs">按小时统计 · 保留 7 天 · 只比较同一小时内的实验组与对照组</p></div><span id="speed-updated" class="muted text-xs"></span></div>
-        <form id="speed-fs-config" class="pool-settings">
-          <h4 class="speed-subtitle">fast session（快会话标识）</h4>
+
+      <section id="pool-sec-speed" class="pv-section" aria-labelledby="pv-h-speed">
+        <header><h3 id="pv-h-speed">快慢池</h3><span class="pv-note">账号按首字从快到慢排队；竖线左边是快组，请求先用快组，满了才按排名用右边</span></header>
+        <p id="speed-sp-state" class="pv-callout">加载中…</p>
+        <div class="pv-controls">
+          <label for="speed-sp-cut-range">快组分界 <input id="speed-sp-cut-range" type="range" min="1" max="90" step="1" value="30"></label>
+          <label for="speed-sp-cut-num"><input id="speed-sp-cut-num" type="number" min="1" max="90" step="1" value="30"> %</label>
+          <button id="speed-sp-cliff" type="button" class="pv-btn" disabled>放到断崖前</button>
+          <button id="speed-sp-cut-save" type="button" class="pv-btn pv-primary" disabled>保存分界</button>
+          <span id="speed-sp-cliff-note" class="pv-note"></span>
+        </div>
+        <p id="speed-sp-readout" class="pv-readout" aria-live="polite"></p>
+        <div id="speed-sp-bucket-chart" class="pv-board" role="img" aria-label="账号按首字从快到慢的速度阶梯、快组成员和用掉的容量（水桶），竖线为快慢分界，可拖动"></div>
+        <div class="pv-legend"><span><i style="background:var(--ok)"></i>&lt; 1.5 秒</span><span><i style="background:var(--warn)"></i>1.5–4 秒</span><span><i style="background:var(--danger)"></i>&gt; 4 秒</span><span><i style="background:#2a3442"></i>还没测速</span><span><i style="background:var(--accent)"></i>水桶：用掉的容量（并发 / RPM）</span></div>
+        <p id="speed-sp-bucket-note" class="pv-note"></p>
+        <details id="speed-trend-more" class="pv-more">
+          <summary>近 24 小时趋势</summary>
+          <div class="pv-grid2">
+            <div class="pv-block"><h4>首字 p50：快组 / 慢组 / 整体</h4><div id="speed-sp-ttft-chart" class="pool-chart" role="img" aria-label="快组、慢组和整体每小时小请求首字 p50 折线图"></div></div>
+            <div class="pv-block"><h4>快组水位 / 掉进慢组 / 快组比例</h4><div id="speed-sp-capacity-chart" class="pool-chart" role="img" aria-label="快组平均占用、掉进慢组的占比和快组比例每小时折线图"></div></div>
+          </div>
+        </details>
+        <details id="speed-fs-more" class="pv-more">
+          <summary id="speed-fs-labels">fast session 实验</summary>
+          <div id="speed-fs-cards" class="pool-cards"></div>
+          <div class="pv-grid2">
+            <div class="pv-block"><h4>小请求首字：fast 组 vs 对照组（近 7 天）</h4><div id="speed-fs-ttft-chart" class="pool-chart" role="img" aria-label="fast 组与对照组每小时小请求首字 p50 与 p90 折线图"></div></div>
+            <div class="pv-block"><h4>失败率：fast 组 vs 对照组（近 7 天）</h4><div id="speed-fs-fail-chart" class="pool-chart" role="img" aria-label="fast 组与对照组每小时失败率折线图"></div></div>
+          </div>
+          <h4 class="mt-4">最近成员变化</h4><ul id="speed-fs-events" class="speed-events"></ul>
+        </details>
+      </section>
+
+      <section id="pool-sec-capacity" class="pv-section" aria-labelledby="pv-h-capacity">
+        <header><h3 id="pv-h-capacity">容量（RPM / 并发）</h3><span class="pv-note">号池整体还能接多少请求 · 最近 60 分钟</span></header>
+        <div class="pv-grid2">
+          <div class="pv-block"><h4>每分钟请求（RPM）</h4><div id="pool-rpm-gauge" class="pv-gauge"></div><dl id="pool-rpm-kv" class="pv-kv"></dl></div>
+          <div class="pv-block"><h4>账号并发（在途请求）</h4><div id="pool-conc-gauge" class="pv-gauge"></div><dl id="pool-conc-kv" class="pv-kv"></dl></div>
+        </div>
+        <div class="pv-block"><h4>水位：用掉的容量占比</h4><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="最近 60 分钟 RPM 与并发占容量的百分比、并发已满账号与并发拒绝"></div></div>
+        <p id="pool-capacity-read" class="pv-note"></p>
+      </section>
+
+      <section id="pool-sec-requests" class="pv-section" aria-labelledby="pv-h-requests">
+        <header><h3 id="pv-h-requests">请求</h3><span class="pv-note">上游请求视角 · 最近 60 分钟 · 每分钟一个点</span></header>
+        <div class="pv-grid2">
+          <div class="pv-block"><h4>每分钟请求和失败</h4><div id="pool-failures-chart" class="pool-chart" role="img" aria-label="每分钟成功、过载、429 限流、额度用完及其他失败堆叠柱状图"></div></div>
+          <div class="pv-block"><h4>首字延迟</h4><div id="pool-ttft-chart" class="pool-chart" role="img" aria-label="每分钟首字延迟 p50 与 p90 折线图"></div></div>
+        </div>
+        <details id="pool-limits-more" class="pv-more">
+          <summary>学到的单号上限分布</summary>
+          <div id="pool-limits-chart" class="pool-chart" role="img" aria-label="单号每分钟请求上限分布直方图"></div>
+        </details>
+        <p class="pv-note">过载请求也占用窗口；首字百分位由固定边界直方图估计。成功率、有效成功容量与首字统计最近 5 个分钟桶，快速失败与并发拒绝统计最近 60 个分钟桶。</p>
+      </section>
+
+      <div id="pool-settings-scrim" class="pv-scrim" hidden></div>
+      <aside id="pool-settings-drawer" class="pv-drawer" role="dialog" aria-modal="true" aria-labelledby="pool-settings-title" hidden>
+        <header><h3 id="pool-settings-title">设置</h3><button id="pool-settings-close" type="button" class="pv-btn">关闭</button></header>
+        <form id="speed-sp-config" class="pool-settings pv-group">
+          <h4>快号优先</h4><p class="pv-note">按速度排名分快组 / 慢组，请求先用快组，满了按排名用慢组</p>
+          <div class="pool-switches"><label><input id="speed-sp-enable" type="checkbox"> 启用快号优先（需要 Codex 分池）</label></div>
+          <div class="pool-fields">
+            <label>快组比例（%）<input id="speed-sp-fast-percent" type="number" min="1" max="90" step="1" required data-tip="按速度排名的前 X% 账号进入快组；也可以在快慢池图上拖动竖线"></label>
+            <label>慢号探测间隔（分钟）<input id="speed-sp-probe-interval" type="number" min="1" max="60" step="1" required data-tip="快组以外的账号多久探测一次，用来发现恢复变快的账号"></label>
+            <button id="speed-sp-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+          </div>
+          <p id="speed-sp-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
+        </form>
+        <form id="quota-settings" class="pool-settings pv-group">
+          <h4>额度刷新</h4><p class="pv-note">后台定时查各账号的剩余额度</p>
+          <label class="quota-switch"><span>自动刷新额度（勾选即保存）</span><input id="quota-scan-enabled" type="checkbox" role="switch" disabled><i aria-hidden="true"></i></label>
+          <div class="pool-fields">
+            <label>刷新并发<input id="quota-concurrency" type="number" min="1" max="50" required></label>
+            <label>数据过期（分钟）<input id="quota-stale" type="number" min="5" max="1440" required></label>
+            <label>请求量余量（%）<input id="quota-headroom" type="number" min="0" max="200" required></label>
+            <label>预测时长（小时）<input id="quota-horizon" type="number" min="1" max="720" required></label>
+            <button id="quota-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+          </div>
+          <p id="quota-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
+        </form>
+        <form id="pool-config" class="pool-settings pv-group">
+          <h4>每分钟请求上限</h4><p class="pv-note">按账号学习每分钟能接多少请求，满了的号先避开；关闭时仍持续统计</p>
+          <div class="pool-switches">
+            <label><input id="pool-enabled" type="checkbox"> 启用速率上限算法</label>
+            <label><input id="pool-fail-fast" type="checkbox" disabled> 容量满时快速失败（529）</label>
+          </div>
+          <div class="pool-fields">
+            <label>初始 RPM<input id="pool-initial" type="number" min="1" max="1000000" required></label>
+            <label>最低 RPM<input id="pool-min" type="number" min="1" max="1000000" required></label>
+            <label>最高 RPM<input id="pool-max" type="number" min="1" max="1000000" required></label>
+            <label>上探间隔<input id="pool-probe" type="text" placeholder="5m" required></label>
+            <label>容量系数<input id="pool-headroom" type="number" min="0.01" max="1" step="0.01" required></label>
+            <button id="pool-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+          </div>
+          <p id="pool-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
+        </form>
+        <form id="pool-concurrency-config" class="pool-settings pv-group">
+          <h4>账号并发上限</h4><p class="pv-note">每个号同时最多处理几个请求；全部已满时返回 529</p>
+          <div class="pool-switches"><label><input id="pool-concurrency-enabled" type="checkbox"> 启用账号并发上限</label></div>
+          <div class="pool-fields">
+            <label>默认上限<input id="pool-concurrency-default" type="number" min="0" step="1" required data-tip="没有单号上限的账号使用此值，0 表示不限额"></label>
+            <button id="pool-concurrency-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
+          </div>
+          <p id="pool-concurrency-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
+        </form>
+        <form id="speed-fs-config" class="pool-settings pv-group">
+          <h4>fast session（实验）</h4><p class="pv-note">给一部分会话换快会话标识，按小时和对照组比首字</p>
           <div class="pool-switches"><label><input id="speed-fs-enable" type="checkbox"> 启用 fast session</label></div>
           <div class="pool-fields">
             <label>占比（%）<input id="speed-fs-percent" type="number" min="0" max="100" step="1" required data-tip="进入 fast 组的会话比例；开启自动回滚时最多 99%，留出对照组"></label>
@@ -843,66 +1044,7 @@
           </div>
           <p id="speed-fs-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
         </form>
-        <div id="speed-fs-cards" class="pool-cards"></div>
-        <p id="speed-fs-labels" class="text-xs text-slate-500 mb-3"></p>
-        <div class="pool-charts">
-          <div class="pool-chart-card"><h3>小请求首字：fast 组 vs 对照组（近 7 天）</h3><div id="speed-fs-ttft-chart" class="pool-chart" role="img" aria-label="fast 组与对照组每小时小请求首字 p50 与 p90 折线图"></div></div>
-          <div class="pool-chart-card"><h3>失败率：fast 组 vs 对照组（近 7 天）</h3><div id="speed-fs-fail-chart" class="pool-chart" role="img" aria-label="fast 组与对照组每小时失败率折线图"></div></div>
-        </div>
-        <div class="pool-chart-card speed-events-card"><h3>最近成员变化</h3><ul id="speed-fs-events" class="speed-events"></ul></div>
-        <form id="speed-sp-config" class="pool-settings speed-sp-form">
-          <h4 class="speed-subtitle">快号优先（按速度排名分快组 / 慢组）</h4>
-          <div class="pool-switches"><label><input id="speed-sp-enable" type="checkbox"> 启用快号优先（需要 Codex 分池）</label></div>
-          <div class="pool-fields">
-            <label>快组比例（%）<input id="speed-sp-fast-percent" type="number" min="1" max="90" step="1" required data-tip="按速度排名的前 X% 账号进入快组；请求先用快组，快组满了才按排名用慢组。也可以在下图拖动竖线"></label>
-            <label>慢号探测间隔（分钟）<input id="speed-sp-probe-interval" type="number" min="1" max="60" step="1" required data-tip="快组以外的账号多久探测一次，用来发现恢复变快的账号"></label>
-            <button id="speed-sp-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
-          </div>
-          <p id="speed-sp-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
-        </form>
-        <div id="speed-sp-cards" class="pool-cards"></div>
-        <div class="pool-chart-card"><h3>账号速度与占用（按速度排名，竖线为快慢分界，可拖动）</h3><div id="speed-sp-bucket-chart" class="pool-chart speed-bucket-chart" role="img" aria-label="账号按首字速度从快到慢排名的曲线、占用水位面积和快慢分界线"></div><p id="speed-sp-bucket-note" class="muted text-xs mt-2"></p></div>
-        <div class="pool-charts">
-          <div class="pool-chart-card"><h3>首字 p50：快组 / 慢组 / 整体（近 24 小时）</h3><div id="speed-sp-ttft-chart" class="pool-chart" role="img" aria-label="快组、慢组和整体每小时小请求首字 p50 折线图"></div></div>
-          <div class="pool-chart-card"><h3>容量：快组水位 / 溢出占比 / 快组比例（近 24 小时）</h3><div id="speed-sp-capacity-chart" class="pool-chart" role="img" aria-label="快组平均占用、溢出到慢组的占比和快组比例每小时折线图"></div></div>
-        </div>
-      </section>
-      <div class="pool-heading pool-monitor-heading"><div><h3>请求监控</h3><p class="muted text-xs">上游请求视角 · 最近 60 分钟 · 每 10 秒刷新 · 重启后重新采集</p></div><span id="pool-updated" class="muted text-xs"></span></div>
-      <form id="pool-config" class="pool-settings">
-        <div class="pool-switches">
-          <label><input id="pool-enabled" type="checkbox"> 启用速率上限算法</label>
-          <label><input id="pool-fail-fast" type="checkbox" disabled> 容量满时快速失败（529）</label>
-        </div>
-        <div class="pool-fields">
-          <label>初始 RPM<input id="pool-initial" type="number" min="1" max="1000000" required></label>
-          <label>最低 RPM<input id="pool-min" type="number" min="1" max="1000000" required></label>
-          <label>最高 RPM<input id="pool-max" type="number" min="1" max="1000000" required></label>
-          <label>上探间隔<input id="pool-probe" type="text" placeholder="5m" required></label>
-          <label>容量系数<input id="pool-headroom" type="number" min="0.01" max="1" step="0.01" required></label>
-          <button id="pool-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
-        </div>
-        <p id="pool-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
-      </form>
-      <form id="pool-concurrency-config" class="pool-settings">
-        <div class="pool-switches">
-          <label><input id="pool-concurrency-enabled" type="checkbox"> 启用账号并发上限（全部已满时返回 529）</label>
-        </div>
-        <div class="pool-fields">
-          <label>默认上限<input id="pool-concurrency-default" type="number" min="0" step="1" required data-tip="没有单号上限的账号使用此值，0 表示不限额"></label>
-          <button id="pool-concurrency-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
-        </div>
-        <p id="pool-concurrency-status" class="text-xs text-slate-500" role="status" aria-live="polite"></p>
-      </form>
-      <div id="pool-cards" class="pool-cards"></div>
-      <p id="pool-charts-status" class="text-xs text-slate-500 mb-3" role="status" aria-live="polite"></p>
-      <div class="pool-charts">
-        <div class="pool-chart-card"><h3>请求 RPM / 预测容量</h3><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="每分钟上游请求量与预测容量折线图"></div></div>
-        <div class="pool-chart-card"><h3>账号并发 / 容量</h3><div id="pool-concurrency-chart" class="pool-chart" role="img" aria-label="每分钟账号在途请求与并发容量折线图"></div></div>
-        <div class="pool-chart-card"><h3>成功请求首字延迟</h3><div id="pool-ttft-chart" class="pool-chart" role="img" aria-label="每分钟首字延迟 p50 与 p90 折线图"></div></div>
-        <div class="pool-chart-card"><h3>每分钟失败构成</h3><div id="pool-failures-chart" class="pool-chart" role="img" aria-label="过载、限流、额度耗尽及其他错误堆叠柱状图"></div></div>
-        <div class="pool-chart-card"><h3>学到的单号上限分布</h3><div id="pool-limits-chart" class="pool-chart" role="img" aria-label="单号每分钟请求上限分布直方图"></div></div>
-      </div>
-      <p class="muted text-xs mt-4">过载请求也占用窗口；首字百分位由固定边界直方图估计。成功率、有效成功容量与首字卡片统计最近 5 个分钟桶，快速失败计数统计最近 60 个分钟桶。</p>
+      </aside>
     </section>
   </main>
 </div>
@@ -2370,25 +2512,14 @@
   // ---- Codex pool ----
   /* CODEX_POOL_LOGIC_START */
   var CodexPoolLogic = {
+    // chartOptions returns the per-minute TTFT chart and the learned per-account limit histogram.
     chartOptions: function (data) {
       var points = data.points || [], times = points.map(function (p) { return new Date(p.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); });
-      function chart(series, unit) { return { animation:false, tooltip:{trigger:'axis',renderMode:'richText'}, legend:{bottom:0,type:'scroll'}, grid:{left:55,right:20,top:25,bottom:60}, xAxis:{type:'category',data:times}, yAxis:{type:'value',name:unit || ''}, series:series }; }
-      function series(name, field, type, stack) { return {name:name,type:type || 'line',stack:stack,showSymbol:false,data:points.map(function (p) { return p[field] || 0; })}; }
-      var concurrencyPoints = data.concurrency_points || [];
-      function concurrencySeries(name, field, type) { return {name:name,type:type || 'line',showSymbol:false,data:concurrencyPoints.map(function (p) { return p[field] || 0; })}; }
-      var unlimited = data.unlimited_accounts || 0;
-      var concurrencyChart = chart([concurrencySeries('当前在途','in_flight'),concurrencySeries('采样峰值','in_flight_peak'),concurrencySeries(unlimited > 0 ? '并发容量（另有 ' + unlimited + ' 个不限额）' : '并发容量','concurrency_capacity'),concurrencySeries('并发拒绝','concurrency_rejections','bar')],'请求');
-      concurrencyChart.xAxis = {type:'category',data:concurrencyPoints.map(function (p) { return new Date(p.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); })};
+      function series(name, field) { return {name:name,type:'line',showSymbol:false,data:points.map(function (p) { return p.attempts ? p[field] || 0 : null; })}; }
       return [
-        chart([series('上游请求','attempts'),series('预测容量','capacity')],'RPM'),
-        chart([series('p50','ttft_p50'),series('p90','ttft_p90')],'秒'),
-        chart([series('过载 502/503','overload','bar','fail'),series('429 限流','rate_limits','bar','fail'),series('额度耗尽','quota_exhausted','bar','fail'),series('其他','other_failures','bar','fail')],'次'),
-        {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},grid:{left:55,right:20,top:25,bottom:40},xAxis:{type:'category',data:(data.limits || []).map(function (b) {return b.limit;})},yAxis:{type:'value',name:'账号数'},series:[{type:'bar',data:(data.limits || []).map(function (b) {return b.accounts;})}]},
-        concurrencyChart
+        { animation:false, tooltip:{trigger:'axis',renderMode:'richText'}, legend:{bottom:0,type:'scroll'}, grid:{left:55,right:20,top:25,bottom:60}, xAxis:{type:'category',data:times}, yAxis:{type:'value',name:'秒'}, series:[series('p50','ttft_p50'),series('p90','ttft_p90')] },
+        {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},grid:{left:55,right:20,top:25,bottom:40},xAxis:{type:'category',name:'次/分',data:(data.limits || []).map(function (b) {return b.limit;})},yAxis:{type:'value',name:'账号数'},series:[{type:'bar',data:(data.limits || []).map(function (b) {return b.accounts;})}]}
       ];
-    },
-    cards: function (d) {
-      return [['可调度账号',d.schedulable],['预测容量 / RPM',d.capacity],['当前 RPM',d.rpm],['剩余容量 / RPM',d.remaining],['已满账号',d.full],['近 5 分钟成功率',(100*d.success_rate).toFixed(1)+'%'],['首字 p50',d.ttft_p50 ? d.ttft_p50+' s' : '—'],['首字 p90',d.ttft_p90 ? d.ttft_p90+' s' : '—'],['有效成功容量 / RPM',Number(d.effective_capacity || 0).toFixed(1)],['冷却中账号',d.cooling],['快速失败 / 60 分钟',d.fast_failures],['当前在途',d.in_flight || 0],['并发容量',this.concurrencyCapacity(d)],['并发已满账号',d.concurrency_full_accounts || 0]];
     },
     concurrencyCapacity: function (d) {
       var text = String(d.concurrency_capacity || 0);
@@ -2465,18 +2596,6 @@
       if (live.probe_behind) text += ' 探测排不过来：一轮约 ' + Math.round(live.probe_cycle_minutes) + ' 分钟。';
       return text;
     },
-    speedCards: function (sp) {
-      var live = sp.live || {}, room = this.headroom(live.overflow_share);
-      return [
-        ['状态', live.active ? (live.ready ? '运行中' : '测速中') : (this.inactiveText[live.inactive] || live.inactive || '—')],
-        ['快号 / 慢号 / 无分数', (live.fast || 0) + ' / ' + (live.slow || 0) + ' / ' + (live.unscored || 0)],
-        ['快组平均水位', this.pct(live.fast_util)],
-        ['本小时溢出占比', this.pct(live.overflow_share) + '（' + room.text + '）'],
-        ['首字 p50 快组 / 慢组', this.seconds(live.fast_p50_ms) + ' / ' + this.seconds(live.slow_p50_ms)],
-        ['首字 p50 整体', this.seconds(live.overall_p50_ms)],
-        ['本小时探测数', live.probes || 0]
-      ];
-    },
     // binSeries maps the 50 rank bins to [percent-center, value] points; empty values stay null so
     // the smoothed lines break instead of dropping to zero.
     binSeries: function (bins) {
@@ -2509,10 +2628,197 @@
     }
   };
   /* SPEED_VIEW_LOGIC_END */
-  var poolState = {timer:null, controller:null, generation:0, charts:[], loaded:false, dirty:false, saving:false, home:false, saveToken:0, saveController:null, lastData:null, chartsLoading:false, chartsFailed:false};
+  /* POOL_VIEW_LOGIC_START */
+  // Pure helpers for the simplified Codex pool view: answer cards, the speed board and capacity.
+  var PoolViewLogic = {
+    FAST_MS: 1500, MID_MS: 4000, CLIFF_RATIO: 2, CLIFF_GAP_MS: 1500, BOARD_MAX_S: 12,
+    COLORS: {ok: '#3ccf8e', warn: '#f2a93b', bad: '#f2626a', none: '#2a3442', water: '#4aa3ff', cut: '#4aa3ff'},
+    num: function (v) { return v == null || !isFinite(v) ? '—' : Number(v).toLocaleString('en-US'); },
+    pct: function (v) { return v == null || !isFinite(v) ? '—' : (100 * v).toFixed(1) + '%'; },
+    sec: function (ms) { return ms == null ? '—' : (ms / 1000).toFixed(1) + ' 秒'; },
+    hhmm: function (iso) { return new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); },
+    // speedTone grades a rank bin's median first-token gap; null means not measured yet.
+    speedTone: function (ms) {
+      if (ms == null) return null;
+      return ms < this.FAST_MS ? 'ok' : (ms < this.MID_MS ? 'warn' : 'bad');
+    },
+    trueFastCount: function (bins) {
+      var self = this;
+      return (bins || []).reduce(function (sum, b) { return sum + (b.score_ms != null && b.score_ms < self.FAST_MS ? (b.accounts || 0) : 0); }, 0);
+    },
+    // cliff finds the first jump between neighbouring scored bins and proposes the cut just before it.
+    cliff: function (bins, ready) {
+      if (!ready) return {reason: '测速还没就绪'};
+      bins = bins || [];
+      for (var i = 0; i + 1 < bins.length; i++) {
+        var a = bins[i].score_ms, b = bins[i + 1].score_ms;
+        if (a == null || b == null || !(a > 0)) continue;
+        if (b / a >= this.CLIFF_RATIO && b - a >= this.CLIFF_GAP_MS) {
+          var percent = Math.min(90, Math.max(1, (i + 1) * 2));
+          return {percent: percent, fromMs: a, toMs: b};
+        }
+      }
+      return {reason: '现在没有明显断崖（相邻两段首字没有翻倍并且多 1.5 秒以上）'};
+    },
+    // cutReadout describes a candidate cut: how many accounts it holds and how many slow ones sneak in.
+    cutReadout: function (bins, cut, total, saved) {
+      bins = bins || [];
+      var covered = Math.min(bins.length, Math.round(cut / 2)), slow = 0, edge = null;
+      for (var i = 0; i < covered; i++) {
+        var b = bins[i];
+        if (b.score_ms != null) { edge = b.score_ms; if (b.score_ms >= this.FAST_MS) slow += b.accounts || 0; }
+      }
+      return {cut: cut, accounts: Math.round(cut / 100 * (total || 0)), edgeMs: edge, slowInFast: slow, trueFast: this.trueFastCount(bins), dirty: cut !== saved};
+    },
+    // peak returns the point holding the largest value; ties go to the most recent minute.
+    peak: function (points, field) {
+      var best = null;
+      (points || []).forEach(function (p) { if ((p[field] || 0) > 0 && (best == null || (p[field] || 0) >= (best[field] || 0))) best = p; });
+      return best;
+    },
+    successTone: function (rate) {
+      if (rate == null || !isFinite(rate)) return {tone: 'off', label: ''};
+      if (rate >= 0.95) return {tone: 'ok', label: '稳定'};
+      if (rate >= 0.85) return {tone: 'warn', label: '成功率偏低'};
+      return {tone: 'danger', label: '不稳定'};
+    },
+    capacityAnswer: function (d) {
+      var t = this.successTone(d.success_rate), quota = (d.cooling_reasons || {}).credential_quota || 0, cooling = d.cooling || 0;
+      return {
+        tone: t.tone, label: t.label,
+        verdict: '近 5 分钟成功率 ' + (d.success_rate == null ? '—' : (100 * d.success_rate).toFixed(1) + '%'),
+        big: this.num(d.rpm) + '<small>/ ' + this.num(d.capacity) + ' 次/分</small>',
+        rows: [
+          ['在途并发', this.num(d.in_flight || 0) + ' / ' + this.num(d.concurrency_capacity || 0) + (d.unlimited_accounts > 0 ? ' + ∞×' + d.unlimited_accounts : '')],
+          ['冷却中（额度用完 / 其他）', this.num(cooling) + '（' + this.num(quota) + ' / ' + this.num(Math.max(0, cooling - quota)) + '）']
+        ]
+      };
+    },
+    speedAnswer: function (sp) {
+      var c = (sp && sp.config) || {}, live = (sp && sp.live) || {};
+      var state = !live.active ? '未生效' : (live.ready ? '运行中' : '测速中');
+      var room = SpeedViewLogic.headroom(live.overflow_share);
+      var tones = {'speed-pass': 'ok', 'speed-warn': 'warn', 'speed-fail': 'danger', 'speed-insufficient': 'off'};
+      var running = live.active && live.ready;
+      var trueFast = (live.bins || []).length ? this.trueFastCount(live.bins) : null;
+      return {
+        state: state, tone: running ? tones[room.cls] : 'off', label: running ? room.text : state,
+        verdict: '快组 ' + this.sec(live.fast_p50_ms) + '，慢组 ' + this.sec(live.slow_p50_ms),
+        big: (live.overall_p50_ms == null ? '—' : (live.overall_p50_ms / 1000).toFixed(1)) + '<small>秒 · 整体首字 p50（本小时）</small>',
+        rows: [
+          ['本小时请求掉进慢组', this.pct(live.overflow_share), running ? tones[room.cls] : ''],
+          ['快组 / 慢组 / 还没测速', this.num(live.fast || 0) + ' / ' + this.num(live.slow || 0) + ' / ' + this.num(live.unscored || 0)],
+          ['真快号（首字 < 1.5 秒）', trueFast == null ? '—' : '约 ' + this.num(trueFast) + ' 个']
+        ],
+        enabled: !!c.enable
+      };
+    },
+    // gauge positions the current value and the 60-minute peak against capacity, in percent.
+    gauge: function (current, capacity, peakValue) {
+      var used = capacity > 0 ? 100 * (current || 0) / capacity : 0, peak = capacity > 0 ? 100 * (peakValue || 0) / capacity : 0;
+      return {used: used, peak: peak, usedBar: Math.min(100, used), peakMark: Math.min(99.5, peak)};
+    },
+    rejections: function (d) { return (d.concurrency_points || []).reduce(function (s, p) { return s + (p.concurrency_rejections || 0); }, 0); },
+    commonLimit: function (d) { return (d.limits || []).reduce(function (best, b) { return !best || b.accounts > best.accounts ? b : best; }, null); },
+    capacityRead: function (d) {
+      var rpm = this.peak(d.points, 'attempts'), conc = this.peak(d.concurrency_points, 'in_flight_peak');
+      if (!rpm && !conc) return '';
+      var rp = this.gauge(0, d.capacity, rpm ? rpm.attempts : 0).peak, cp = this.gauge(0, d.concurrency_capacity, conc ? conc.in_flight_peak : 0).peak;
+      var head = '怎么看：最近 60 分钟 RPM 最多用到 ' + rp.toFixed(0) + '%，并发最多用到 ' + cp.toFixed(0) + '%。';
+      return head + (rp < 50 && cp < 50 ? '号池整体还很空；用户如果变慢，先看“快慢池”里快组是不是满了或混进了慢号，不是号池整体不够。' : '已经接近上限，考虑加号或打开账号并发上限。');
+    },
+    // boardOption draws the speed stairs, the fast-member strip and the capacity tanks on one shared cut.
+    boardOption: function (sp, cut, width) {
+      var self = this, live = (sp && sp.live) || {}, bins = live.bins || [], total = live.total || 0, max = this.BOARD_MAX_S;
+      var narrow = width < 600, bw = Math.max(2, (width - 68) / 50 * 0.78);
+      var x = function (i) { return i * 2 + 1; };
+      var water = function (b) { return b.util == null ? 0 : Math.max(0.6, Math.min(100, 100 * b.util)); };
+      var stairs = bins.map(function (b, i) {
+        var tone = self.speedTone(b.score_ms);
+        return {value: [x(i), tone ? Math.min(b.score_ms / 1000, max) : max], itemStyle: {color: tone ? self.COLORS[tone] : self.COLORS.none}};
+      });
+      var strip = bins.map(function (b, i) { var share = b.accounts ? b.fast / b.accounts : 0; return {value: [x(i), 1], itemStyle: {color: 'rgba(60,207,142,' + (0.08 + 0.92 * share).toFixed(2) + ')'}}; });
+      var mark = function (label) { return {symbol: 'none', silent: true, animation: false, lineStyle: {color: self.COLORS.cut, width: 2.5, type: 'solid'}, label: {show: label, formatter: '快组 ' + cut + '%', color: self.COLORS.cut, position: 'end'}, data: [{xAxis: cut}]}; };
+      var area = {silent: true, itemStyle: {color: 'rgba(60,207,142,.06)'}, data: [[{xAxis: 0}, {xAxis: cut}]]};
+      var axis = function (gi, show) { return {gridIndex: gi, type: 'value', min: 0, max: 100, interval: narrow ? 50 : 20, splitLine: {show: false}, axisTick: {show: false}, axisLine: {show: false},
+        axisLabel: {show: show, alignMinLabel: 'left', alignMaxLabel: 'right', formatter: function (v) { return narrow ? v + '%' : v + '%（' + self.num(Math.round(v / 100 * total)) + ' 个）'; }}}; };
+      var unscored = bins.some(function (b) { return b.score_ms == null; });
+      return {
+        animation: false,
+        tooltip: {trigger: 'item', renderMode: 'richText', formatter: function (p) {
+          var b = bins[Math.round((p.value[0] - 1) / 2)];
+          if (!b) return '';
+          return '排名 ' + (p.value[0] - 1) + '–' + (p.value[0] + 1) + '%（' + b.accounts + ' 个号）\n首字中位数 ' + (b.score_ms == null ? '还没测速' : (b.score_ms / 1000).toFixed(2) + ' 秒') +
+            '\n其中快组 ' + b.fast + ' 个\n用掉的容量 ' + (b.util == null ? '—' : (100 * b.util).toFixed(1) + '%');
+        }},
+        grid: [{left: 50, right: 18, top: 44, height: '45%'}, {left: 50, right: 18, top: '58%', height: 12}, {left: 50, right: 18, top: '66%', bottom: 34}],
+        xAxis: [axis(0, false), axis(1, false), axis(2, true)],
+        yAxis: [
+          {gridIndex: 0, type: 'value', min: 0, max: max, interval: 4, name: narrow ? '秒' : '首字中位数（秒）', nameTextStyle: {align: narrow ? 'right' : 'left'}, axisLabel: {formatter: function (v) { return v === max ? v + '+' : v; }}},
+          {gridIndex: 1, type: 'value', min: 0, max: 1, show: false},
+          {gridIndex: 2, type: 'value', min: 0, max: 100, interval: 50, axisLabel: {formatter: '{value}%'}}
+        ],
+        graphic: [{type: 'text', left: 14, top: '57.6%', style: {text: '快组', fill: '#8b9bb0', fontSize: 11}}]
+          .concat(unscored ? [{type: 'text', right: 20, top: 4, style: {text: '灰色：还没测速 ' + self.num(live.unscored || 0) + ' 个', fill: '#8b9bb0', fontSize: 12}}] : [])
+          .concat(bins.length ? [] : [{type: 'text', left: 'center', top: '25%', style: {text: '还没有测速数据', fill: '#8b9bb0', fontSize: 13}}]),
+        series: [
+          {name: '首字', type: 'bar', xAxisIndex: 0, yAxisIndex: 0, barWidth: bw, data: stairs, markLine: mark(true), markArea: area, itemStyle: {borderRadius: [2, 2, 0, 0]}},
+          {name: '快组成员', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barWidth: bw, data: strip, markLine: mark(false), itemStyle: {borderRadius: 2}},
+          {name: '用掉的容量', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, stack: 'tank', barWidth: bw, data: bins.map(function (b, i) { return [x(i), water(b)]; }), markLine: mark(false), markArea: area, itemStyle: {color: this.COLORS.water, borderRadius: 0}},
+          {name: '空桶', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, stack: 'tank', barWidth: bw, data: bins.map(function (b, i) { return [x(i), 100 - water(b)]; }), tooltip: {show: false}, itemStyle: {color: 'rgba(74,163,255,.10)', borderRadius: [2, 2, 0, 0]}}
+        ]
+      };
+    },
+    // capacityOption plots RPM and concurrency as a share of capacity, with full accounts and rejections on the right axis.
+    capacityOption: function (d) {
+      var self = this, points = d.points || [], cmap = {};
+      (d.concurrency_points || []).forEach(function (p) { cmap[self.hhmm(p.time)] = p; });
+      var times = points.map(function (p) { return self.hhmm(p.time); });
+      var share = function (a, b) { return b ? Math.round(1000 * a / b) / 10 : null; };
+      var line = function (name, data, color, extra) { var s = {name: name, type: 'line', showSymbol: false, connectNulls: false, data: data, itemStyle: {color: color}}; for (var k in extra || {}) s[k] = extra[k]; return s; };
+      return {animation: false, tooltip: {trigger: 'axis', renderMode: 'richText'}, legend: {bottom: 0, type: 'scroll'}, grid: {left: 48, right: 44, top: 30, bottom: 50},
+        xAxis: {type: 'category', data: times},
+        yAxis: [{type: 'value', name: '占容量 %', min: 0, max: 100}, {type: 'value', name: '个 / 次', splitLine: {show: false}}],
+        series: [
+          line('RPM / 容量', points.map(function (p) { return share(p.attempts || 0, p.capacity); }), '#4aa3ff'),
+          line('并发峰值 / 并发容量', times.map(function (t) { var c = cmap[t]; return c ? share(c.in_flight_peak || 0, c.concurrency_capacity) : null; }), '#f2a93b'),
+          line('并发已满账号', times.map(function (t) { var c = cmap[t]; return c ? c.concurrency_full_accounts || 0 : null; }), '#f2626a', {yAxisIndex: 1, lineStyle: {type: 'dashed', width: 1.4}}),
+          {name: '并发满被拒', type: 'bar', yAxisIndex: 1, itemStyle: {color: '#a78bfa'}, data: times.map(function (t) { var c = cmap[t]; return c ? c.concurrency_rejections || 0 : 0; })}
+        ]};
+    },
+    // requestsOption stacks successes with each failure kind kept apart.
+    requestsOption: function (d) {
+      var self = this, points = d.points || [];
+      var bar = function (name, field, color) { return {name: name, type: 'bar', stack: 'req', itemStyle: {color: color, borderRadius: 0}, data: points.map(function (p) { return p[field] || 0; })}; };
+      return {animation: false, tooltip: {trigger: 'axis', renderMode: 'richText'}, legend: {bottom: 0, type: 'scroll'}, grid: {left: 55, right: 20, top: 25, bottom: 60},
+        xAxis: {type: 'category', data: points.map(function (p) { return self.hhmm(p.time); })}, yAxis: {type: 'value', name: '次'},
+        series: [bar('成功', 'success', '#3ccf8e'), bar('过载 502/503', 'overload', '#f2626a'), bar('429 限流', 'rate_limits', '#f2a93b'), bar('额度用完', 'quota_exhausted', '#a78bfa'), bar('其他', 'other_failures', '#64748b')]};
+    }
+  };
+  /* POOL_VIEW_LOGIC_END */
+  var poolState = {timer:null, controller:null, generation:0, charts:[], loaded:false, dirty:false, saving:false, home:false, saveToken:0, saveController:null, lastData:null, chartsLoading:false, chartsFailed:false, alerts:{}};
   var speedState = {controller:null, charts:[], bucket:null, data:null, dirty:false, saving:false, loaded:false, spDirty:false, spSaving:false, lastFetch:0};
+  // Settings forms live in the drawer, so load and save failures are also surfaced at the top of the page.
+  function poolAlert(source, message) {
+    poolState.alerts[source]=message || '';
+    var text=Object.keys(poolState.alerts).map(function(k){return poolState.alerts[k];}).filter(Boolean).join('；');
+    var el=document.getElementById('pool-page-alert');el.textContent=text;el.hidden=!text;
+  }
+  function poolDl(id, rows) {
+    document.getElementById(id).innerHTML=rows.map(function(r){
+      var cls=r[2]==='danger'?' class="pv-bad"':(r[2]==='warn'?' class="pv-warn"':'');
+      return '<dt>'+escapeHtml(r[0])+'</dt><dd'+cls+'>'+escapeHtml(String(r[1]))+'</dd>';
+    }).join('');
+  }
+  function poolAnswer(id, view) {
+    document.getElementById(id).className='pv-answer quota-tone-'+view.tone;
+    document.getElementById(id+'-pill').textContent=view.label;
+    document.getElementById(id+'-verdict').textContent=view.verdict;
+    document.getElementById(id+'-big').innerHTML=view.big;
+    poolDl(id+'-rows',view.rows);
+  }
   function speedEl(id) {return document.getElementById('speed-' + id);}
-  function speedStatus(message, failed) {speedEl('fs-status').textContent=message;speedEl('fs-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function speedStatus(message, failed) {speedEl('fs-status').textContent=message;speedEl('fs-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');poolAlert('speed-fs',failed?message:'');}
   function fetchSpeed() {
     var key=getStoredKey();
     if (!key || currentTab!=='pool' || speedState.controller || speedState.saving) return;
@@ -2521,8 +2827,8 @@
     var controller=new AbortController();speedState.controller=controller;
     fetch('/v0/management/codex-speed',{headers:{Authorization:'Bearer '+key},signal:controller.signal})
       .then(function(resp){if(!resp.ok)throw new Error('HTTP '+resp.status);return resp.json();})
-      .then(function(data){if(key===getStoredKey())renderSpeed(data);})
-      .catch(function(e){if(e.name!=='AbortError')speedStatus('速度策略数据加载失败：'+e.message,true);})
+      .then(function(data){if(key===getStoredKey()){poolAlert('speed','');renderSpeed(data);}})
+      .catch(function(e){if(e.name!=='AbortError')poolAlert('speed','速度策略数据加载失败：'+e.message+'；稍后自动重试');})
       .finally(function(){if(speedState.controller===controller)speedState.controller=null;});
   }
   function renderSpeed(data) {
@@ -2535,73 +2841,81 @@
       var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
       card.className='pool-metric';label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);speedEl('fs-cards').appendChild(card);
     });
-    speedEl('fs-labels').textContent=SpeedViewLogic.labelSummary(fs.labels_24h)+(data.history_available?'':'（历史未启用：auth 目录不可用）');
+    speedEl('fs-labels').textContent='fast session 实验 · '+(fs.enable?'开启中':'已关闭')+' · '+SpeedViewLogic.labelSummary(fs.labels_24h)+(data.history_available?'':'（历史未启用：auth 目录不可用）');
     var list=speedEl('fs-events');list.textContent='';
-    (fs.events || []).slice().reverse().forEach(function(ev){
+    (fs.events || []).slice(-20).reverse().forEach(function(ev){
       var li=document.createElement('li');
       li.textContent=new Date(ev.time).toLocaleString()+' · '+ev.action+(ev.value?' '+ev.value.slice(0,8):'')+(ev.detail?' · '+ev.detail:'');
       list.appendChild(li);
     });
     if (!list.children.length) {var empty=document.createElement('li');empty.textContent='暂无成员变化';list.appendChild(empty);}
-    speedEl('updated').textContent='更新于 '+new Date().toLocaleTimeString();
+    speedEl('updated').textContent='快慢池 '+new Date().toLocaleTimeString()+' 更新';
     if (!speedState.dirty && !speedState.saving) speedStatus(fs.enable?'已开启：结论按小时对比 fast 组与对照组的小请求首字。':'已关闭：请求保持原 Session-Id，不再统计 fast 组。',false);
     renderSpeedPriority(data.speed);
     renderSpeedCharts();
   }
-  function speedSpStatus(message, failed) {speedEl('sp-status').textContent=message;speedEl('sp-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function speedSpStatus(message, failed) {speedEl('sp-status').textContent=message;speedEl('sp-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');poolAlert('speed-sp',failed?message:'');}
   function renderSpeedPriority(sp) {
     if (!sp) return;
     if (!speedState.spDirty && !speedState.spSaving) {
       speedEl('sp-enable').checked=sp.config.enable;speedEl('sp-fast-percent').value=sp.config.fast_percent;speedEl('sp-probe-interval').value=sp.config.probe_interval_minutes;
     }
     speedEl('sp-save').disabled=speedState.spSaving;
-    speedEl('sp-cards').textContent='';
-    SpeedViewLogic.speedCards(sp).forEach(function(pair){
-      var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
-      card.className='pool-metric';label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);speedEl('sp-cards').appendChild(card);
-    });
-    var live=sp.live||{};
-    speedEl('sp-bucket-note').textContent='共 '+(live.total||0)+' 个可调度账号，实际快组 '+(live.fast||0)+' 个（缓冲带让快组成员不一定连续）；曲线为每段首字中位数，面积为每段平均占用（并发 / RPM），浅色柱为每段快组占比。';
+    var live=sp.live||{}, answer=PoolViewLogic.speedAnswer(sp);
+    poolAnswer('answer-speed',answer);
+    speedEl('sp-state').innerHTML='<b>'+escapeHtml(answer.state)+'</b><span>'+escapeHtml(SpeedViewLogic.statusText(sp))+'</span>';
+    speedEl('sp-bucket-note').innerHTML='共 <b>'+PoolViewLogic.num(live.total||0)+'</b> 个可调度账号，现在快组实际 <b>'+PoolViewLogic.num(live.fast||0)+'</b> 个（分界附近有缓冲，成员不一定连续）· 快组平均用掉 <b>'+PoolViewLogic.pct(live.fast_util)+'</b> 容量，慢组 <b>'+PoolViewLogic.pct(live.slow_util)+'</b> · 本小时探测慢号 <b>'+PoolViewLogic.num(live.probes||0)+'</b> 次'+
+      (live.probe_cycle_minutes?'，一轮约 '+Math.round(live.probe_cycle_minutes)+' 分钟（设定 '+(live.probe_interval_minutes||sp.config.probe_interval_minutes)+' 分钟，'+(live.probe_behind?'<span class="speed-warn">排不过来</span>':'排得过来')+'）':'');
+    var cliff=PoolViewLogic.cliff(live.bins,live.active && live.ready);
+    speedState.cliff=cliff;
+    speedEl('sp-cliff').disabled=cliff.percent==null;
+    speedEl('sp-cliff-note').textContent=cliff.percent==null?cliff.reason:'断崖在 '+cliff.percent+'% 处：'+(cliff.fromMs/1000).toFixed(1)+' 秒 → '+(cliff.toMs/1000).toFixed(1)+' 秒';
     if (!speedState.spDirty && !speedState.spSaving) speedSpStatus(SpeedViewLogic.statusText(sp),false);
+    syncSpeedCut();
   }
   function speedFastPercentInput() {return SpeedViewLogic.snapPercent(speedEl('sp-fast-percent').value);}
+  // syncSpeedCut mirrors the pending fast percent onto the slider, number box, readout and board.
+  function syncSpeedCut() {
+    var sp=speedState.data && speedState.data.speed;if(!sp) return;
+    var cut=speedFastPercentInput(), live=sp.live||{}, saved=sp.config.fast_percent;
+    speedEl('sp-cut-range').value=cut;speedEl('sp-cut-num').value=cut;
+    speedEl('sp-cut-save').disabled=!speedState.spDirty || speedState.spSaving;
+    var r=PoolViewLogic.cutReadout(live.bins,cut,live.total,saved);
+    var text='快组 <b>'+cut+'%</b>（约 '+PoolViewLogic.num(r.accounts)+' 个号），分界处首字约 <b>'+PoolViewLogic.sec(r.edgeMs)+'</b>。';
+    if ((live.bins||[]).length) text+=r.slowInFast?' <span class="speed-fail">快组里混进约 '+PoolViewLogic.num(r.slowInFast)+' 个 1.5 秒以上的号</span>，真快号只有约 '+PoolViewLogic.num(r.trueFast)+' 个。':' <span class="speed-pass">快组全是 1.5 秒以内的号。</span>';
+    if (r.dirty) text+=' 现在保存的是 '+saved+'%，点“保存分界”生效。';
+    speedEl('sp-readout').innerHTML=text;
+    renderBucketChart();
+  }
+  function setSpeedCut(value) {
+    var next=SpeedViewLogic.snapPercent(value);
+    if (String(next)===speedEl('sp-fast-percent').value) return;
+    speedEl('sp-fast-percent').value=next;speedState.spDirty=true;
+    speedSpStatus('有未保存的修改：快组比例 '+next+'%，点“保存分界”生效',false);
+    syncSpeedCut();
+  }
   function saveSpeedPriority(event) {
     event.preventDefault();
     var key=getStoredKey();if(!key || speedState.spSaving || !speedEl('sp-config').reportValidity()) return;
-    speedState.spSaving=true;speedEl('sp-save').disabled=true;speedSpStatus('保存中…',false);
+    speedState.spSaving=true;speedEl('sp-save').disabled=true;speedEl('sp-cut-save').disabled=true;speedSpStatus('保存中…',false);
     var body={speed_priority:{enable:speedEl('sp-enable').checked,fast_percent:speedFastPercentInput(),probe_interval_minutes:Number(speedEl('sp-probe-interval').value)}};
     fetch('/v0/management/codex-speed/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
       .then(function(){speedState.spDirty=false;speedState.lastFetch=0;speedSpStatus('已保存，约 1 分钟内热更新生效',false);})
       .catch(function(e){speedSpStatus('保存失败：'+e.message,true);})
-      .finally(function(){speedState.spSaving=false;speedEl('sp-save').disabled=false;});
-  }
-  function bucketOption(sp) {
-    var b=SpeedViewLogic.binSeries(sp.live && sp.live.bins), cut=speedFastPercentInput();
-    return {animation:false,tooltip:{trigger:'axis',renderMode:'richText'},legend:{bottom:0},grid:{left:55,right:55,top:30,bottom:55},
-      xAxis:{type:'value',min:0,max:100,name:'排名%',axisLabel:{formatter:'{value}%'}},
-      yAxis:[{type:'value',name:'首字 秒'},{type:'value',name:'占用 %',min:0,max:100,splitLine:{show:false}}],
-      series:[
-        {name:'首字中位数',type:'line',smooth:true,showSymbol:false,connectNulls:false,data:b.score,markLine:{symbol:'none',silent:true,label:{formatter:'快组 '+cut+'%'},lineStyle:{color:'#f2a93b',width:2},data:[{xAxis:cut}]}},
-        {name:'占用水位',type:'line',smooth:true,showSymbol:false,connectNulls:false,yAxisIndex:1,areaStyle:{opacity:0.25},lineStyle:{width:1},data:b.util},
-        {name:'快组占比',type:'bar',yAxisIndex:1,barWidth:'60%',itemStyle:{opacity:0.18},data:b.fast}
-      ]};
+      .finally(function(){speedState.spSaving=false;speedEl('sp-save').disabled=false;syncSpeedCut();});
   }
   function bindBucketDrag(chart) {
     var zr=chart.getZr(),dragging=false;
-    var apply=function(e){
-      var v=chart.convertFromPixel({xAxisIndex:0},e.offsetX);if(v==null||!isFinite(v))return;
-      var next=SpeedViewLogic.snapPercent(v);
-      if (String(next)!==speedEl('sp-fast-percent').value) {speedEl('sp-fast-percent').value=next;speedState.spDirty=true;speedSpStatus('有未保存的修改：快组比例 '+next+'%，点“保存设置”生效',false);renderBucketChart();}
-    };
-    zr.on('mousedown',function(e){if(!chart.containPixel('grid',[e.offsetX,e.offsetY]))return;dragging=true;apply(e);});
+    var apply=function(e){var v=chart.convertFromPixel({xAxisIndex:0},e.offsetX);if(v!=null && isFinite(v))setSpeedCut(v);};
+    zr.on('mousedown',function(e){var at=[e.offsetX,e.offsetY];if(![0,1,2].some(function(i){return chart.containPixel({gridIndex:i},at);}))return;dragging=true;apply(e);});
     zr.on('mousemove',function(e){if(dragging)apply(e);});
     zr.on('mouseup',function(){dragging=false;});
     zr.on('globalout',function(){dragging=false;});
   }
   function renderBucketChart() {
     if (!window.echarts || !speedState.data || !speedState.data.speed || !speedState.bucket) return;
-    speedState.bucket.setOption(bucketOption(speedState.data.speed),true);
+    speedState.bucket.setOption(PoolViewLogic.boardOption(speedState.data.speed,speedFastPercentInput(),speedEl('sp-bucket-chart').clientWidth || 900),true);
   }
   function renderSpeedCharts() {
     if (!window.echarts || !speedState.data) return;
@@ -2618,7 +2932,7 @@
       var sd=SpeedViewLogic.trendSeries(speedState.data.speed);
       d={times:sd.times};
       speedState.charts[2].setOption(chart([line('快组 p50',sd.fastP50),line('慢组 p50',sd.slowP50),line('整体 p50',sd.overallP50)],'秒'),true);
-      speedState.charts[3].setOption(chart([line('快组水位',sd.fastUtil),line('溢出占比',sd.overflow),line('快组比例',sd.fastPercent)],'%'),true);
+      speedState.charts[3].setOption(chart([line('快组水位',sd.fastUtil),line('掉进慢组',sd.overflow),line('快组比例',sd.fastPercent)],'%'),true);
       renderBucketChart();
     }
     speedState.charts.forEach(function(c){c.resize();});
@@ -2662,7 +2976,7 @@
   }
   function quotaEl(id) {return document.getElementById('quota-' + id);}
   var quotaState = {controller:null, data:null, dirty:false, saving:false, loaded:false, chart:null};
-  function quotaStatus(message, failed) {quotaEl('status').textContent=message;quotaEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function quotaStatus(message, failed) {quotaEl('status').textContent=message;quotaEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');poolAlert('quota',failed?message:'');}
   // Accounts tab: the server aggregates once a minute, so polling every refresh adds nothing.
   function fetchQuotaRows(key, force) {
     if (!force && Date.now() - quotaRowsAt < 30000) return;
@@ -2677,7 +2991,7 @@
       .catch(function () { quotaRowsAt = 0; });
   }
   function renderQuotaTrend() {
-    if (!window.echarts || !quotaState.data || currentTab !== 'pool' || !quotaEl('details').open) return;
+    if (!window.echarts || !quotaState.data || currentTab !== 'pool') return;
     if (!quotaState.chart) quotaState.chart = chartInit(quotaEl('trend-chart'));
     quotaState.chart.setOption(CodexQuotaLogic.trendOption(quotaState.data.trend), true);
     quotaState.chart.resize();
@@ -2688,7 +3002,7 @@
     quotaEl('scan-enabled').disabled = busy;
   }
   function renderQuotaVerdict(tone, label, headline, detail, count) {
-    quotaEl('advice').className = 'quota-verdict quota-tone-' + tone;
+    quotaEl('advice').className = 'pv-answer quota-tone-' + tone;
     quotaEl('verdict-tone').textContent = label;
     quotaEl('headline').textContent = headline;
     quotaEl('detail').textContent = detail;
@@ -2697,11 +3011,6 @@
   function quotaUpdatedText(generatedAt) {
     var age = Date.now() - new Date(generatedAt).getTime();
     return age < 60000 ? '刚刚更新' : CodexQuotaLogic.duration(age) + '前更新';
-  }
-  function quotaCardsMarkup(tiles) {
-    return tiles.map(function (tile) {
-      return '<div class="quota-card"><div class="quota-card-label">' + escapeHtml(tile.label) + '</div><div class="quota-card-value">' + escapeHtml(tile.value) + '</div><div class="quota-card-note">' + escapeHtml(tile.note) + '</div></div>';
-    }).join('');
   }
   function quotaMetersMarkup(meters) {
     return meters.map(function (meter) {
@@ -2725,8 +3034,10 @@
   }
   function clearQuotaOverview() {
     quotaEl('updated').textContent = '';
-    quotaEl('tiles').textContent = '';
+    ['runway', 'recover', 'peak'].forEach(function (id) { document.getElementById('answer-quota-' + id).textContent = '—'; });
+    document.getElementById('answer-quota-big').textContent = '—';
     quotaEl('reset-link').hidden = true;
+    quotaEl('reset-none').hidden = true;
     quotaEl('meters').textContent = '';
     quotaEl('states').hidden = true;
     quotaEl('plan-rows').textContent = '';
@@ -2751,21 +3062,28 @@
       return;
     }
     var view = CodexQuotaLogic.overview(data);
-    quotaEl('updated').textContent = quotaUpdatedText(data.generated_at);
+    quotaEl('updated').textContent = '额度 ' + quotaUpdatedText(data.generated_at);
     renderQuotaVerdict(view.tone, view.label, view.headline, view.detail, view.count);
-    quotaEl('tiles').innerHTML = quotaCardsMarkup(view.tiles);
+    var advice = data.advice || {};
+    document.getElementById('answer-quota-big').innerHTML = escapeHtml(view.tiles[0].value) + '<small>/ ' + Number(data.unique_accounts || 0).toLocaleString('en-US') + ' 个能用</small>';
+    document.getElementById('answer-quota-runway').textContent = view.tiles[1].value;
+    document.getElementById('answer-quota-runway').title = view.tiles[1].note;
+    document.getElementById('answer-quota-recover').textContent = view.tiles[2].value + ' 个';
+    document.getElementById('answer-quota-recover').title = view.tiles[2].note;
+    document.getElementById('answer-quota-peak').textContent = Number(advice.target_rpm || 0).toLocaleString('en-US') + ' / ' + Number(advice.usable_capacity || 0).toLocaleString('en-US') + ' 次/分';
     quotaEl('reset-link').textContent = view.resetText;
     quotaEl('reset-link').hidden = !view.resetText;
+    quotaEl('reset-none').hidden = !!view.resetText;
     renderQuotaStates(view);
     quotaEl('meters').innerHTML = quotaMetersMarkup(view.meters);
-    quotaEl('plan-rows').innerHTML = view.plans.map(function (plan) {
-      return '<tr>' + td(plan.plan) + td(plan.accounts) + td(plan.usable) + td(plan.remaining) + '</tr>';
+    quotaEl('plan-rows').innerHTML = view.plans.map(function (plan, i) {
+      return '<tr>' + td(plan.plan) + td(plan.accounts) + td(plan.usable) + td(plan.remaining) + td('+' + Number((data.plans[i] || {}).recover_24h || 0).toLocaleString('en-US')) + '</tr>';
     }).join('');
     quotaEl('detail-note').textContent = view.detailNote;
     var scan = data.scan || {};
-    quotaEl('scan-line').textContent = scan.running
+    quotaEl('scan-line').textContent = '自动刷新额度：' + ((data.settings || {}).scan_enabled ? '开' : '关') + ' · ' + (scan.running
       ? '刷新进行中：剩余 ' + scan.queued + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed
-      : (scan.finished_at && new Date(scan.finished_at).getFullYear() > 1 ? '上次刷新：' + new Date(scan.finished_at).toLocaleString() + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed + (scan.last_error ? ' · 最后错误 ' + scan.last_error : '') : '尚未自动刷新');
+      : (scan.finished_at && new Date(scan.finished_at).getFullYear() > 1 ? '上次刷新：' + new Date(scan.finished_at).toLocaleString() + ' · 成功 ' + scan.succeeded + ' · 失败 ' + scan.failed + (scan.last_error ? ' · 最后错误 ' + scan.last_error : '') : '尚未自动刷新'));
     renderQuotaTrend();
   }
   function fetchQuota() {
@@ -2810,7 +3128,7 @@
       .finally(function () { quotaState.saving = false; quotaSyncControls(); });
   }
   function poolEl(id) {return document.getElementById('pool-' + id);}
-  function poolStatus(message, failed) {poolEl('status').textContent=message;poolEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function poolStatus(message, failed) {poolEl('status').textContent=message;poolEl('status').className='text-xs '+(failed?'text-red-600':'text-slate-500');poolAlert('pool',failed?message:'');}
   function stopPool() {
     poolState.generation++;
     if (poolState.timer) clearInterval(poolState.timer);
@@ -2821,9 +3139,9 @@
   }
   function clearPool() {
     stopPool();clearQuota();poolState.saveToken++;if(poolState.saveController)poolState.saveController.abort();poolState.saveController=null;poolState.charts.forEach(function(c){c.dispose();});poolState.charts=[];
-    poolState.loaded=false;poolState.prevCards=null;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
+    poolState.loaded=false;poolState.dirty=false;poolState.saving=false;poolState.home=false;poolState.lastData=null;
     poolEl('config').reset();setPoolSaving(false);poolEl('save').disabled=true;poolEl('fail-fast').disabled=true;
-    poolEl('cards').textContent='';poolEl('updated').textContent='';poolEl('charts-status').textContent='';poolStatus('',false);
+    ['rpm-gauge','rpm-kv','conc-gauge','conc-kv','capacity-read'].forEach(function(id){poolEl(id).textContent='';});poolEl('updated').textContent='';poolEl('charts-status').textContent='';poolStatus('',false);poolState.alerts={};poolAlert('pool','');
     concurrencyConfigState.dirty=false;poolEl('concurrency-config').reset();poolEl('concurrency-save').disabled=true;concurrencyStatus('',false);
   }
   function renderPool(data) {
@@ -2839,22 +3157,40 @@
     poolEl('fail-fast').disabled=poolState.home || !poolEl('enabled').checked;
     poolEl('save').disabled=poolState.home || poolState.saving;
     poolState.loaded=true;
-    poolEl('cards').textContent='';
-    CodexPoolLogic.cards(data).forEach(function(pair){
-      var card=document.createElement('div'),label=document.createElement('div'),value=document.createElement('strong');
-      var prev=poolState.prevCards && poolState.prevCards[pair[0]];
-      card.className='pool-metric'+(prev!=null && prev!==String(pair[1])?' flash':'');label.textContent=pair[0];value.textContent=pair[1];card.appendChild(label);card.appendChild(value);poolEl('cards').appendChild(card);
-      (poolState.prevCards=poolState.prevCards||{})[pair[0]]=String(pair[1]);
-    });
+    renderPoolNumbers(data);
     renderPoolCharts(data);
-    poolEl('updated').textContent='更新于 '+new Date().toLocaleTimeString();
+    poolEl('updated').textContent='号池 '+new Date().toLocaleTimeString()+' 更新';
     if (!poolState.dirty && !poolState.saving) poolStatus(poolState.home?'Home 模式：容量由 Home 调度端管理，本机算法未启用。':'关闭算法仍持续采集统计；开启后优先避开已满账号。',false);
+  }
+  function poolGauge(id, current, capacity, unit, peakPoint, peakField) {
+    var g=PoolViewLogic.gauge(current,capacity,peakPoint?peakPoint[peakField]:0), n=PoolViewLogic.num;
+    poolEl(id).innerHTML='<div class="pv-gauge-num"><b>'+n(current||0)+'</b><span>/ '+n(capacity||0)+' '+unit+'</span></div>'+
+      '<div class="pv-gauge-track"><span style="width:'+g.usedBar.toFixed(2)+'%"></span>'+(peakPoint?'<i style="left:'+g.peakMark.toFixed(2)+'%" title="60 分钟峰值"></i>':'')+'</div>'+
+      '<div class="pv-gauge-foot"><span>现在用了 '+g.used.toFixed(1)+'%</span><span>'+(peakPoint?'<span class="speed-warn">▍</span>60 分钟峰值 '+n(peakPoint[peakField])+'（'+g.peak.toFixed(0)+'%，'+escapeHtml(PoolViewLogic.hhmm(peakPoint.time))+'）':'60 分钟峰值 —')+'</span></div>';
+  }
+  // renderPoolNumbers fills the capacity answer card, both gauges and their detail lists.
+  function renderPoolNumbers(data) {
+    var P=PoolViewLogic, n=P.num, rpmPeak=P.peak(data.points,'attempts'), concPeak=P.peak(data.concurrency_points,'in_flight_peak'), fullPeak=P.peak(data.concurrency_points,'concurrency_full_accounts');
+    poolAnswer('answer-capacity',P.capacityAnswer(data));
+    poolGauge('rpm-gauge',data.rpm,data.capacity,'次/分',rpmPeak,'attempts');
+    poolGauge('conc-gauge',data.in_flight,data.concurrency_capacity,'个并发',concPeak,'in_flight_peak');
+    var limit=P.commonLimit(data), rejections=P.rejections(data);
+    poolDl('pool-rpm-kv',data.home_mode?[['容量','由 Home 调度端管理']]:[
+      ['可调度账号',n(data.schedulable||0)+' 个'],['剩余',n(data.remaining)+' 次/分'],['有效成功容量',n(Math.round(data.effective_capacity||0))+' 次/分'],
+      ['RPM 已满账号',n(data.full||0)+' 个',data.full>0?'warn':''],['60 分钟快速失败（529）',n(data.fast_failures||0)+' 次',data.fast_failures>0?'danger':''],
+      ['单号上限',limit?'多数 '+limit.limit+' 次/分':'—']]);
+    poolDl('pool-conc-kv',[
+      ['剩余',n(data.concurrency_remaining)],['并发已满账号',n(data.concurrency_full_accounts||0)+' 个（60 分钟峰值 '+n(fullPeak?fullPeak.concurrency_full_accounts:0)+'）'],
+      ['不限并发的账号',n(data.unlimited_accounts||0)+' 个'],['并发容量',CodexPoolLogic.concurrencyCapacity(data)],
+      ['60 分钟因并发满被拒',n(rejections)+' 次',rejections>0?'danger':'']]);
+    poolEl('capacity-read').textContent=P.capacityRead(data);
   }
   // Asset callbacks update charts only; cached snapshots must not rewrite saved form values.
   function renderPoolCharts(data) {
     if (window.echarts) {
-      if (!poolState.charts.length) ['capacity-chart','ttft-chart','failures-chart','limits-chart','concurrency-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
-      CodexPoolLogic.chartOptions(data).forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
+      if (!poolState.charts.length) ['capacity-chart','failures-chart','ttft-chart','limits-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
+      var base=CodexPoolLogic.chartOptions(data);
+      [PoolViewLogic.capacityOption(data),PoolViewLogic.requestsOption(data),base[0],base[1]].forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
     }
     renderQuotaTrend();
     renderSpeedCharts();
@@ -2880,7 +3216,7 @@
       .finally(function(){if(poolState.controller===controller) poolState.controller=null;});
   }
   var concurrencyConfigState = {dirty:false, saving:false, home:false};
-  function concurrencyStatus(message, failed) {poolEl('concurrency-status').textContent=message;poolEl('concurrency-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');}
+  function concurrencyStatus(message, failed) {poolEl('concurrency-status').textContent=message;poolEl('concurrency-status').className='text-xs '+(failed?'text-red-600':'text-slate-500');poolAlert('concurrency',failed?message:'');}
   function fetchConcurrencyConfig() {
     var key=getStoredKey();
     if (!key || concurrencyConfigState.saving) return;
@@ -2928,7 +3264,6 @@
   quotaEl('settings').addEventListener('input', function () { quotaState.dirty = true; quotaStatus('有未保存的修改', false); });
   // The switch sits outside the form, so it saves directly instead of waiting for the form button.
   quotaEl('scan-enabled').addEventListener('change', saveQuotaSettings);
-  quotaEl('details').addEventListener('toggle', renderQuotaTrend);
   quotaEl('reset-link').addEventListener('click', function () {
     els['account-provider-filter'].value = '';
     els['account-quota-filter'].value = 'resettable';
@@ -2940,12 +3275,29 @@
   speedEl('fs-config').addEventListener('submit',saveSpeedFastSession);
   speedEl('fs-config').addEventListener('input',function(){speedState.dirty=true;speedStatus('有未保存的修改',false);});
   speedEl('sp-config').addEventListener('submit',saveSpeedPriority);
-  speedEl('sp-config').addEventListener('input',function(){speedState.spDirty=true;speedSpStatus('有未保存的修改',false);renderBucketChart();});
+  speedEl('sp-config').addEventListener('input',function(){speedState.spDirty=true;speedSpStatus('有未保存的修改',false);syncSpeedCut();});
+  speedEl('sp-cut-range').addEventListener('input',function(){setSpeedCut(this.value);});
+  speedEl('sp-cut-num').addEventListener('change',function(){setSpeedCut(this.value);});
+  speedEl('sp-cliff').addEventListener('click',function(){if(speedState.cliff && speedState.cliff.percent!=null)setSpeedCut(speedState.cliff.percent);});
+  speedEl('sp-cut-save').addEventListener('click',saveSpeedPriority);
+  // Settings drawer: opening it adds no polling; Escape, the scrim and the close button all dismiss it.
+  function poolSettings(open) {
+    poolEl('settings-drawer').hidden=!open;poolEl('settings-scrim').hidden=!open;
+    (open?poolEl('settings-close'):poolEl('settings-open')).focus();
+  }
+  poolEl('settings-open').addEventListener('click',function(){poolSettings(true);});
+  poolEl('settings-close').addEventListener('click',function(){poolSettings(false);});
+  poolEl('settings-scrim').addEventListener('click',function(){poolSettings(false);});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape' && !poolEl('settings-drawer').hidden)poolSettings(false);});
+  // Charts inside folded sections have no size until opened.
+  ['speed-trend-more','speed-fs-more','pool-limits-more'].forEach(function(id){
+    document.getElementById(id).addEventListener('toggle',function(){poolState.charts.concat(speedState.charts).forEach(function(c){c.resize();});});
+  });
   poolEl('concurrency-config').addEventListener('submit',saveConcurrencyConfig);
   poolEl('concurrency-config').addEventListener('input',function(){concurrencyConfigState.dirty=true;concurrencyStatus('有未保存的修改',false);});
   poolEl('config').addEventListener('input',function(){poolState.dirty=true;poolStatus('有未保存的修改',false);});
   poolEl('enabled').addEventListener('change',function(){poolEl('fail-fast').disabled=!this.checked;if(!this.checked)poolEl('fail-fast').checked=false;});
-  window.addEventListener('resize',function(){poolState.charts.concat(speedState.charts).forEach(function(c){c.resize();});});
+  window.addEventListener('resize',function(){poolState.charts.concat(speedState.charts).forEach(function(c){c.resize();});renderBucketChart();});
 
   // ---- Proxy settings ----
   var proxyLoaded = false;
