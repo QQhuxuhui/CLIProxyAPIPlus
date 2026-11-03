@@ -917,7 +917,7 @@
             </div>
             <div id="quota-meters" class="pv-meters"></div>
           </div>
-          <div class="pv-block"><h4>近 24 小时能用账号</h4><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时可用账号数折线图"></div></div>
+          <div class="pv-block"><h4>近 24 小时额度够用的账号</h4><div id="quota-trend-chart" class="pool-chart" role="img" aria-label="近 24 小时额度够用账号数折线图"></div></div>
         </div>
         <details id="quota-details" class="pv-more">
           <summary>按套餐看</summary>
@@ -941,8 +941,8 @@
           <span id="speed-sp-cliff-note" class="pv-note"></span>
         </div>
         <p id="speed-sp-readout" class="pv-readout" aria-live="polite"></p>
-        <div id="speed-sp-bucket-chart" class="pv-board" role="img" aria-label="账号按首字从快到慢的速度阶梯、快组成员和用掉的容量（水桶），竖线为快慢分界，可拖动"></div>
-        <div class="pv-legend"><span><i style="background:var(--ok)"></i>&lt; 1.5 秒</span><span><i style="background:var(--warn)"></i>1.5–4 秒</span><span><i style="background:var(--danger)"></i>&gt; 4 秒</span><span><i style="background:#2a3442"></i>还没测速</span><span><i style="background:var(--accent)"></i>水桶：用掉的容量（并发 / RPM）</span></div>
+        <div id="speed-sp-bucket-chart" class="pv-board" role="img" aria-label="账号按首字从快到慢的速度阶梯、快组成员和最近 1 分钟用过的账号占比（水桶），竖线为快慢分界，可拖动"></div>
+        <div class="pv-legend"><span><i style="background:var(--ok)"></i>&lt; 1.5 秒</span><span><i style="background:var(--warn)"></i>1.5–4 秒</span><span><i style="background:var(--danger)"></i>&gt; 4 秒</span><span><i style="background:#2a3442"></i>还没测速</span><span><i style="background:var(--accent)"></i>水桶：最近 1 分钟用过的账号占比（实时）</span></div>
         <p id="speed-sp-bucket-note" class="pv-note"></p>
         <details id="speed-trend-more" class="pv-more">
           <summary>近 24 小时趋势</summary>
@@ -968,8 +968,7 @@
           <div class="pv-block"><h4>每分钟请求（RPM）</h4><div id="pool-rpm-gauge" class="pv-gauge"></div><dl id="pool-rpm-kv" class="pv-kv"></dl></div>
           <div class="pv-block"><h4>账号并发（在途请求）</h4><div id="pool-conc-gauge" class="pv-gauge"></div><dl id="pool-conc-kv" class="pv-kv"></dl></div>
         </div>
-        <div class="pv-block"><h4>水位：用掉的容量占比</h4><div id="pool-capacity-chart" class="pool-chart" role="img" aria-label="最近 60 分钟 RPM 与并发占容量的百分比、并发已满账号与并发拒绝"></div></div>
-        <p id="pool-capacity-read" class="pv-note"></p>
+        <p id="pool-capacity-read" class="pv-callout" aria-live="polite"></p>
       </section>
 
       <section id="pool-sec-requests" class="pv-section" aria-labelledby="pv-h-requests">
@@ -1624,13 +1623,25 @@
       var state = level(window.remaining);
       return { label: windowName(window.minutes), value: '剩 ' + Math.round(window.remaining) + '%', percent: window.remaining, status: state.status, tone: state.tone, note: '账号平均剩余' };
     }
-    function capacityMeter(a) {
-      var capacity = a.usable_capacity || 0, peak = a.peak_rpm || 0;
-      var percent = capacity > 0 ? Math.min(100, peak / capacity * 100) : (peak > 0 ? 100 : 0);
-      var state = a.rpm_shortfall > 0 || percent >= 100 ? { status: '不够用', tone: 'danger' } : (percent >= 80 ? { status: '偏紧', tone: 'warn' } : { status: '够用', tone: 'ok' });
-      return { label: '请求容量', value: peak > 0 ? '峰值 ' + number(peak) + ' / 分钟' : '暂无峰值', percent: percent, status: state.status, tone: state.tone, note: '可承载 ' + number(capacity) + ' / 分钟' };
+    // capacityMeter compares the peak with the capacity; under a low-success caveat the capacity
+    // is the live pool capacity scaled by the success rate, for the bar, the status and the note.
+    function capacityMeter(a, caveat) {
+      var capacity = caveat ? caveat.effective : a.usable_capacity || 0, peak = a.peak_rpm || 0;
+      var percent = capacity > 0 ? Math.min(100, peak / capacity * 100) : (peak > 0 || caveat ? 100 : 0);
+      var state = (!caveat && a.rpm_shortfall > 0) || percent >= 100 ? { status: '不够用', tone: 'danger' } : (percent >= 80 ? { status: '偏紧', tone: 'warn' } : { status: '够用', tone: 'ok' });
+      var note = caveat ? '实际能承载约 ' + number(capacity) + ' / 分钟（成功率 ' + (100 * caveat.rate).toFixed(1) + '%）' : '可承载 ' + number(capacity) + ' / 分钟';
+      return { label: '请求容量', value: peak > 0 ? '峰值 ' + number(peak) + ' / 分钟' : '暂无峰值', percent: percent, status: state.status, tone: state.tone, note: note };
     }
-    function verdict(data, windows, waiting) {
+    // verdict picks the card's message; a low-success caveat appends its cause and the scaled
+    // capacity, and lowers only a good verdict to a warning.
+    function verdict(data, windows, waiting, caveat) {
+      var result = baseVerdict(data, windows, waiting, caveat);
+      if (!caveat) return result;
+      if (result.tone === 'ok') { result.tone = 'warn'; result.label = '需要留意'; }
+      result.detail += caveat.cause + '：近 5 分钟成功率 ' + (100 * caveat.rate).toFixed(1) + '%，实际能承载约 ' + number(caveat.effective) + ' 次/分。';
+      return result;
+    }
+    function baseVerdict(data, windows, waiting, caveat) {
       var a = data.advice || {}, settings = data.settings || {};
       var count = a.recommended_accounts || 0;
       if (count > 0) {
@@ -1639,7 +1650,7 @@
           headline: (settings.horizon_hours > 24 ? '建议加 ' : '建议今天加 ') + number(count) + ' 个号',
           detail: (a.runway_hours != null
             ? '按现在的用量，约 ' + hours(a.runway_hours) + '后可用账号撑不住高峰。'
-            : '高峰需要 ' + number(a.target_rpm) + ' / 分钟，现在只能承载 ' + number(a.usable_capacity) + ' / 分钟。') +
+            : '高峰需要 ' + number(a.target_rpm) + ' / 分钟，现在只能承载 ' + number(caveat ? caveat.effective : a.usable_capacity) + ' / 分钟。') +
             (a.warming_up ? '用量数据不足 24 小时，仅供参考。' : '')
         };
       }
@@ -1685,7 +1696,7 @@
     }
     // Disabled and invalid credentials are counted per file and excluded from
     // unique_accounts, so the state bar only splits the accounts that can serve.
-    function overview(data) {
+    function overview(data, caveat) {
       var plans = data.plans || [], a = data.advice || {};
       var waiting = Math.max(0, data.unique_accounts - data.usable - data.unknown);
       var recover = plans.reduce(function (sum, plan) { return sum + (plan.recover_24h || 0); }, 0);
@@ -1693,21 +1704,22 @@
       var extra = [];
       if (data.invalid) extra.push(number(data.invalid) + ' 个文件已失效，需要重新登录或移除');
       if (data.disabled) extra.push(number(data.disabled) + ' 个文件已停用');
-      var result = verdict(data, windows, waiting);
+      var result = verdict(data, windows, waiting, caveat);
       result.count = a.recommended_accounts || 0;
       result.tiles = [
-        { label: '现在能用', value: number(data.usable), note: '共 ' + number(data.unique_accounts) + ' 个账号' },
+        { label: '额度够用', value: number(data.usable), note: '共 ' + number(data.unique_accounts) + ' 个账号' },
         runwayTile(data),
         { label: '24 小时内恢复', value: '+' + number(recover), note: recover === 0 ? '暂无账号恢复' : (result.count > 0 ? '个账号恢复，不足以补上缺口' : '个账号恢复后约 ' + number(data.usable + recover) + ' 个可用') }
       ];
       result.states = [
-        { label: '现在能用', count: data.usable, note: '可以接收请求', tone: 'ok' },
+        { label: '额度够用', count: data.usable, note: '剩余额度 ≥5%（是否可调度看容量区）', tone: 'ok' },
         { label: '等待恢复', count: waiting, note: '额度用完，到时间自动恢复', tone: 'warn' },
         { label: '还没查到', count: data.unknown, note: '暂无额度数据', tone: 'off' }
       ];
       result.stateTitle = number(data.unique_accounts) + ' 个账号现在的状态';
       result.stateExtra = extra.length ? '另有 ' + extra.join('，') + '。' : '';
-      result.meters = windows.map(windowMeter).concat([capacityMeter(a)]);
+      result.meters = windows.map(windowMeter).concat([capacityMeter(a, caveat)]);
+      result.peakText = number(a.target_rpm || 0) + ' / ' + (caveat ? number(caveat.effective) + ' 次/分（按成功率折算）' : number(a.usable_capacity || 0) + ' 次/分');
       result.plans = plans.map(planRow);
       var credits = data.reset || {};
       result.resetText = credits.accounts > 0
@@ -1722,7 +1734,7 @@
         animation: false, tooltip: { trigger: 'axis', renderMode: 'richText' }, grid: { left: 55, right: 24, top: 20, bottom: 32 },
         xAxis: { type: 'category', data: points.map(function (p) { return new Date(p.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }) },
         yAxis: { type: 'value', name: '账号数' },
-        series: [{ name: '可用账号', type: 'line', showSymbol: false, areaStyle: { opacity: .12 }, data: points.map(function (p) { return p.usable; }) }]
+        series: [{ name: '额度够用', type: 'line', showSymbol: false, areaStyle: { opacity: .12 }, data: points.map(function (p) { return p.usable; }) }]
       };
     }
     return { windowLabel: windowLabel, bucket: bucket, duration: duration, hours: hours, applyView: applyView, cellMarkup: cellMarkup, resetPlan: resetPlan, resetPlanMessage: resetPlanMessage, resetConfirmMessage: resetConfirmMessage, overview: overview, trendOption: trendOption };
@@ -2708,10 +2720,26 @@
         verdict: sampled ? '近 5 分钟成功率 ' + (d.success_rate == null ? '—' : (100 * d.success_rate).toFixed(1) + '%') : '近 5 分钟没有请求',
         big: this.num(d.rpm) + '<small>/ ' + this.num(d.capacity) + ' 次/分</small>',
         rows: [
-          ['在途并发', this.num(d.in_flight || 0) + ' / ' + this.num(d.concurrency_capacity || 0) + (d.unlimited_accounts > 0 ? ' + ∞×' + d.unlimited_accounts : '')],
+          ['在途并发', d.concurrency_enabled
+            ? this.num(d.in_flight || 0) + ' / ' + this.num(d.concurrency_capacity || 0) + (d.unlimited_accounts > 0 ? ' + ∞×' + d.unlimited_accounts : '')
+            : this.num(d.in_flight || 0) + '（未限制）'],
           ['冷却中（额度用完 / 其他）', this.num(cooling) + '（' + this.num(quota) + ' / ' + this.num(Math.max(0, cooling - quota)) + '）']
-        ]
+        ].concat(d.invalid > 0 ? [['失效或不可用（需处理）', this.num(d.invalid), 'danger']] : [])
       };
+    },
+    LOW_SUCCESS: 0.8,
+    // overloadCaveat reports a low recent success rate: null unless the 5 newest minutes have
+    // attempts and the rate is below LOW_SUCCESS. effective is the pool capacity scaled by it.
+    overloadCaveat: function (d) {
+      if (!d || d.home_mode || d.success_rate == null || !isFinite(d.success_rate) || d.success_rate >= this.LOW_SUCCESS || this.recentAttempts(d) === 0) return null;
+      var sum = {overload: 0, rate_limits: 0, quota_exhausted: 0, other_failures: 0};
+      (d.points || []).slice().sort(function (a, b) { return new Date(b.time) - new Date(a.time); }).slice(0, 5).forEach(function (p) {
+        for (var k in sum) sum[k] += p[k] || 0;
+      });
+      var top = 'other_failures';
+      for (var k in sum) if (sum[k] > sum[top]) top = k;
+      var causes = {overload: '上游过载严重', rate_limits: '上游限流', quota_exhausted: '额度用完', other_failures: '请求失败多'};
+      return {rate: d.success_rate, cause: causes[top], effective: Math.round((d.capacity || 0) * d.success_rate)};
     },
     speedAnswer: function (sp) {
       var c = (sp && sp.config) || {}, live = (sp && sp.live) || {};
@@ -2739,13 +2767,24 @@
     },
     rejections: function (d) { return (d.concurrency_points || []).reduce(function (s, p) { return s + (p.concurrency_rejections || 0); }, 0); },
     commonLimit: function (d) { return (d.limits || []).reduce(function (best, b) { return !best || b.accounts > best.accounts ? b : best; }, null); },
+    // capacityRead is the one-sentence capacity conclusion. R is the highest per-minute share of
+    // that minute's own RPM capacity over the last 60 minutes.
     capacityRead: function (d) {
-      if (d.home_mode) return '';
-      var rpm = this.peak(d.points, 'attempts'), conc = this.peak(d.concurrency_points, 'in_flight_peak');
-      if (!rpm && !conc) return '';
-      var rp = this.gauge(0, d.capacity, rpm ? rpm.attempts : 0).peak, cp = this.gauge(0, d.concurrency_capacity, conc ? conc.in_flight_peak : 0).peak;
-      var head = '怎么看：最近 60 分钟 RPM 最多用到 ' + rp.toFixed(0) + '%，并发最多用到 ' + cp.toFixed(0) + '%。';
-      return head + (rp < 50 && cp < 50 ? '号池整体还很空；用户如果变慢，先看“快慢池”里快组是不是满了或混进了慢号，不是号池整体不够。' : '已经接近上限，考虑加号或打开账号并发上限。');
+      if (!d || d.home_mode) return '';
+      if ((d.points || []).length && !(d.capacity > 0)) return '现在没有可调度的容量（可调度账号 ' + this.num(d.schedulable || 0) + ' 个）。';
+      var r = null;
+      (d.points || []).forEach(function (p) { if (p.capacity > 0 && p.attempts > 0) r = Math.max(r || 0, 100 * p.attempts / p.capacity); });
+      if (r == null) return '';
+      var head = '最近 60 分钟请求最多用到 RPM 上限的 ' + Math.round(r) + '%';
+      var conc = null;
+      if (d.concurrency_enabled) {
+        var c = this.peak(d.concurrency_points, 'in_flight_peak');
+        if (c && d.concurrency_capacity > 0) conc = 100 * c.in_flight_peak / d.concurrency_capacity;
+      }
+      if (conc != null) head += '，并发最多用到 ' + Math.round(conc) + '%';
+      var caveat = this.overloadCaveat(d);
+      if (caveat) return head + '。限制用户的不是容量，是' + caveat.cause + '：近 5 分钟成功率只有 ' + (100 * caveat.rate).toFixed(1) + '%。';
+      return head + (r < 50 && (conc == null || conc < 50) ? '，号池容量还很空。' : '，已经接近上限，考虑加号。');
     },
     // boardOption draws the speed stairs, the fast-member strip and the capacity tanks on one shared cut.
     boardOption: function (sp, cut, width) {
@@ -2753,7 +2792,7 @@
       var pos = this.cutPos(cut, live.scored || 0, total);
       var narrow = width < 600, bw = Math.max(2, (width - 68) / 50 * 0.78);
       var x = function (i) { return i * 2 + 1; };
-      var water = function (b) { return b.util == null ? 0 : Math.max(0.6, Math.min(100, 100 * b.util)); };
+      var water = function (b) { return b.used_share == null || !(b.used_share > 0) ? 0 : Math.max(0.6, Math.min(100, 100 * b.used_share)); };
       var stairs = bins.map(function (b, i) {
         var tone = self.speedTone(b.score_ms);
         return {value: [x(i), tone ? Math.min(b.score_ms / 1000, max) : max], itemStyle: {color: tone ? self.COLORS[tone] : self.COLORS.none}};
@@ -2770,7 +2809,7 @@
           var b = bins[Math.round((p.value[0] - 1) / 2)];
           if (!b) return '';
           return '排名 ' + (p.value[0] - 1) + '–' + (p.value[0] + 1) + '%（' + b.accounts + ' 个号）\n首字中位数 ' + (b.score_ms == null ? '还没测速' : (b.score_ms / 1000).toFixed(2) + ' 秒') +
-            '\n其中快组 ' + b.fast + ' 个\n用掉的容量 ' + (b.util == null ? '—' : (100 * b.util).toFixed(1) + '%');
+            '\n其中快组 ' + b.fast + ' 个\n' + (b.used_share == null ? '最近 1 分钟使用：—' : '最近 1 分钟用过 ' + b.used + ' / ' + b.accounts + ' 个号（含测速），共 ' + b.requests + ' 次请求');
         }},
         grid: [{left: 50, right: 18, top: 44, height: '45%'}, {left: 50, right: 18, top: '58%', height: 12}, {left: 50, right: 18, top: '66%', bottom: 34}],
         xAxis: [axis(0, false), axis(1, false), axis(2, true)],
@@ -2785,28 +2824,10 @@
         series: [
           {name: '首字', type: 'bar', xAxisIndex: 0, yAxisIndex: 0, barWidth: bw, data: stairs, markLine: mark(true), markArea: area, itemStyle: {borderRadius: [2, 2, 0, 0]}},
           {name: '快组成员', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, barWidth: bw, data: strip, markLine: mark(false), itemStyle: {borderRadius: 2}},
-          {name: '用掉的容量', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, stack: 'tank', barWidth: bw, data: bins.map(function (b, i) { return [x(i), water(b)]; }), markLine: mark(false), markArea: area, itemStyle: {color: this.COLORS.water, borderRadius: 0}},
+          {name: '最近 1 分钟用过', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, stack: 'tank', barWidth: bw, data: bins.map(function (b, i) { return [x(i), water(b)]; }), markLine: mark(false), markArea: area, itemStyle: {color: this.COLORS.water, borderRadius: 0}},
           {name: '空桶', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, stack: 'tank', barWidth: bw, data: bins.map(function (b, i) { return [x(i), 100 - water(b)]; }), tooltip: {show: false}, itemStyle: {color: 'rgba(74,163,255,.10)', borderRadius: [2, 2, 0, 0]}}
         ]
       };
-    },
-    // capacityOption plots RPM and concurrency as a share of capacity, with full accounts and rejections on the right axis.
-    capacityOption: function (d) {
-      var self = this, points = d.points || [], cmap = {};
-      // Align samples on the absolute minute so the date and time zone never mix two readings up.
-      (d.concurrency_points || []).forEach(function (p) { var k = self.minuteKey(p.time); if (k != null) cmap[k] = p; });
-      var times = points.map(function (p) { return self.hhmm(p.time); }), keys = points.map(function (p) { return self.minuteKey(p.time); });
-      var share = function (a, b) { return b ? Math.round(1000 * a / b) / 10 : null; };
-      var line = function (name, data, color, extra) { var s = {name: name, type: 'line', showSymbol: false, connectNulls: false, data: data, itemStyle: {color: color}}; for (var k in extra || {}) s[k] = extra[k]; return s; };
-      return {animation: false, tooltip: {trigger: 'axis', renderMode: 'richText'}, legend: {bottom: 0, type: 'scroll'}, grid: {left: 48, right: 44, top: 30, bottom: 50},
-        xAxis: {type: 'category', data: times},
-        yAxis: [{type: 'value', name: '占容量 %', min: 0, max: 100}, {type: 'value', name: '个 / 次', splitLine: {show: false}}],
-        series: [
-          line('RPM / 容量', points.map(function (p) { return share(p.attempts || 0, p.capacity); }), '#4aa3ff'),
-          line('并发峰值 / 并发容量', keys.map(function (k) { var c = cmap[k]; return c ? share(c.in_flight_peak || 0, c.concurrency_capacity) : null; }), '#f2a93b'),
-          line('并发已满账号', keys.map(function (k) { var c = cmap[k]; return c ? c.concurrency_full_accounts || 0 : null; }), '#f2626a', {yAxisIndex: 1, lineStyle: {type: 'dashed', width: 1.4}}),
-          {name: '并发满被拒', type: 'bar', yAxisIndex: 1, itemStyle: {color: '#a78bfa'}, data: keys.map(function (k) { var c = cmap[k]; return c ? c.concurrency_rejections || 0 : 0; })}
-        ]};
     },
     // requestsOption stacks successes with each failure kind kept apart.
     requestsOption: function (d) {
@@ -2886,7 +2907,7 @@
     var live=sp.live||{}, answer=PoolViewLogic.speedAnswer(sp);
     poolAnswer('answer-speed',answer);
     speedEl('sp-state').innerHTML='<b>'+escapeHtml(answer.state)+'</b><span>'+escapeHtml(SpeedViewLogic.statusText(sp))+'</span>';
-    speedEl('sp-bucket-note').innerHTML='共 <b>'+PoolViewLogic.num(live.total||0)+'</b> 个可调度账号，其中有测速分数 <b>'+PoolViewLogic.num(live.scored||0)+'</b> 个；快组比例只按有分数的账号算，竖线是目标位置。现在快组实际 <b>'+PoolViewLogic.num(live.fast||0)+'</b> 个（过载或刚降级的号会被跳过，分界附近还有缓冲，所以实际成员可能越过竖线，也可能比目标少）· 快组平均用掉 <b>'+PoolViewLogic.pct(live.fast_util)+'</b> 容量，慢组 <b>'+PoolViewLogic.pct(live.slow_util)+'</b> · 本小时探测慢号 <b>'+PoolViewLogic.num(live.probes||0)+'</b> 次'+
+    speedEl('sp-bucket-note').innerHTML='共 <b>'+PoolViewLogic.num(live.total||0)+'</b> 个可调度账号，其中有测速分数 <b>'+PoolViewLogic.num(live.scored||0)+'</b> 个；快组比例只按有分数的账号算，竖线是目标位置。现在快组实际 <b>'+PoolViewLogic.num(live.fast||0)+'</b> 个（过载或刚降级的号会被跳过，分界附近还有缓冲，所以实际成员可能越过竖线，也可能比目标少）· 最近 1 分钟快组 <b>'+PoolViewLogic.pct(live.fast_used_share)+'</b> 的号被用过，慢组 <b>'+PoolViewLogic.pct(live.slow_used_share)+'</b>（含测速）· 本小时探测慢号 <b>'+PoolViewLogic.num(live.probes||0)+'</b> 次'+
       (live.probe_cycle_minutes?'，一轮约 '+Math.round(live.probe_cycle_minutes)+' 分钟（设定 '+(live.probe_interval_minutes||sp.config.probe_interval_minutes)+' 分钟，'+(live.probe_behind?'<span class="speed-warn">排不过来</span>':'排得过来')+'）':'');
     var cliff=PoolViewLogic.cliff(live.bins,live.active && live.ready,live.scored||0,live.total||0);
     speedState.cliff=cliff;
@@ -3099,16 +3120,16 @@
       renderQuotaVerdict('off', '', data.home_mode ? 'Home 模式下不统计额度' : '额度数据汇总中', data.home_mode ? '账号由 Home 调度端管理，本机不统计额度。' : '约 1 分钟后可用。', '—');
       return;
     }
-    var view = CodexQuotaLogic.overview(data);
+    var view = CodexQuotaLogic.overview(data, PoolViewLogic.overloadCaveat(poolState.lastData));
     quotaEl('updated').textContent = '额度 ' + quotaUpdatedText(data.generated_at);
     renderQuotaVerdict(view.tone, view.label, view.headline, view.detail, view.count);
     var advice = data.advice || {};
-    document.getElementById('answer-quota-big').innerHTML = escapeHtml(view.tiles[0].value) + '<small>/ ' + Number(data.unique_accounts || 0).toLocaleString('en-US') + ' 个能用</small>';
+    document.getElementById('answer-quota-big').innerHTML = escapeHtml(view.tiles[0].value) + '<small>/ ' + Number(data.unique_accounts || 0).toLocaleString('en-US') + ' 个额度够用</small>';
     document.getElementById('answer-quota-runway').textContent = view.tiles[1].value;
     document.getElementById('answer-quota-runway').title = view.tiles[1].note;
     document.getElementById('answer-quota-recover').textContent = view.tiles[2].value + ' 个';
     document.getElementById('answer-quota-recover').title = view.tiles[2].note;
-    document.getElementById('answer-quota-peak').textContent = Number(advice.target_rpm || 0).toLocaleString('en-US') + ' / ' + Number(advice.usable_capacity || 0).toLocaleString('en-US') + ' 次/分';
+    document.getElementById('answer-quota-peak').textContent = view.peakText;
     quotaEl('reset-link').textContent = view.resetText;
     quotaEl('reset-link').hidden = !view.resetText;
     quotaEl('reset-none').hidden = !!view.resetText;
@@ -3218,23 +3239,29 @@
       return;
     }
     poolGauge('rpm-gauge',data.rpm,data.capacity,'次/分',rpmPeak,'attempts');
-    poolGauge('conc-gauge',data.in_flight,data.concurrency_capacity,'个并发',concPeak,'in_flight_peak');
-    var limit=P.commonLimit(data), rejections=P.rejections(data);
+    if (data.concurrency_enabled) poolGauge('conc-gauge',data.in_flight,data.concurrency_capacity,'个并发',concPeak,'in_flight_peak');
+    else poolEl('conc-gauge').innerHTML='<div class="pv-gauge-num"><b>'+n(data.in_flight||0)+'</b><span>个在途请求（并发上限未启用）</span></div>'+
+      '<div class="pv-gauge-foot"><span></span><span>60 分钟峰值 '+(concPeak?n(concPeak.in_flight_peak)+'（'+escapeHtml(P.hhmm(concPeak.time))+'）':'—')+'</span></div>';
+    var limit=P.commonLimit(data), rejections=P.rejections(data), sampled=P.recentAttempts(data)>0;
     poolDl('pool-rpm-kv',[
-      ['可调度账号',n(data.schedulable||0)+' 个'],['剩余',n(data.remaining)+' 次/分'],['有效成功容量',n(Math.round(data.effective_capacity||0))+' 次/分'],
+      ['可调度账号',n(data.schedulable||0)+' 个'],['剩余',n(data.remaining)+' 次/分'],['有效成功容量（容量 × 成功率）',sampled&&data.success_rate!=null?n(Math.round((data.capacity||0)*data.success_rate))+' 次/分':'—'],
       ['RPM 已满账号',n(data.full||0)+' 个',data.full>0?'warn':''],['60 分钟快速失败（529）',n(data.fast_failures||0)+' 次',data.fast_failures>0?'danger':''],
       ['单号上限',limit?'多数 '+limit.limit+' 次/分':'—']]);
-    poolDl('pool-conc-kv',[
+    poolDl('pool-conc-kv',data.concurrency_enabled?[
       ['剩余',n(data.concurrency_remaining)],['并发已满账号',n(data.concurrency_full_accounts||0)+' 个（60 分钟峰值 '+n(fullPeak?fullPeak.concurrency_full_accounts:0)+'）'],
       ['不限并发的账号',n(data.unlimited_accounts||0)+' 个'],['并发容量',CodexPoolLogic.concurrencyCapacity(data)],
+      ['60 分钟因并发满被拒',n(rejections)+' 次',rejections>0?'danger':'']]:[
+      ['剩余','未启用'],['并发已满账号','未启用'],['不限并发的账号','未启用'],['并发容量','未启用'],
       ['60 分钟因并发满被拒',n(rejections)+' 次',rejections>0?'danger':'']]);
+    // The quota card folds in the recent success rate, so it is redrawn with each pool sample.
+    if (quotaState.data) renderQuota(quotaState.data);
   }
   // Asset callbacks update charts only; cached snapshots must not rewrite saved form values.
   function renderPoolCharts(data) {
     if (window.echarts) {
-      if (!poolState.charts.length) ['capacity-chart','failures-chart','ttft-chart','limits-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
+      if (!poolState.charts.length) ['failures-chart','ttft-chart','limits-chart'].forEach(function(id){poolState.charts.push(chartInit(poolEl(id)));});
       var base=CodexPoolLogic.chartOptions(data);
-      [PoolViewLogic.capacityOption(data),PoolViewLogic.requestsOption(data),base[0],base[1]].forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
+      [PoolViewLogic.requestsOption(data),base[0],base[1]].forEach(function(option,i){poolState.charts[i].setOption(option,true);poolState.charts[i].resize();});
     }
     renderQuotaTrend();
     renderSpeedCharts();

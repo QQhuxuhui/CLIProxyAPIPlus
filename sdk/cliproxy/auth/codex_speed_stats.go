@@ -162,35 +162,79 @@ func (t *CodexSpeedTracker) Tick() {
 
 // CodexSpeedSnapshot is the live state shown by the management API.
 type CodexSpeedSnapshot struct {
-	Enabled           bool                 `json:"enabled"`
-	Active            bool                 `json:"active"`
-	Inactive          string               `json:"inactive,omitempty"`
-	Ready             bool                 `json:"ready"`
-	Scored            int                  `json:"scored"`
-	ReadyMin          int                  `json:"ready_min"`
-	Total             int                  `json:"total"`
-	Fast              int                  `json:"fast"`
-	Slow              int                  `json:"slow"`
-	Unscored          int                  `json:"unscored"`
-	FastPercent       int                  `json:"fast_percent"`
-	FastUtil          *float64             `json:"fast_util"`
-	SlowUtil          *float64             `json:"slow_util"`
-	OverflowShare     *float64             `json:"overflow_share"`
-	FastP50Ms         *int64               `json:"fast_p50_ms"`
-	SlowP50Ms         *int64               `json:"slow_p50_ms"`
-	OverallP50Ms      *int64               `json:"overall_p50_ms"`
-	Probes            int64                `json:"probes"`
-	ProbeIntervalMin  int                  `json:"probe_interval_minutes"`
-	ProbeCycleMinutes float64              `json:"probe_cycle_minutes"`
-	ProbeBehind       bool                 `json:"probe_behind"`
-	Bins              []CodexSpeedBin      `json:"bins"`
-	Current           codexspeed.SpeedHour `json:"current"`
+	Enabled           bool            `json:"enabled"`
+	Active            bool            `json:"active"`
+	Inactive          string          `json:"inactive,omitempty"`
+	Ready             bool            `json:"ready"`
+	Scored            int             `json:"scored"`
+	ReadyMin          int             `json:"ready_min"`
+	Total             int             `json:"total"`
+	Fast              int             `json:"fast"`
+	Slow              int             `json:"slow"`
+	Unscored          int             `json:"unscored"`
+	FastPercent       int             `json:"fast_percent"`
+	FastUtil          *float64        `json:"fast_util"`
+	SlowUtil          *float64        `json:"slow_util"`
+	OverflowShare     *float64        `json:"overflow_share"`
+	FastP50Ms         *int64          `json:"fast_p50_ms"`
+	SlowP50Ms         *int64          `json:"slow_p50_ms"`
+	OverallP50Ms      *int64          `json:"overall_p50_ms"`
+	Probes            int64           `json:"probes"`
+	ProbeIntervalMin  int             `json:"probe_interval_minutes"`
+	ProbeCycleMinutes float64         `json:"probe_cycle_minutes"`
+	ProbeBehind       bool            `json:"probe_behind"`
+	Bins              []CodexSpeedBin `json:"bins"`
+	// FastUsedShare and SlowUsedShare are the shares of fast members and of scored non-fast
+	// accounts used in the last minute; nil unless live account use was supplied.
+	FastUsedShare *float64             `json:"fast_used_share"`
+	SlowUsedShare *float64             `json:"slow_used_share"`
+	Current       codexspeed.SpeedHour `json:"current"`
 }
 
 // Snapshot returns the live view including the unfinished hour (histograms stripped).
 func (t *CodexSpeedTracker) Snapshot() CodexSpeedSnapshot {
-	cfg := t.config()
+	return t.snapshotFrom(t.view.Load())
+}
+
+// SnapshotWithUse is Snapshot plus live per-bin use. It loads the view once, so bin counts and
+// bin members always come from the same recompute; the shared view is never modified.
+func (t *CodexSpeedTracker) SnapshotWithUse(use map[string]CodexAccountUse) CodexSpeedSnapshot {
 	view := t.view.Load()
+	snap := t.snapshotFrom(view)
+	if use == nil || len(view.binIDs) != len(snap.Bins) {
+		return snap
+	}
+	bins := make([]CodexSpeedBin, len(snap.Bins))
+	copy(bins, snap.Bins)
+	for i, ids := range view.binIDs {
+		for _, id := range ids {
+			u := use[id]
+			bins[i].Requests += u.Requests
+			if u.used() {
+				bins[i].Used++
+			}
+		}
+		if n := len(ids); n > 0 {
+			share := float64(bins[i].Used) / float64(n)
+			bins[i].UsedShare = &share
+		}
+	}
+	snap.Bins = bins
+	var fast, slow utilAvg
+	for id := range view.fast {
+		fast.add(use[id].share())
+	}
+	for id := range view.score {
+		if !view.fast[id] {
+			slow.add(use[id].share())
+		}
+	}
+	snap.FastUsedShare, snap.SlowUsedShare = fast.value(), slow.value()
+	return snap
+}
+
+func (t *CodexSpeedTracker) snapshotFrom(view *codexSpeedView) CodexSpeedSnapshot {
+	cfg := t.config()
 	cur := t.stats.current(t.now())
 	bins := view.bins
 	if bins == nil {

@@ -122,6 +122,11 @@ type CodexSpeedBin struct {
 	Fast     int      `json:"fast"`
 	ScoreMs  *int64   `json:"score_ms"`
 	Util     *float64 `json:"util"`
+	// Used, Requests and UsedShare are filled per management request from live account use:
+	// accounts dispatched at least once in the last minute or with a request in flight.
+	Used      int      `json:"used"`
+	Requests  int      `json:"requests"`
+	UsedShare *float64 `json:"used_share"`
 }
 
 // codexSpeedView is the result of the last minute recompute, read on the request path.
@@ -141,6 +146,8 @@ type codexSpeedView struct {
 	fastUtil      *float64
 	slowUtil      *float64
 	bins          []CodexSpeedBin
+	// binIDs lists the account IDs of each bin, in bin order; never mutated after publishing.
+	binIDs [][]string
 	// probeCycle is the time one probe round over the non-fast accounts takes at the effective rate.
 	probeCycle time.Duration
 }
@@ -597,7 +604,7 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 		}
 	}
 	view.fastUtil, view.slowUtil = fastUtil.value(), slowUtil.value()
-	view.bins = codexSpeedBins(schedulable, view)
+	view.bins, view.binIDs = codexSpeedBins(schedulable, view)
 	view.probeCycle = t.probeCycle(cfg, view.total-view.fastCount)
 
 	var toSlow, toFast int64
@@ -657,8 +664,8 @@ func (u utilAvg) value() *float64 {
 }
 
 // codexSpeedBins orders every schedulable account by score (unscored last, by ID) and splits
-// the order into codexSpeedBinCount segments.
-func codexSpeedBins(schedulable map[string]CodexSpeedAuthInfo, view *codexSpeedView) []CodexSpeedBin {
+// the order into codexSpeedBinCount segments, returning each segment's account IDs too.
+func codexSpeedBins(schedulable map[string]CodexSpeedAuthInfo, view *codexSpeedView) ([]CodexSpeedBin, [][]string) {
 	ids := make([]string, 0, len(schedulable))
 	for id := range schedulable {
 		ids = append(ids, id)
@@ -678,8 +685,10 @@ func codexSpeedBins(schedulable map[string]CodexSpeedAuthInfo, view *codexSpeedV
 	})
 	n := len(ids)
 	bins := make([]CodexSpeedBin, codexSpeedBinCount)
+	members := make([][]string, codexSpeedBinCount)
 	for i := range bins {
 		lo, hi := i*n/codexSpeedBinCount, (i+1)*n/codexSpeedBinCount
+		members[i] = ids[lo:hi:hi]
 		var scores []time.Duration
 		var util utilAvg
 		for _, id := range ids[lo:hi] {
@@ -700,7 +709,7 @@ func codexSpeedBins(schedulable map[string]CodexSpeedAuthInfo, view *codexSpeedV
 		}
 		bins[i].Util = util.value()
 	}
-	return bins
+	return bins, members
 }
 
 // overflowKey orders non-fast candidates: healthy scored accounts by score, then accounts

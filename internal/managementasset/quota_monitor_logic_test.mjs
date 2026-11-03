@@ -505,6 +505,41 @@ test('overview weighs plan windows and covers the healthy states', () => {
   assert.match(unknown.detail, /30 个账号暂无额度数据/);
 });
 
+test('overview folds a low success caveat into the verdict, the peak text and the capacity meter', () => {
+  const plans = [{ plan: 'free', accounts: 100, usable: 100, recover_24h: 0, windows: [{ minutes: 43200, accounts: 100, avg_remaining: 80 }] }];
+  const base = { unique_accounts: 100, usable: 100, unknown: 0, invalid: 0, plans };
+  const caveat = { rate: 0.38, cause: '上游过载严重', effective: 300 };
+  // ok -> warn, scaled capacity everywhere.
+  const healthy = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 410, target_rpm: 492, usable_capacity: 28352, warming_up: false } }), caveat);
+  assert.equal(healthy.tone, 'warn');
+  assert.equal(healthy.label, '需要留意');
+  assert.match(healthy.detail, /上游过载严重：近 5 分钟成功率 38\.0%，实际能承载约 300 次\/分。$/);
+  assert.equal(healthy.peakText, '492 / 300 次/分（按成功率折算）');
+  const meter = healthy.meters.at(-1);
+  assert.equal(meter.status, '不够用');
+  assert.equal(meter.percent, 100);
+  assert.equal(meter.note, '实际能承载约 300 / 分钟（成功率 38.0%）');
+  // Without a caveat the original texts return.
+  const plain0 = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 410, target_rpm: 492, usable_capacity: 28352, warming_up: false } }));
+  assert.equal(plain0.tone, 'ok');
+  assert.equal(plain0.peakText, '492 / 28,352 次/分');
+  assert.equal(plain0.meters.at(-1).note, '可承载 28,352 / 分钟');
+  assert.equal(plain0.states[0].label, '额度够用');
+  // warn and danger keep their tone; danger quotes the scaled capacity.
+  const warn = quotaLogic.overview(quotaSummary(), caveat);
+  assert.equal(warn.tone, 'warn');
+  assert.equal(warn.headline, '暂时不用加号，但周额度偏低');
+  const danger = quotaLogic.overview(quotaSummary({ advice: { recommended_accounts: 5, rpm_shortfall: 5, usable_capacity: 400, peak_rpm: 410, target_rpm: 492, runway_hours: null } }), caveat);
+  assert.equal(danger.tone, 'danger');
+  assert.match(danger.detail, /现在只能承载 300 \/ 分钟/);
+  // Zero effective capacity is not enough, whatever the peak.
+  const zero = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 0, usable_capacity: 100 } }), { ...caveat, effective: 0 });
+  assert.equal(zero.meters.at(-1).status, '不够用');
+  // A moderate peak against the scaled capacity reads tight, not full.
+  const tight = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 250, usable_capacity: 28352 } }), caveat);
+  assert.equal(tight.meters.at(-1).status, '偏紧');
+});
+
 const NOW = Date.parse('2026-10-31T00:00:00Z');
 const resetRow = (overrides = {}) => ({ remaining: 0, reset_count: 1, account_key: 'a', windows: [], ...overrides });
 
@@ -750,7 +785,7 @@ test('pool view peak keeps the latest of equal maxima and ignores empty minutes'
 
 test('pool view capacity answer grades success and splits cooling reasons', () => {
   const v = poolView();
-  const a = plain(v.capacityAnswer({ points: [{ time: '2026-11-03T08:36:00Z', success: 127, other_failures: 8 }], success_rate: 0.9406, rpm: 293, capacity: 33194, in_flight: 56, concurrency_capacity: 3280, cooling: 658, cooling_reasons: { credential_quota: 657, cooldown: 1 } }));
+  const a = plain(v.capacityAnswer({ points: [{ time: '2026-11-03T08:36:00Z', success: 127, other_failures: 8 }], success_rate: 0.9406, rpm: 293, capacity: 33194, in_flight: 56, concurrency_enabled: true, concurrency_capacity: 3280, cooling: 658, cooling_reasons: { credential_quota: 657, cooldown: 1 } }));
   assert.equal(a.tone, 'warn');
   assert.equal(a.label, '成功率偏低');
   assert.equal(a.verdict, '近 5 分钟成功率 94.1%');
@@ -758,7 +793,30 @@ test('pool view capacity answer grades success and splits cooling reasons', () =
   assert.equal(v.successTone(0.95).label, '稳定');
   assert.equal(v.successTone(0.8499).tone, 'danger');
   assert.equal(v.successTone(undefined).tone, 'off');
-  assert.equal(v.capacityAnswer({ concurrency_capacity: 10, unlimited_accounts: 2 }).rows[0][1], '0 / 10 + ∞×2');
+  assert.equal(v.capacityAnswer({ concurrency_enabled: true, concurrency_capacity: 10, unlimited_accounts: 2 }).rows[0][1], '0 / 10 + ∞×2');
+});
+
+test('pool view capacity answer hides an unenforced concurrency limit and lists invalid accounts', () => {
+  const v = poolView();
+  // Production 2026-11-03 17:03: limit disabled, default 1, 341 dead tokens split from cooling.
+  const a = plain(v.capacityAnswer({ in_flight: 87, concurrency_enabled: false, concurrency_capacity: 1392, cooling: 563, cooling_reasons: { credential_quota: 563 }, invalid: 341 }));
+  assert.deepEqual(a.rows, [['在途并发', '87（未限制）'], ['冷却中（额度用完 / 其他）', '563（563 / 0）'], ['失效或不可用（需处理）', '341', 'danger']]);
+  assert.equal(plain(v.capacityAnswer({ invalid: 0 })).rows.length, 2);
+});
+
+test('pool view overload caveat needs recent attempts below 80% success and names the main failure', () => {
+  const v = poolView();
+  const pts = (o) => [{ time: '2026-11-03T08:36:00Z', success: 38, ...o }];
+  assert.equal(v.overloadCaveat(null), null);
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, points: [] }), null);
+  assert.equal(v.overloadCaveat({ success_rate: 0.8, capacity: 100, points: pts({ overload: 10 }) }), null);
+  assert.equal(v.overloadCaveat({ home_mode: true, success_rate: 0.3, points: pts({ overload: 60 }) }), null);
+  assert.equal(v.overloadCaveat({ success_rate: null, points: pts({ overload: 60 }) }), null);
+  assert.deepEqual(plain(v.overloadCaveat({ success_rate: 0.38, capacity: 28393, points: pts({ overload: 60, rate_limits: 2 }) })), { rate: 0.38, cause: '上游过载严重', effective: 10789 });
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, capacity: 10, points: pts({ rate_limits: 9, overload: 1 }) }).cause, '上游限流');
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, capacity: 10, points: pts({ quota_exhausted: 9 }) }).cause, '额度用完');
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, capacity: 10, points: pts({ other_failures: 9 }) }).cause, '请求失败多');
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, points: pts({ overload: 9 }) }).effective, 0);
 });
 
 test('pool view speed answer follows the overflow grade only while ranking runs', () => {
@@ -793,13 +851,16 @@ test('pool view converts the cut between scored percent and board position', () 
 
 test('pool view board shares one cut across stairs, members and tanks', () => {
   const v = poolView();
-  const sp = { live: { total: 1000, unscored: 10, bins: [bin(300, 20, 20, 0.5), bin(2000, 20, 5, null), bin(null, 20, 0, 0.02)] } };
+  const used = (b, share, n, q) => ({ ...b, used_share: share, used: n, requests: q });
+  const sp = { live: { total: 1000, unscored: 10, bins: [used(bin(300, 20, 20), 0.5, 10, 31), used(bin(2000, 20, 5), null, 0, 0), used(bin(null, 20, 0), 0.002, 0, 1), used(bin(4000, 20, 0, 0.9), 0, 0, 0)] } };
   const o = plain(v.boardOption(sp, 20, 1000));
   assert.equal(o.series.length, 4);
-  assert.deepEqual(o.series[0].data.map(d => d.value), [[1, 0.3], [3, 2], [5, 12]]);
-  assert.deepEqual(o.series[0].data.map(d => d.itemStyle.color), ['#3ccf8e', '#f2a93b', '#2a3442']);
-  assert.deepEqual(o.series[2].data, [[1, 50], [3, 0], [5, 2]]);
-  assert.deepEqual(o.series[3].data, [[1, 50], [3, 100], [5, 98]]);
+  assert.deepEqual(o.series[0].data.map(d => d.value), [[1, 0.3], [3, 2], [5, 12], [7, 4]]);
+  assert.deepEqual(o.series[0].data.map(d => d.itemStyle.color), ['#3ccf8e', '#f2a93b', '#2a3442', '#f2626a']);
+  // Water is the live used share; the old capacity util (0.9 in the last bin) is ignored.
+  assert.deepEqual(o.series[2].data, [[1, 50], [3, 0], [5, 0.6], [7, 0]]);
+  assert.deepEqual(o.series[3].data, [[1, 50], [3, 100], [5, 99.4], [7, 100]]);
+  assert.equal(o.series[2].name, '最近 1 分钟用过');
   for (const i of [0, 1, 2]) assert.equal(o.series[i].markLine.data[0].xAxis, 0);
   // fast percent 20 of 500 scored accounts out of 1000 sits at rank position 10.
   const scored = plain(v.boardOption({ live: { ...sp.live, scored: 500 } }, 20, 1000));
@@ -810,44 +871,43 @@ test('pool view board shares one cut across stairs, members and tanks', () => {
   const narrow = plain(v.boardOption(sp, 20, 360));
   assert.equal(narrow.xAxis[2].interval, 50);
   assert.ok(plain(v.boardOption({ live: {} }, 30, 800)).graphic.some(g => g.style.text === '还没有测速数据'));
+  const fmt = v.boardOption(sp, 20, 1000).tooltip.formatter;
+  assert.ok(fmt({ value: [1, 50] }).endsWith('最近 1 分钟用过 10 / 20 个号（含测速），共 31 次请求'));
+  assert.ok(fmt({ value: [3, 0] }).endsWith('最近 1 分钟使用：—'));
 });
 
-test('pool view capacity and request charts align concurrency by minute and split failures', () => {
+test('pool view request chart splits failures and the capacity sentence replaces the old chart', () => {
   const v = poolView();
   const t1 = '2026-11-03T08:35:00+08:00', t2 = '2026-11-03T08:36:00+08:00';
   const d = {
-    capacity: 1000, concurrency_capacity: 100,
+    capacity: 1000, schedulable: 50, concurrency_capacity: 100, success_rate: 0.95,
     points: [{ time: t1, attempts: 100, capacity: 1000, success: 90, overload: 4, rate_limits: 3, quota_exhausted: 2, other_failures: 1 }, { time: t2, attempts: 600, capacity: 1000, success: 600 }],
     concurrency_points: [{ time: t2, in_flight_peak: 70, concurrency_capacity: 100, concurrency_full_accounts: 4, concurrency_rejections: 2 }],
   };
-  const cap = plain(v.capacityOption(d));
-  assert.deepEqual(cap.series.map(s => s.data), [[10, 60], [null, 70], [null, 4], [0, 2]]);
+  assert.equal(v.capacityOption, undefined);
   const req = plain(v.requestsOption(d));
   assert.deepEqual(req.series.map(s => s.name), ['成功', '过载 502/503', '429 限流', '额度用完', '其他']);
   assert.deepEqual(req.series.map(s => s.data[0]), [90, 4, 3, 2, 1]);
   assert.ok(req.series.every(s => s.stack === 'req'));
   assert.equal(v.rejections(d), 2);
-  assert.ok(v.capacityRead(d).includes('RPM 最多用到 60%，并发最多用到 70%') && v.capacityRead(d).includes('接近上限'));
-  assert.ok(v.capacityRead({ capacity: 1000, concurrency_capacity: 100, points: [{ time: t1, attempts: 10 }], concurrency_points: [] }).includes('号池整体还很空'));
+  // Concurrency is mentioned only when its limit is enforced.
+  assert.equal(v.capacityRead(d), '最近 60 分钟请求最多用到 RPM 上限的 60%，已经接近上限，考虑加号。');
+  assert.equal(v.capacityRead({ ...d, concurrency_enabled: true }), '最近 60 分钟请求最多用到 RPM 上限的 60%，并发最多用到 70%，已经接近上限，考虑加号。');
+  assert.equal(v.capacityRead({ ...d, points: [{ time: t1, attempts: 10, capacity: 1000, success: 10 }] }), '最近 60 分钟请求最多用到 RPM 上限的 1%，号池容量还很空。');
+  // R uses each minute's own capacity: 300 of 400 then, even though capacity is 1000 now.
+  assert.ok(v.capacityRead({ ...d, points: [{ time: t1, attempts: 300, capacity: 400, success: 300 }] }).includes('RPM 上限的 75%'));
+  assert.equal(v.capacityRead({ ...d, capacity: 0 }), '现在没有可调度的容量（可调度账号 50 个）。');
+  assert.equal(v.capacityRead({ capacity: 1000, points: [{ time: t1, attempts: 0, capacity: 1000 }] }), '');
   assert.equal(v.capacityRead({}), '');
+  assert.equal(v.minuteKey('not a time'), null);
   assert.deepEqual(plain(v.commonLimit({ limits: [{ limit: 20, accounts: 5 }, { limit: 21, accounts: 9 }] })), { limit: 21, accounts: 9 });
 });
 
-test('pool view aligns concurrency samples on the absolute minute', () => {
+test('pool view capacity sentence blames the main failure when success is low', () => {
   const v = poolView();
-  // Same wall-clock minute on two different days, and one sample in another time zone notation.
-  const d = {
-    points: [{ time: '2026-11-02T23:59:00+08:00', attempts: 10, capacity: 100 }, { time: '2026-11-03T00:00:00+08:00', attempts: 20, capacity: 100 }],
-    concurrency_points: [
-      { time: '2026-11-01T23:59:00+08:00', in_flight_peak: 99, concurrency_capacity: 100, concurrency_full_accounts: 9, concurrency_rejections: 9 },
-      { time: '2026-11-02T16:00:00Z', in_flight_peak: 30, concurrency_capacity: 100, concurrency_full_accounts: 3, concurrency_rejections: 1 },
-    ],
-  };
-  const cap = plain(v.capacityOption(d));
-  assert.deepEqual(cap.series[1].data, [null, 30]);
-  assert.deepEqual(cap.series[2].data, [null, 3]);
-  assert.deepEqual(cap.series[3].data, [0, 1]);
-  assert.equal(v.minuteKey('not a time'), null);
+  // Production 2026-11-03 17:03: 2% of RPM used, 38% success, mostly overloads.
+  const d = { capacity: 28393, success_rate: 0.38, points: [{ time: '2026-11-03T08:36:00Z', attempts: 528, capacity: 28393, success: 41, overload: 55 }] };
+  assert.equal(v.capacityRead(d), '最近 60 分钟请求最多用到 RPM 上限的 2%。限制用户的不是容量，是上游过载严重：近 5 分钟成功率只有 38.0%。');
 });
 
 test('pool view keeps local counters out of the Home mode capacity answer', () => {

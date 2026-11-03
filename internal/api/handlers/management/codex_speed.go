@@ -184,7 +184,11 @@ func (h *Handler) PutCodexSpeedConfig(c *gin.Context) {
 }
 
 func (h *Handler) codexSpeedPriorityView(cfg *config.Config, records []codexspeed.HourRecord) codexSpeedPriorityView {
-	view := codexSpeedPriorityView{Live: coreauth.CodexSpeed().Snapshot(), Hours: []codexspeed.SpeedHour{}}
+	var use map[string]coreauth.CodexAccountUse
+	if h.authManager != nil {
+		use = h.authManager.CodexRecentUse()
+	}
+	view := codexSpeedPriorityView{Live: coreauth.CodexSpeed().SnapshotWithUse(use), Hours: []codexspeed.SpeedHour{}}
 	if cfg != nil {
 		speedCfg := cfg.Codex.SpeedPriority
 		speedCfg.Normalize()
