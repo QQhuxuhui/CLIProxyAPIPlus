@@ -834,6 +834,9 @@ test('pool view speed answer follows the overflow grade only while ranking runs'
   assert.equal(warming.label, '测速中');
   assert.equal(warming.rows[2][1], '—');
   assert.equal(v.speedAnswer({ config: {}, live: { active: false } }).label, '未生效');
+  const off = plain(v.speedAnswer({ config: { enable: false }, live: { active: false, fast: 300, slow: 900, scored: 1200, total: 1500, fast_p50_ms: 900, slow_p50_ms: 4000, bins: [bin(500, 30)] } }));
+  assert.equal(off.verdict, '快慢池未开启，按原方式选号');
+  assert.deepEqual(off.rows, [['有测速分数 / 可调度', '1,200 / 1,500'], ['真快号（首字 < 1.5 秒）', '约 30 个']]);
 });
 
 test('pool view converts the cut between scored percent and board position', () => {
@@ -931,4 +934,26 @@ test('pool view does not grade success when the last five minutes had no request
   assert.equal(v.recentAttempts({ points: pts.slice().reverse() }), 0);
   const busy = plain(v.capacityAnswer({ success_rate: 0, points: [{ time: '2026-11-03T08:01:00Z', other_failures: 3 }] }));
   assert.equal(busy.tone, 'danger');
+});
+
+test('pool view rpm chart pairs each minute capacity with its requests and shows the live window last', () => {
+  const v = poolView();
+  const t = (m) => new Date(Date.UTC(2026, 10, 4, 0, m)).toISOString();
+  const d = { capacity: 50, rpm: 40, points: [
+    { time: t(1), capacity: 0, attempts: 0 },
+    { time: t(2), capacity: 50, attempts: 30 },
+    { time: t(3), capacity: 50, attempts: 46, fast_failures: 0 },
+    { time: t(4), capacity: 40, attempts: 20, fast_failures: 2 },
+    { time: t(5), capacity: 50, attempts: 7 },
+  ] };
+  const o = plain(v.rpmOption(d));
+  assert.deepEqual(o.series[0].data, [null, 50, 50, 40, 50]);
+  assert.deepEqual(o.series[1].data.map((b) => b.value), [0, 30, 46, 20, 40]);
+  const colors = o.series[1].data.map((b) => b.itemStyle.color);
+  assert.deepEqual(colors.slice(1), [v.COLORS.ok, v.COLORS.bad, v.COLORS.bad, v.COLORS.warn]);
+  assert.equal(o.xAxis.data[4], '现在');
+  assert.equal(o.series[1].data[4].label.formatter, '40 / 50（80%）');
+  const tip = v.rpmOption(d).tooltip.formatter([{ dataIndex: 3 }]);
+  assert.match(tip, /可用容量 40 次\/分/);
+  assert.match(tip, /快速失败 529：2/);
 });
