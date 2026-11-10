@@ -111,6 +111,7 @@ func ObserveResponsesTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter == nil || len(payload) == 0 {
 		return
 	}
+	ObserveResponsesTimingEvent(reporter, payload)
 	if reporter.IsTTFTSet() {
 		return
 	}

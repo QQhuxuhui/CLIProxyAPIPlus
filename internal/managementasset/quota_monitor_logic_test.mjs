@@ -329,23 +329,17 @@ test('selectedEmails keeps list order, drops duplicates, and counts accounts wit
 });
 
 vm.runInContext(logicBlock('CODEX_POOL_LOGIC'), context);
-test('Codex pool charts distinguish rate limits and exhausted quota', () => {
+test('Codex pool chart options keep TTFT gaps and the learned limit histogram', () => {
   const charts = plain(context.CodexPoolLogic.chartOptions({
-    points: [{time:'2026-10-22T12:00:00Z',attempts:40,capacity:100,ttft_p50:7,ttft_p90:10,overload:3,rate_limits:2,quota_exhausted:1,other_failures:4}],
+    points: [{time:'2026-10-22T12:00:00Z',attempts:40,ttft_p50:7,ttft_p90:10},{time:'2026-10-22T12:01:00Z',attempts:0,ttft_p50:0,ttft_p90:0}],
     limits: [{limit:20,accounts:8}],
   }));
-  assert.equal(charts.length, 5);
-  assert.deepEqual(charts[0].series.map(s=>s.data), [[40],[100]]);
-  assert.deepEqual(charts[2].series.map(s=>s.data), [[3],[2],[1],[4]]);
-  assert.equal(charts[2].series.every(s=>s.stack==='fail'), true);
-  assert.deepEqual(charts[3].xAxis.data, [20]);
-  assert.deepEqual(charts[3].series[0].data, [8]);
-});
-test('Codex pool cards preserve negative remaining capacity and missing TTFT', () => {
-  const cards=plain(context.CodexPoolLogic.cards({remaining:-3,success_rate:.75,ttft_p50:0,ttft_p90:0}));
-  assert.equal(cards.find(c=>c[0]==='剩余容量 / RPM')[1], -3);
-  assert.equal(cards.find(c=>c[0]==='近 5 分钟成功率')[1], '75.0%');
-  assert.equal(cards.find(c=>c[0]==='首字 p50')[1], '—');
+  assert.equal(charts.length, 2);
+  assert.deepEqual(charts[0].series.map(s=>s.data), [[7,null],[10,null]]);
+  assert.deepEqual(charts[1].xAxis.data, [20]);
+  assert.deepEqual(charts[1].series[0].data, [8]);
+  assert.equal(context.CodexPoolLogic.concurrencyCapacity({ concurrency_capacity: 10, unlimited_accounts: 3, concurrency_enabled: true }), '10 + ∞×3');
+  assert.equal(context.CodexPoolLogic.concurrencyCapacity({ concurrency_capacity: 10 }), '10（未启用）');
 });
 
 function poolLifecycleFixture() {
@@ -360,11 +354,14 @@ function poolLifecycleFixture() {
   const sandbox = vm.createContext({
     Date,Math,String,Number,Array,Object,JSON,AbortController,
     currentTab:'pool',firstSuccess:true,getStoredKey:()=> 'test-key',
-    document:{getElementById:element,createElement:()=>({remove(){},appendChild(){}}),head:{appendChild:script=>scripts.push(script)}},
+    document:{getElementById:element,addEventListener(){},createElement:()=>({remove(){},appendChild(){}}),head:{appendChild:script=>scripts.push(script)}},
+    escapeHtml:s=>String(s),
     window:{addEventListener(){}},setInterval:()=>1,clearInterval(){},fetch:()=>saveResponse,
     readError:()=>Promise.resolve('failed'),clearKey(){},setStatus(){}
   });
   vm.runInContext(logicBlock('CODEX_POOL_LOGIC'), sandbox);
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC'), sandbox);
+  vm.runInContext(logicBlock('POOL_VIEW_LOGIC'), sandbox);
   const start=html.indexOf('  var poolState ='),end=html.indexOf('  // ---- Proxy settings ----',start);
   assert.ok(start>=0 && end>start);
   vm.runInContext(html.slice(start,end),sandbox);
@@ -508,6 +505,41 @@ test('overview weighs plan windows and covers the healthy states', () => {
   assert.match(unknown.detail, /30 个账号暂无额度数据/);
 });
 
+test('overview folds a low success caveat into the verdict, the peak text and the capacity meter', () => {
+  const plans = [{ plan: 'free', accounts: 100, usable: 100, recover_24h: 0, windows: [{ minutes: 43200, accounts: 100, avg_remaining: 80 }] }];
+  const base = { unique_accounts: 100, usable: 100, unknown: 0, invalid: 0, plans };
+  const caveat = { rate: 0.38, cause: '上游过载严重', effective: 300 };
+  // ok -> warn, scaled capacity everywhere.
+  const healthy = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 410, target_rpm: 492, usable_capacity: 28352, warming_up: false } }), caveat);
+  assert.equal(healthy.tone, 'warn');
+  assert.equal(healthy.label, '需要留意');
+  assert.match(healthy.detail, /上游过载严重：近 5 分钟成功率 38\.0%，实际能承载约 300 次\/分。$/);
+  assert.equal(healthy.peakText, '492 / 300 次/分（按成功率折算）');
+  const meter = healthy.meters.at(-1);
+  assert.equal(meter.status, '不够用');
+  assert.equal(meter.percent, 100);
+  assert.equal(meter.note, '实际能承载约 300 / 分钟（成功率 38.0%）');
+  // Without a caveat the original texts return.
+  const plain0 = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 410, target_rpm: 492, usable_capacity: 28352, warming_up: false } }));
+  assert.equal(plain0.tone, 'ok');
+  assert.equal(plain0.peakText, '492 / 28,352 次/分');
+  assert.equal(plain0.meters.at(-1).note, '可承载 28,352 / 分钟');
+  assert.equal(plain0.states[0].label, '额度够用');
+  // warn and danger keep their tone; danger quotes the scaled capacity.
+  const warn = quotaLogic.overview(quotaSummary(), caveat);
+  assert.equal(warn.tone, 'warn');
+  assert.equal(warn.headline, '暂时不用加号，但周额度偏低');
+  const danger = quotaLogic.overview(quotaSummary({ advice: { recommended_accounts: 5, rpm_shortfall: 5, usable_capacity: 400, peak_rpm: 410, target_rpm: 492, runway_hours: null } }), caveat);
+  assert.equal(danger.tone, 'danger');
+  assert.match(danger.detail, /现在只能承载 300 \/ 分钟/);
+  // Zero effective capacity is not enough, whatever the peak.
+  const zero = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 0, usable_capacity: 100 } }), { ...caveat, effective: 0 });
+  assert.equal(zero.meters.at(-1).status, '不够用');
+  // A moderate peak against the scaled capacity reads tight, not full.
+  const tight = quotaLogic.overview(quotaSummary({ ...base, advice: { peak_rpm: 250, usable_capacity: 28352 } }), caveat);
+  assert.equal(tight.meters.at(-1).status, '偏紧');
+});
+
 const NOW = Date.parse('2026-10-31T00:00:00Z');
 const resetRow = (overrides = {}) => ({ remaining: 0, reset_count: 1, account_key: 'a', windows: [], ...overrides });
 
@@ -595,20 +627,333 @@ test('batch result reports success and failure counts', () => {
   assert.equal(message, '成功 1 个，未变 0 个，失败 1 个：b（auth file not found）');
 });
 
-test('concurrency chart plots samples, capacity and rejections on its own time axis', () => {
-  const pool = vm.createContext({ Date, Number, String });
-  vm.runInContext(logicBlock('CODEX_POOL_LOGIC') + ';this.pool = CodexPoolLogic;', pool);
-  const time = '2026-10-20T10:00:00Z';
-  const data = { points: [], unlimited_accounts: 3, concurrency_enabled: true, concurrency_capacity: 10, in_flight: 4, concurrency_full_accounts: 1, success_rate: 1,
-    concurrency_points: [{ time, in_flight: 4, in_flight_peak: 7, concurrency_capacity: 10, concurrency_rejections: 2 }] };
-  const options = plain(pool.pool.chartOptions(data));
-  const chart = options[options.length - 1];
-  assert.equal(chart.xAxis.data.length, 1);
-  assert.deepEqual(chart.series.map((series) => series.data[0]), [4, 7, 10, 2]);
-  assert.match(chart.series[2].name, /3 个不限额/);
-  const cards = Object.fromEntries(plain(pool.pool.cards(data)));
-  assert.equal(cards['当前在途'], 4);
-  assert.equal(cards['并发容量'], '10 + ∞×3');
-  assert.equal(cards['并发已满账号'], 1);
-  assert.equal(pool.pool.concurrencyCapacity({ concurrency_capacity: 10 }), '10（未启用）');
+test('speed view summarises 24h labels in a fixed order', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const s = ctx.speed;
+  assert.equal(s.labelSummary({ slower: 1, effective: 3 }), '近 24 小时结论：有效 3 小时 · 更慢 1 小时');
+  assert.equal(s.labelSummary({}), '近 24 小时还没有完整小时的数据');
+  assert.equal(s.seconds(null), '—');
+  assert.equal(s.seconds(1520), '1.52 s');
+  assert.equal(s.failRate({ requests: 0, failures: 0 }), '—');
+  assert.equal(s.failRate({ requests: 8, failures: 2 }), '25.0%');
+});
+
+test('speed view series appends the current hour and keeps gaps as null', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const g = (p50, req, fail) => ({ p50_ms: p50, p90_ms: p50, requests: req, failures: fail });
+  const series = plain(ctx.speed.fastSeries({
+    hours: [{ hour: '2026-11-02T06:00:00Z', fast: g(1000, 10, 1), control: g(null, 0, 0) }],
+    current: { hour: '2026-11-02T07:00:00Z', fast: g(2000, 4, 0), control: g(9000, 20, 5) },
+  }));
+  assert.equal(series.times.length, 2);
+  assert.deepEqual(series.fastP50, [1, 2]);
+  assert.deepEqual(series.controlP50, [null, 9]);
+  assert.deepEqual(series.fastFail, [10, 0]);
+  assert.deepEqual(series.controlFail, [null, 25]);
+});
+
+test('speed fast cards report current hour and shares', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const cards = plain(ctx.speed.fastCards({ enable: true, percent: 97, effective_percent: 48, members: 1,
+    current: { label: 'no_difference', fast: { p50_ms: 9670, ttft_samples: 30, requests: 50, failures: 5 }, control: { p50_ms: 10460, ttft_samples: 60, requests: 80, failures: 20 } } }));
+  const map = Object.fromEntries(cards);
+  assert.equal(map['配置占比 / 运行占比'], '97% / 48%');
+  assert.equal(map['本小时结论'], '无差异');
+  assert.equal(map['本小时样本（fast / 对照）'], '30 / 60');
+});
+
+test('speed headroom grades, snapping and status text', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const s = ctx.speed;
+  assert.equal(s.headroom(null).text, '—');
+  assert.equal(s.headroom(0.049).text, '充足');
+  assert.equal(s.headroom(0.05).text, '偏紧');
+  assert.equal(s.headroom(0.2).text, '偏紧');
+  assert.equal(s.headroom(0.21).cls, 'speed-fail');
+  assert.equal(s.snapPercent(29.6), 30);
+  assert.equal(s.snapPercent(0.2), 1);
+  assert.equal(s.snapPercent(95), 90);
+  assert.equal(s.snapPercent('x'), 30);
+  const base = { pools_configured: true, pools_running: true, enable: true };
+  assert.ok(s.statusText({ config: base, live: { ready: false, scored: 7, ready_min: 20 } }).includes('已有分数 7 个，需要 20 个'));
+  assert.ok(s.statusText({ config: base, live: { ready: true, probe_behind: true, probe_cycle_minutes: 31.6 } }).includes('一轮约 32 分钟'));
+  assert.ok(s.statusText({ config: { pools_configured: false }, live: {} }).startsWith('Codex 分池未开启'));
+});
+
+test('speed bins become chart points with null gaps and fast share', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const b = plain(ctx.speed.binSeries([
+    { accounts: 4, fast: 4, score_ms: 900, util: 0.5 },
+    { accounts: 4, fast: 1, score_ms: null, util: null },
+    { accounts: 0, fast: 0, score_ms: null, util: null }
+  ]));
+  assert.deepEqual(b.score, [[1, 0.9], [3, null], [5, null]]);
+  assert.deepEqual(b.util, [[1, 50], [3, null], [5, null]]);
+  assert.deepEqual(b.fast, [[1, 100], [3, 25], [5, null]]);
+});
+
+test('speed trend keeps legacy hours to the overall line', () => {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';this.speed = SpeedViewLogic;', ctx);
+  const now = Date.now();
+  const iso = (h) => new Date(now - h * 3600 * 1000).toISOString();
+  const g = (p50) => ({ p50_ms: p50 });
+  const series = plain(ctx.speed.trendSeries({
+    hours: [
+      { hour: iso(30), schema: 'ranked', fast: g(1), slow: g(1), overall: g(1) },
+      { hour: iso(3), schema: 'legacy_ab', fast: g(null), slow: g(null), overall: g(9000), fast_util: 0.5, overflow_share: 0.5, fast_percent: 0 },
+      { hour: iso(2), schema: 'ranked', fast: g(1200), slow: g(8000), overall: g(2000), fast_util: 0.4, overflow_share: 0.031, fast_percent: 30 }
+    ],
+    live: { current: { hour: iso(0), schema: 'ranked', fast: g(null), slow: g(null), overall: g(null), fast_util: null, overflow_share: null, fast_percent: 30 } }
+  }));
+  assert.equal(series.times.length, 3, 'hours older than 24h are dropped');
+  assert.ok(series.times[0].endsWith('（旧口径）'));
+  assert.deepEqual(series.overallP50, [9, 2, null]);
+  assert.deepEqual(series.fastP50, [null, 1.2, null]);
+  assert.deepEqual(series.overflow, [null, 3.1, null]);
+  assert.deepEqual(series.fastPercent, [null, 30, 30]);
+});
+
+function poolView() {
+  const ctx = vm.createContext({ Date, Math, String, Number, Array, Object, JSON, isNaN, isFinite });
+  vm.runInContext(logicBlock('SPEED_VIEW_LOGIC') + ';' + logicBlock('POOL_VIEW_LOGIC') + ';this.view = PoolViewLogic;', ctx);
+  return ctx.view;
+}
+const bin = (score_ms, accounts = 10, fast = 0, util = 0.1) => ({ score_ms, accounts, fast, util });
+
+test('pool view grades speed and counts true fast accounts', () => {
+  const v = poolView();
+  assert.equal(v.speedTone(null), null);
+  assert.equal(v.speedTone(1499), 'ok');
+  assert.equal(v.speedTone(1500), 'warn');
+  assert.equal(v.speedTone(3999), 'warn');
+  assert.equal(v.speedTone(4000), 'bad');
+  assert.equal(v.trueFastCount([bin(300, 12), bin(1499, 5), bin(1500, 7), bin(null, 9)]), 17);
+  assert.equal(v.trueFastCount(undefined), 0);
+});
+
+test('pool view finds the first cliff and explains when there is none', () => {
+  const v = poolView();
+  assert.deepEqual(plain(v.cliff([bin(400), bin(600), bin(5000), bin(9000)], true, 100, 100)), { pos: 4, percent: 4, fromMs: 600, toMs: 5000 });
+  // A doubling below 1.5 seconds is not a cliff; neither is a big gap that does not double.
+  assert.ok(v.cliff([bin(300), bin(700), bin(5000), bin(8000)], true, 100, 100).percent === 4);
+  // The edge is a board position over all accounts; half of them scored doubles the fast percent.
+  assert.equal(v.cliff([bin(400), bin(600), bin(5000)], true, 50, 100).percent, 8);
+  assert.ok(v.cliff([bin(300), bin(700)], true).reason.includes('没有明显断崖'));
+  assert.ok(v.cliff([bin(4000), bin(7000)], true).reason.includes('没有明显断崖'));
+  // Unscored bins never form a cliff with their neighbours.
+  assert.ok(v.cliff([bin(500), bin(null), bin(9000)], true).reason.includes('没有明显断崖'));
+  assert.equal(v.cliff([bin(400), bin(5000)], false).reason, '测速还没就绪');
+  const late = Array.from({ length: 50 }, (_, i) => bin(i < 48 ? 500 : 9000));
+  // The true edge (96%) is kept and only the converted percent is snapped to 90.
+  assert.equal(v.cliff(late, true, 100, 100).pos, 96);
+  assert.equal(v.cliff(late, true, 100, 100).percent, 90);
+  assert.equal(v.cliff(late, true, 0, 100).percent, null);
+});
+
+test('pool view cut readout counts slow accounts inside the fast group', () => {
+  const v = poolView();
+  const bins = [bin(500, 10), bin(1200, 10), bin(2000, 10), bin(null, 10)];
+  const r = plain(v.cutReadout(bins, 6, 200, 4, 200));
+  assert.deepEqual(r, { cut: 6, accounts: 12, edgeMs: 2000, slowInFast: 10, trueFast: 20, dirty: true });
+  assert.equal(v.cutReadout(bins, 4, 200, 4, 200).slowInFast, 0);
+  assert.equal(v.cutReadout(bins, 4, 200, 4, 200).dirty, false);
+  assert.equal(v.cutReadout([], 30, 0, 30, 0).edgeMs, null);
+  // The target counts scored accounts only, and the covered bins shrink with them.
+  const half = plain(v.cutReadout(bins, 4, 200, 4, 100));
+  assert.equal(half.accounts, 4);
+  assert.equal(half.edgeMs, 500);
+  // A cut covering less than half a bin has no data behind a verdict.
+  assert.equal(v.cutReadout(bins, 28, 1620, 28, 20).edgeMs, null);
+  assert.equal(v.cutReadout([bin(null, 10), bin(500, 10)], 2, 200, 2, 200).edgeMs, null);
+});
+
+test('pool view peak keeps the latest of equal maxima and ignores empty minutes', () => {
+  const v = poolView();
+  const pts = [{ time: 'a', attempts: 5 }, { time: 'b', attempts: 9 }, { time: 'c', attempts: 9 }, { time: 'd', attempts: 1 }];
+  assert.equal(v.peak(pts, 'attempts').time, 'c');
+  assert.equal(v.peak([{ time: 'a', attempts: 0 }], 'attempts'), null);
+  assert.equal(v.peak(undefined, 'attempts'), null);
+  assert.deepEqual(plain(v.gauge(25, 100, 120)), { used: 25, peak: 120, usedBar: 25, peakMark: 99.5 });
+  assert.deepEqual(plain(v.gauge(5, 0, 3)), { used: 0, peak: 0, usedBar: 0, peakMark: 0 });
+});
+
+test('pool view capacity answer grades success and splits cooling reasons', () => {
+  const v = poolView();
+  const a = plain(v.capacityAnswer({ points: [{ time: '2026-11-03T08:36:00Z', success: 127, other_failures: 8 }], success_rate: 0.9406, rpm: 293, capacity: 33194, in_flight: 56, concurrency_enabled: true, concurrency_capacity: 3280, cooling: 658, cooling_reasons: { credential_quota: 657, cooldown: 1 } }));
+  assert.equal(a.tone, 'warn');
+  assert.equal(a.label, '成功率偏低');
+  assert.equal(a.verdict, '近 5 分钟成功率 94.1%');
+  assert.deepEqual(a.rows, [['在途并发', '56 / 3,280'], ['冷却中（额度用完 / 其他）', '658（657 / 1）']]);
+  assert.equal(v.successTone(0.95).label, '稳定');
+  assert.equal(v.successTone(0.8499).tone, 'danger');
+  assert.equal(v.successTone(undefined).tone, 'off');
+  assert.equal(v.capacityAnswer({ concurrency_enabled: true, concurrency_capacity: 10, unlimited_accounts: 2 }).rows[0][1], '0 / 10 + ∞×2');
+});
+
+test('pool view capacity answer hides an unenforced concurrency limit and lists invalid accounts', () => {
+  const v = poolView();
+  // Production 2026-11-03 17:03: limit disabled, default 1, 341 dead tokens split from cooling.
+  const a = plain(v.capacityAnswer({ in_flight: 87, concurrency_enabled: false, concurrency_capacity: 1392, cooling: 563, cooling_reasons: { credential_quota: 563 }, invalid: 341 }));
+  assert.deepEqual(a.rows, [['在途并发', '87（未限制）'], ['冷却中（额度用完 / 其他）', '563（563 / 0）'], ['失效或不可用（需处理）', '341', 'danger']]);
+  assert.equal(plain(v.capacityAnswer({ invalid: 0 })).rows.length, 2);
+});
+
+test('pool view overload caveat needs recent attempts below 80% success and names the main failure', () => {
+  const v = poolView();
+  const pts = (o) => [{ time: '2026-11-03T08:36:00Z', success: 38, ...o }];
+  assert.equal(v.overloadCaveat(null), null);
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, points: [] }), null);
+  assert.equal(v.overloadCaveat({ success_rate: 0.8, capacity: 100, points: pts({ overload: 10 }) }), null);
+  assert.equal(v.overloadCaveat({ home_mode: true, success_rate: 0.3, points: pts({ overload: 60 }) }), null);
+  assert.equal(v.overloadCaveat({ success_rate: null, points: pts({ overload: 60 }) }), null);
+  assert.deepEqual(plain(v.overloadCaveat({ success_rate: 0.38, capacity: 28393, points: pts({ overload: 60, rate_limits: 2 }) })), { rate: 0.38, cause: '上游过载严重', effective: 10789 });
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, capacity: 10, points: pts({ rate_limits: 9, overload: 1 }) }).cause, '上游限流');
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, capacity: 10, points: pts({ quota_exhausted: 9 }) }).cause, '额度用完');
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, capacity: 10, points: pts({ other_failures: 9 }) }).cause, '请求失败多');
+  assert.equal(v.overloadCaveat({ success_rate: 0.5, points: pts({ overload: 9 }) }).effective, 0);
+});
+
+test('pool view speed answer follows the overflow grade only while ranking runs', () => {
+  const v = poolView();
+  const sp = { config: { enable: true }, live: { active: true, ready: true, fast: 328, slow: 1310, unscored: 269, overflow_share: 0.267, fast_p50_ms: 3052, slow_p50_ms: 3619, overall_p50_ms: 3378, bins: [bin(500, 30), bin(1600, 30)] } };
+  const a = plain(v.speedAnswer(sp));
+  assert.equal(a.tone, 'danger');
+  assert.equal(a.label, '快号不够');
+  assert.equal(a.verdict, '快组 3.1 秒，慢组 3.6 秒');
+  assert.deepEqual(a.rows[0], ['本小时请求掉进慢组', '26.7%', 'danger']);
+  assert.equal(a.rows[1][1], '328 / 1,310 / 269');
+  assert.equal(a.rows[2][1], '约 30 个');
+  const warming = plain(v.speedAnswer({ config: {}, live: { active: true, ready: false } }));
+  assert.equal(warming.tone, 'off');
+  assert.equal(warming.label, '测速中');
+  assert.equal(warming.rows[2][1], '—');
+  assert.equal(v.speedAnswer({ config: {}, live: { active: false } }).label, '未生效');
+  const off = plain(v.speedAnswer({ config: { enable: false }, live: { active: false, fast: 300, slow: 900, scored: 1200, total: 1500, fast_p50_ms: 900, slow_p50_ms: 4000, bins: [bin(500, 30)] } }));
+  assert.equal(off.verdict, '快慢池未开启，按原方式选号');
+  assert.deepEqual(off.rows, [['有测速分数 / 可调度', '1,200 / 1,500'], ['真快号（首字 < 1.5 秒）', '约 30 个']]);
+});
+
+test('pool view converts the cut between scored percent and board position', () => {
+  const v = poolView();
+  assert.equal(v.cutPos(28, 961, 1620), 28 * 961 / 1620);
+  assert.equal(v.cutFromPos(v.cutPos(28, 961, 1620), 961, 1620), 28);
+  assert.equal(v.cutPos(30, 0, 1620), 0);
+  assert.equal(v.cutFromPos(10, 0, 1620), null);
+  assert.equal(v.cutFromPos(10, 5, 0), null);
+  // One or 19 scored accounts still convert, so a cut can be preset before ranking is ready.
+  assert.equal(v.cutFromPos(0.05, 1, 1620), 81);
+  assert.equal(v.cutFromPos(50, 19, 1620), 90);
+  assert.equal(v.cutFromPos(0.2, 19, 1620), 17);
+});
+
+test('pool view board shares one cut across stairs, members and tanks', () => {
+  const v = poolView();
+  const used = (b, share, n, q) => ({ ...b, used_share: share, used: n, requests: q });
+  const sp = { live: { total: 1000, unscored: 10, bins: [used(bin(300, 20, 20), 0.5, 10, 31), used(bin(2000, 20, 5), null, 0, 0), used(bin(null, 20, 0), 0.002, 0, 1), used(bin(4000, 20, 0, 0.9), 0, 0, 0)] } };
+  const o = plain(v.boardOption(sp, 20, 1000));
+  assert.equal(o.series.length, 4);
+  assert.deepEqual(o.series[0].data.map(d => d.value), [[1, 0.3], [3, 2], [5, 12], [7, 4]]);
+  assert.deepEqual(o.series[0].data.map(d => d.itemStyle.color), ['#3ccf8e', '#f2a93b', '#2a3442', '#f2626a']);
+  // Water is the live used share; the old capacity util (0.9 in the last bin) is ignored.
+  assert.deepEqual(o.series[2].data, [[1, 50], [3, 0], [5, 0.6], [7, 0]]);
+  assert.deepEqual(o.series[3].data, [[1, 50], [3, 100], [5, 99.4], [7, 100]]);
+  assert.equal(o.series[2].name, '最近 1 分钟用过');
+  for (const i of [0, 1, 2]) assert.equal(o.series[i].markLine.data[0].xAxis, 0);
+  // fast percent 20 of 500 scored accounts out of 1000 sits at rank position 10.
+  const scored = plain(v.boardOption({ live: { ...sp.live, scored: 500 } }, 20, 1000));
+  for (const i of [0, 1, 2]) assert.equal(scored.series[i].markLine.data[0].xAxis, 10);
+  assert.deepEqual(scored.series[0].markArea.data[0].map(p => p.xAxis), [0, 10]);
+  assert.equal(scored.series[0].markLine.label.formatter, '快组目标 20%');
+  assert.equal(o.xAxis[2].interval, 20);
+  const narrow = plain(v.boardOption(sp, 20, 360));
+  assert.equal(narrow.xAxis[2].interval, 50);
+  assert.ok(plain(v.boardOption({ live: {} }, 30, 800)).graphic.some(g => g.style.text === '还没有测速数据'));
+  const fmt = v.boardOption(sp, 20, 1000).tooltip.formatter;
+  assert.ok(fmt({ value: [1, 50] }).endsWith('最近 1 分钟用过 10 / 20 个号（含测速），共 31 次请求'));
+  assert.ok(fmt({ value: [3, 0] }).endsWith('最近 1 分钟使用：—'));
+});
+
+test('pool view request chart splits failures and the capacity sentence replaces the old chart', () => {
+  const v = poolView();
+  const t1 = '2026-11-03T08:35:00+08:00', t2 = '2026-11-03T08:36:00+08:00';
+  const d = {
+    capacity: 1000, schedulable: 50, concurrency_capacity: 100, success_rate: 0.95,
+    points: [{ time: t1, attempts: 100, capacity: 1000, success: 90, overload: 4, rate_limits: 3, quota_exhausted: 2, other_failures: 1 }, { time: t2, attempts: 600, capacity: 1000, success: 600 }],
+    concurrency_points: [{ time: t2, in_flight_peak: 70, concurrency_capacity: 100, concurrency_full_accounts: 4, concurrency_rejections: 2 }],
+  };
+  assert.equal(v.capacityOption, undefined);
+  const req = plain(v.requestsOption(d));
+  assert.deepEqual(req.series.map(s => s.name), ['成功', '过载 502/503', '429 限流', '额度用完', '其他']);
+  assert.deepEqual(req.series.map(s => s.data[0]), [90, 4, 3, 2, 1]);
+  assert.ok(req.series.every(s => s.stack === 'req'));
+  assert.equal(v.rejections(d), 2);
+  // Concurrency is mentioned only when its limit is enforced.
+  assert.equal(v.capacityRead(d), '最近 60 分钟请求最多用到 RPM 上限的 60%，已经接近上限，考虑加号。');
+  assert.equal(v.capacityRead({ ...d, concurrency_enabled: true }), '最近 60 分钟请求最多用到 RPM 上限的 60%，并发最多用到 70%，已经接近上限，考虑加号。');
+  assert.equal(v.capacityRead({ ...d, points: [{ time: t1, attempts: 10, capacity: 1000, success: 10 }] }), '最近 60 分钟请求最多用到 RPM 上限的 1%，号池容量还很空。');
+  // R uses each minute's own capacity: 300 of 400 then, even though capacity is 1000 now.
+  assert.ok(v.capacityRead({ ...d, points: [{ time: t1, attempts: 300, capacity: 400, success: 300 }] }).includes('RPM 上限的 75%'));
+  assert.equal(v.capacityRead({ ...d, capacity: 0 }), '现在没有可调度的容量（可调度账号 50 个）。');
+  assert.equal(v.capacityRead({ capacity: 1000, points: [{ time: t1, attempts: 0, capacity: 1000 }] }), '');
+  assert.equal(v.capacityRead({}), '');
+  assert.equal(v.minuteKey('not a time'), null);
+  assert.deepEqual(plain(v.commonLimit({ limits: [{ limit: 20, accounts: 5 }, { limit: 21, accounts: 9 }] })), { limit: 21, accounts: 9 });
+});
+
+test('pool view capacity sentence blames the main failure when success is low', () => {
+  const v = poolView();
+  // Production 2026-11-03 17:03: 2% of RPM used, 38% success, mostly overloads.
+  const d = { capacity: 28393, success_rate: 0.38, points: [{ time: '2026-11-03T08:36:00Z', attempts: 528, capacity: 28393, success: 41, overload: 55 }] };
+  assert.equal(v.capacityRead(d), '最近 60 分钟请求最多用到 RPM 上限的 2%。限制用户的不是容量，是上游过载严重：近 5 分钟成功率只有 38.0%。');
+});
+
+test('pool view keeps local counters out of the Home mode capacity answer', () => {
+  const v = poolView();
+  const a = plain(v.capacityAnswer({ home_mode: true, success_rate: 0.5, rpm: 10, capacity: 20 }));
+  assert.equal(a.tone, 'off');
+  assert.equal(a.verdict, '容量由 Home 调度端管理');
+  assert.equal(a.big, '—');
+  assert.equal(v.capacityRead({ home_mode: true, capacity: 10, points: [{ time: 'x', attempts: 9 }] }), '');
+});
+
+test('pool view does not grade success when the last five minutes had no requests', () => {
+  const v = poolView();
+  const idle = plain(v.capacityAnswer({ success_rate: 0, points: [{ time: '2026-11-03T08:00:00Z', success: 0 }, { time: '2026-11-03T08:01:00Z' }] }));
+  assert.equal(idle.tone, 'off');
+  assert.equal(idle.label, '暂无请求');
+  assert.equal(idle.verdict, '近 5 分钟没有请求');
+  // Only the five newest minutes count, whatever order the points arrive in.
+  const pts = [6, 5, 4, 3, 2, 1].map((m, i) => ({ time: '2026-11-03T08:0' + m + ':00Z', success: i === 5 ? 50 : 0 }));
+  assert.equal(v.recentAttempts({ points: pts }), 0);
+  assert.equal(v.recentAttempts({ points: pts.slice().reverse() }), 0);
+  const busy = plain(v.capacityAnswer({ success_rate: 0, points: [{ time: '2026-11-03T08:01:00Z', other_failures: 3 }] }));
+  assert.equal(busy.tone, 'danger');
+});
+
+test('pool view rpm chart pairs each minute capacity with its requests and shows the live window last', () => {
+  const v = poolView();
+  const t = (m) => new Date(Date.UTC(2026, 10, 4, 0, m)).toISOString();
+  const d = { capacity: 50, rpm: 40, points: [
+    { time: t(1), capacity: 0, attempts: 0 },
+    { time: t(2), capacity: 50, attempts: 30 },
+    { time: t(3), capacity: 50, attempts: 46, fast_failures: 0 },
+    { time: t(4), capacity: 40, attempts: 20, fast_failures: 2 },
+    { time: t(5), capacity: 50, attempts: 7 },
+  ] };
+  const o = plain(v.rpmOption(d));
+  assert.deepEqual(o.series[0].data, [null, 50, 50, 40, 50]);
+  assert.deepEqual(o.series[1].data.map((b) => b.value), [0, 30, 46, 20, 40]);
+  const colors = o.series[1].data.map((b) => b.itemStyle.color);
+  assert.deepEqual(colors.slice(1), [v.COLORS.ok, v.COLORS.bad, v.COLORS.bad, v.COLORS.warn]);
+  assert.equal(o.xAxis.data[4], '现在');
+  assert.equal(o.series[1].data[4].label.formatter, '40 / 50（80%）');
+  const tip = v.rpmOption(d).tooltip.formatter([{ dataIndex: 3 }]);
+  assert.match(tip, /可用容量 40 次\/分/);
+  assert.match(tip, /快速失败 529：2/);
 });

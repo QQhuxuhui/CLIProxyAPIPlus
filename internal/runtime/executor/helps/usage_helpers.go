@@ -59,6 +59,13 @@ type UsageReporter struct {
 	codexEgressMu    sync.Mutex
 	codexEgressGroup string
 	codexEgressRoute string
+	// Codex speed measurement: upstream send, response.created and first real output times,
+	// image input flag, and the account's speed group at attempt start (guarded by ttftMu).
+	speedSentAt    time.Time
+	speedCreatedAt time.Time
+	speedOutputAt  time.Time
+	speedHasImage  bool
+	speedGroup     string
 }
 
 type usageExecutor interface {
@@ -122,6 +129,11 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
+	}
+	if strings.EqualFold(provider, "codex") {
+		// A Codex attempt is starting on its final account: freeze the account's speed group so
+		// the result counts under it even if the ranking changes before the attempt finishes.
+		reporter.speedGroup = cliproxyauth.CodexSpeed().GroupAt(ctx, auth)
 	}
 	return reporter
 }
@@ -299,6 +311,9 @@ func (r *UsageReporter) StartResponseTTFT() {
 	if !r.ttftSet && r.ttftStart.IsZero() {
 		r.ttftStart = time.Now()
 	}
+	if r.speedSentAt.IsZero() {
+		r.speedSentAt = time.Now()
+	}
 	r.ttftMu.Unlock()
 }
 
@@ -459,6 +474,7 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 	if r.codexFastSessionGroup != "" {
 		observeCodexFastSessionRecord(r.codexFastSessionGroup, record, r.codexFastSessionGeneration)
 	}
+	r.observeCodexSpeed(record)
 	r.codexEgressMu.Lock()
 	egressGroup, egressRoute := r.codexEgressGroup, r.codexEgressRoute
 	r.codexEgressMu.Unlock()

@@ -115,6 +115,7 @@ func (m *Manager) aggregateCodexPoolSnapshot() CodexPoolSnapshot {
 		out.Cooling += snap.Cooling
 		out.Disabled += snap.Disabled
 		out.Expired += snap.Expired
+		out.Invalid += snap.Invalid
 		out.Full += snap.Full
 		out.Capacity += snap.Capacity
 		out.RPM += snap.RPM

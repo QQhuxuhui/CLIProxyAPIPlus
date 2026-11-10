@@ -82,24 +82,27 @@ type CodexPoolSnapshot struct {
 	CoolingReasons              map[string]int                      `json:"cooling_reasons"`
 	Disabled                    int                                 `json:"disabled"`
 	Expired                     int                                 `json:"expired"`
-	Capacity                    int                                 `json:"capacity"`
-	RPM                         int                                 `json:"rpm"`
-	Remaining                   int                                 `json:"remaining"`
-	EffectiveCapacity           float64                             `json:"effective_capacity"`
-	Full                        int                                 `json:"full"`
-	SuccessRate                 float64                             `json:"success_rate"`
-	TTFTP50                     float64                             `json:"ttft_p50"`
-	TTFTP90                     float64                             `json:"ttft_p90"`
-	FastFailures                int                                 `json:"fast_failures"`
-	Limits                      []PoolLimitBucket                   `json:"limits"`
-	Points                      []PoolPoint                         `json:"points"`
-	ConcurrencyEnabled          bool                                `json:"concurrency_enabled"`
-	InFlight                    int                                 `json:"in_flight"`
-	ConcurrencyCapacity         int                                 `json:"concurrency_capacity"`
-	ConcurrencyFullAccounts     int                                 `json:"concurrency_full_accounts"`
-	ConcurrencyRemaining        int                                 `json:"concurrency_remaining"`
-	UnlimitedAccounts           int                                 `json:"unlimited_accounts"`
-	ConcurrencyPoints           []CodexConcurrencyPoint             `json:"concurrency_points"`
+	// Invalid counts accounts whose credential is invalidated, plus accounts blocked with no
+	// recovery time; they need an operator, unlike cooling accounts.
+	Invalid                 int                     `json:"invalid"`
+	Capacity                int                     `json:"capacity"`
+	RPM                     int                     `json:"rpm"`
+	Remaining               int                     `json:"remaining"`
+	EffectiveCapacity       float64                 `json:"effective_capacity"`
+	Full                    int                     `json:"full"`
+	SuccessRate             float64                 `json:"success_rate"`
+	TTFTP50                 float64                 `json:"ttft_p50"`
+	TTFTP90                 float64                 `json:"ttft_p90"`
+	FastFailures            int                     `json:"fast_failures"`
+	Limits                  []PoolLimitBucket       `json:"limits"`
+	Points                  []PoolPoint             `json:"points"`
+	ConcurrencyEnabled      bool                    `json:"concurrency_enabled"`
+	InFlight                int                     `json:"in_flight"`
+	ConcurrencyCapacity     int                     `json:"concurrency_capacity"`
+	ConcurrencyFullAccounts int                     `json:"concurrency_full_accounts"`
+	ConcurrencyRemaining    int                     `json:"concurrency_remaining"`
+	UnlimitedAccounts       int                     `json:"unlimited_accounts"`
+	ConcurrencyPoints       []CodexConcurrencyPoint `json:"concurrency_points"`
 }
 
 func (m *Manager) CodexPoolSnapshot() CodexPoolSnapshot {
@@ -142,6 +145,10 @@ func snapshotCodexPoolLocked(auths map[string]*Auth, r *requestRateCap) CodexPoo
 			out.Disabled++
 			continue
 		}
+		if codexCredentialInvalidated(a) {
+			out.Invalid++
+			continue
+		}
 		if expiry, ok := a.AccessTokenExpirationTime(); ok && !expiry.After(now) {
 			out.Expired++
 			continue
@@ -158,6 +165,8 @@ func snapshotCodexPoolLocked(auths map[string]*Auth, r *requestRateCap) CodexPoo
 					key = "cooldown"
 				}
 				out.CoolingReasons[key]++
+			} else {
+				out.Invalid++
 			}
 			// A per-minute rate-limit window still belongs to the pool's capacity: the
 			// account is full until its window resets, not removed from the pool.

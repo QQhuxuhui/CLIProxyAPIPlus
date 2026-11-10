@@ -83,3 +83,22 @@ func TestCodexEgressPoolConfigNormalize(t *testing.T) {
 		t.Fatalf("bounds = %d %v", cfg.ControlPercent, cfg.Shift.ExitOverloadPercent)
 	}
 }
+
+func TestCodexFastSessionRollbackAdaptiveDefaultsAndBounds(t *testing.T) {
+	cfg := CodexFastSessionIDsConfig{}
+	cfg.Normalize()
+	got := cfg.Rollback
+	if got.MinPercent != 5 || got.CooldownSeconds != 300 || got.RecoverIntervalSeconds != 600 || got.IncreaseStepPercent != 5 {
+		t.Fatalf("defaults = %+v", got)
+	}
+	cfg = CodexFastSessionIDsConfig{}
+	cfg.Rollback.MinPercent = 500
+	cfg.Rollback.CooldownSeconds = 1
+	cfg.Rollback.RecoverIntervalSeconds = 1
+	cfg.Rollback.IncreaseStepPercent = 500
+	cfg.Normalize()
+	got = cfg.Rollback
+	if got.MinPercent != 99 || got.CooldownSeconds != 60 || got.RecoverIntervalSeconds != 60 || got.IncreaseStepPercent != 50 {
+		t.Fatalf("bounds = %+v", got)
+	}
+}

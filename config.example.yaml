@@ -362,6 +362,10 @@ codex:
   # Optional retry policy; hot-reloadable. Disabled preserves legacy retry behavior.
   retry-budget:
     enable: false
+    # Accounts one logical request may try (default 6, max 30).
+    # max-accounts: 6
+    # Soft retry window in seconds (default 20, max 120).
+    # window-seconds: 20
   # Per-account in-flight limit for Codex OAuth accounts; hot-reloadable. Disabled keeps
   # scheduling and errors unchanged while still counting in-flight requests for the panel.
   # When every eligible account is full, requests fail with 529 instead of queueing.
@@ -506,16 +510,42 @@ codex:
   #   admit-ratio: 0.4             # fast = probe wait < admit-ratio * baseline median
   #   consecutive: 2               # judged rounds needed to admit, and to remove
   #   probe-model: "gpt-6-luna"
-  #   # Automatic runtime disable when the fast group does worse than the control group.
+  #   # Automatic share control: the fast share halves when the fast group's failure rate is
+  #   # clearly worse than the control group's, and climbs back to `percent` when no new failure
+  #   # evidence appears. It never turns the feature off. TTFT is reported, not judged.
   #   # Keeps at least 1% of identities as controls (not a guaranteed request share).
-  #   # Status exposes percent and effective_percent; minimum samples are still required.
-  #   # Re-enabled when enable/percent/seed/rollback.enable changes, with a fresh stats window.
+  #   # Status exposes percent and effective_percent. A config change or restart resets the
+  #   # share to `percent`.
   #   rollback:
   #     enable: false
   #     window-minutes: 10
   #     min-samples: 30            # per group, within the window
-  #     ttft-worse-percent: 20     # small-request (input < 20000 tokens) TTFT p50
+  #     ttft-worse-percent: 20     # kept for old configs; no longer affects the share
   #     failure-worse-points: 5    # failure rate, percentage points
+  #     min-percent: 5             # lowest share automatic halving reaches
+  #     cooldown-seconds: 300      # minimum wait between adjustments
+  #     recover-interval-seconds: 600 # climb one step after this long with no failure evidence
+  #     increase-step-percent: 5   # size of one recovery step
+  # Speed-aware account selection (requires codex.pools.enable and a restart after enabling pools).
+  # Every Codex attempt is measured passively: the gap between response.created and the first
+  # output delta of successful small requests (<20k input tokens, no images, few reasoning tokens).
+  # When enabled, accounts are ranked every minute by their decayed median gap; the fastest
+  # fast-percent form the fast group, which serves requests first (random pick across pools).
+  # Only when every fast account is busy (concurrency/RPM) does a request overflow to the rest,
+  # fastest first. Accounts outside the fast group are probed in the background so recovered
+  # accounts move back up. Editable on quota-monitor.html (Codex pool tab, speed card).
+  # speed-priority:
+  #   enable: false
+  #   fast-percent: 30            # share of schedulable accounts in the fast group (1-90)
+  #   score-window-minutes: 30    # passive samples; probe samples stay valid long enough for min samples
+  #   score-half-life-minutes: 5
+  #   score-min-samples: 3
+  #   score-overload-percent: 30  # accounts above this decayed overload rate are not ranked
+  #   max-reasoning-tokens: 64
+  #   probe:
+  #     interval-minutes: 10      # per account (1-60)
+  #     rate-per-second: 3        # 1-3
+  #     model: "gpt-6-luna"
   # Outbound proxy pool for HTTP/SSE /responses attempts. Credentials with their own proxy_url
   # never use it. Retries after an upstream overload/5xx/transport error go through the pool
   # (control-percent of them stay direct as the control group); with shift enabled, a share of

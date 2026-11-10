@@ -196,6 +196,10 @@ type AntigravityConnectionPoolConfig struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexRetryBudgetConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
+	// MaxAccounts caps the accounts one logical request may try. 0 means 6, capped at 30.
+	MaxAccounts int `yaml:"max-accounts,omitempty" json:"max-accounts,omitempty"`
+	// WindowSeconds is the soft retry window. 0 means 20, capped at 120.
+	WindowSeconds int `yaml:"window-seconds,omitempty" json:"window-seconds,omitempty"`
 }
 
 // CodexConfig configures provider-wide Codex request behavior.
@@ -247,6 +251,9 @@ type CodexConfig struct {
 	// FastSessionIDs remaps the outgoing upstream Session-Id header of HTTP/SSE Codex
 	// /responses requests onto a pool of known-fast values.
 	FastSessionIDs CodexFastSessionIDsConfig `yaml:"fast-session-ids" json:"fast-session-ids"`
+	// SpeedPriority ranks Codex accounts by measured speed and serves requests from the fastest
+	// group first. Requires codex.pools. Passive speed measurement runs even when disabled.
+	SpeedPriority CodexSpeedPriorityConfig `yaml:"speed-priority" json:"speed-priority"`
 	// EgressPool routes some HTTP/SSE Codex /responses attempts through a pool of outbound
 	// proxies: retries after upstream overloads, and a share of first attempts while the direct
 	// route is overloaded.
@@ -328,12 +335,21 @@ type CodexFastSessionRollbackConfig struct {
 	WindowMinutes int `yaml:"window-minutes" json:"window-minutes"`
 	// MinSamples is the per-group sample count required within the window. Default 30.
 	MinSamples int `yaml:"min-samples" json:"min-samples"`
-	// TTFTWorsePercent triggers rollback when the fast-group small-request TTFT p50 is worse
-	// than the control group by more than this percentage. Default 20.
+	// TTFTWorsePercent is kept for old configs and no longer affects the share; TTFT is only
+	// reported. Default 20.
 	TTFTWorsePercent float64 `yaml:"ttft-worse-percent" json:"ttft-worse-percent"`
-	// FailureWorsePoints triggers rollback when the fast-group failure rate exceeds the
+	// FailureWorsePoints halves the fast share when the fast-group failure rate exceeds the
 	// control group by more than this many percentage points. Default 5.
 	FailureWorsePoints float64 `yaml:"failure-worse-points" json:"failure-worse-points"`
+	// MinPercent is the lowest share automatic halving reaches (1-99). Default 5.
+	MinPercent int `yaml:"min-percent,omitempty" json:"min-percent,omitempty"`
+	// CooldownSeconds is the minimum wait between adjustments (60-3600). Default 300.
+	CooldownSeconds int `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
+	// RecoverIntervalSeconds is how long after an adjustment, with no failure evidence, the
+	// share climbs one step (60-86400). Default 600.
+	RecoverIntervalSeconds int `yaml:"recover-interval-seconds,omitempty" json:"recover-interval-seconds,omitempty"`
+	// IncreaseStepPercent is the size of one recovery step (1-50). Default 5.
+	IncreaseStepPercent int `yaml:"increase-step-percent,omitempty" json:"increase-step-percent,omitempty"`
 }
 
 // DefaultCodexFastSessionProbeModel is the default probe model.
@@ -371,6 +387,69 @@ func (c *CodexFastSessionIDsConfig) Normalize() {
 	}
 	if c.Rollback.FailureWorsePoints <= 0 {
 		c.Rollback.FailureWorsePoints = 5
+	}
+	c.Rollback.MinPercent = normalizeBoundedInt(c.Rollback.MinPercent, 5, 99)
+	c.Rollback.CooldownSeconds = max(normalizeBoundedInt(c.Rollback.CooldownSeconds, 300, 3600), 60)
+	c.Rollback.RecoverIntervalSeconds = max(normalizeBoundedInt(c.Rollback.RecoverIntervalSeconds, 600, 86400), 60)
+	c.Rollback.IncreaseStepPercent = normalizeBoundedInt(c.Rollback.IncreaseStepPercent, 5, 50)
+}
+
+// CodexSpeedPriorityConfig configures speed-ranked Codex account selection: accounts are ranked by
+// measured speed every minute, the fastest FastPercent form the fast group that serves requests
+// first, and the rest only take overflow and background probes.
+type CodexSpeedPriorityConfig struct {
+	// Enable turns on ranked selection and probing. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// FastPercent is the share of schedulable accounts in the fast group. Default 30, range 1-90.
+	FastPercent int `yaml:"fast-percent,omitempty" json:"fast-percent,omitempty"`
+	// ScoreWindowMinutes bounds how long a passive sample stays valid. Default 30.
+	ScoreWindowMinutes int `yaml:"score-window-minutes,omitempty" json:"score-window-minutes,omitempty"`
+	// ScoreHalfLifeMinutes is the decay half-life of samples and overload counts. Default 5.
+	ScoreHalfLifeMinutes int `yaml:"score-half-life-minutes,omitempty" json:"score-half-life-minutes,omitempty"`
+	// ScoreMinSamples is the valid-sample floor for a score. Default 3.
+	ScoreMinSamples int `yaml:"score-min-samples,omitempty" json:"score-min-samples,omitempty"`
+	// ScoreOverloadPercent is the overload rate above which an account is not ranked. Default 30.
+	ScoreOverloadPercent int `yaml:"score-overload-percent,omitempty" json:"score-overload-percent,omitempty"`
+	// MaxReasoningTokens excludes requests with more reasoning tokens from passive samples. Default 64.
+	MaxReasoningTokens int `yaml:"max-reasoning-tokens,omitempty" json:"max-reasoning-tokens,omitempty"`
+	// Probe configures background probing of accounts outside the fast group.
+	Probe CodexSpeedProbeConfig `yaml:"probe,omitempty" json:"probe,omitempty"`
+}
+
+// CodexSpeedProbeConfig configures background speed probes.
+type CodexSpeedProbeConfig struct {
+	// IntervalMinutes is the minimum gap between two probes of one account. Default 10, range 1-60.
+	IntervalMinutes int `yaml:"interval-minutes,omitempty" json:"interval-minutes,omitempty"`
+	// RatePerSecond caps probe starts per second. Default 3, range 1-3.
+	RatePerSecond int    `yaml:"rate-per-second,omitempty" json:"rate-per-second,omitempty"`
+	Model         string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
+// Codex speed-priority defaults.
+const (
+	DefaultCodexSpeedFastPercent = 30
+	DefaultCodexSpeedProbeModel  = "gpt-6-luna"
+	MaxCodexSpeedFastPercent     = 90
+	MaxCodexSpeedProbeInterval   = 60
+	MaxCodexSpeedProbeRate       = 3
+)
+
+// Normalize fills defaults and clamps values.
+func (c *CodexSpeedPriorityConfig) Normalize() {
+	if c == nil {
+		return
+	}
+	c.FastPercent = normalizeBoundedInt(c.FastPercent, DefaultCodexSpeedFastPercent, MaxCodexSpeedFastPercent)
+	c.ScoreWindowMinutes = max(normalizeBoundedInt(c.ScoreWindowMinutes, 30, 120), 5)
+	c.ScoreHalfLifeMinutes = normalizeBoundedInt(c.ScoreHalfLifeMinutes, 5, 60)
+	c.ScoreMinSamples = normalizeBoundedInt(c.ScoreMinSamples, 3, 32)
+	c.ScoreOverloadPercent = normalizeBoundedInt(c.ScoreOverloadPercent, 30, 100)
+	c.MaxReasoningTokens = normalizeBoundedInt(c.MaxReasoningTokens, 64, 1000000)
+	c.Probe.IntervalMinutes = normalizeBoundedInt(c.Probe.IntervalMinutes, 10, MaxCodexSpeedProbeInterval)
+	c.Probe.RatePerSecond = normalizeBoundedInt(c.Probe.RatePerSecond, MaxCodexSpeedProbeRate, MaxCodexSpeedProbeRate)
+	c.Probe.Model = strings.TrimSpace(c.Probe.Model)
+	if c.Probe.Model == "" {
+		c.Probe.Model = DefaultCodexSpeedProbeModel
 	}
 }
 

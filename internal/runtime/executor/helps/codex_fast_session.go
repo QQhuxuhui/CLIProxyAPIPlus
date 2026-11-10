@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexspeed"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
@@ -16,8 +17,9 @@ import (
 
 // Codex fast Session-Id groups.
 const (
-	// CodexFastSessionGroupOff means the request was not considered (feature disabled or
-	// rolled back, empty pool, or no original identity) and is not counted in the group stats.
+	// CodexFastSessionGroupOff means the request was not considered (feature disabled, empty
+	// pool, no original identity, or outside the current runtime share) and is not counted in
+	// the group stats.
 	CodexFastSessionGroupOff = "off"
 	// CodexFastSessionGroupFast means the Session-Id header was remapped onto the pool.
 	CodexFastSessionGroupFast = "fast"
@@ -49,13 +51,18 @@ type CodexFastSessionPool struct {
 	seed            []string
 	seedGen         uint64
 	members         []string
-	disabled        bool
+	// adaptivePercent is the runtime fast share, at most the configured cap. It only moves
+	// through EvaluateRollback and resets to the cap on a config change or restart.
+	adaptivePercent int
+	lastAdjustAt    time.Time
 	rollback        CodexFastSessionRollbackStatus
 	events          []CodexFastSessionEvent
 	lastRollback    CodexFastSessionRollbackCheck
 
 	statsMu sync.Mutex
 	stats   map[string]*codexFastSessionGroupStats
+	// hours accumulates per-hour group stats for the persisted history, keyed by the hour start.
+	hours map[time.Time]*codexFastSessionHourAcc
 
 	prober atomic.Pointer[CodexFastSessionProber]
 }
@@ -67,10 +74,32 @@ type codexFastSessionBucket struct {
 	ttft     []time.Duration
 }
 
+// codexFastSessionHourAcc holds one hour of group stats for a single epoch. A configuration
+// change inside the hour restarts the hour under the new epoch, matching the rolling windows.
+type codexFastSessionHourAcc struct {
+	epoch   uint64
+	fast    codexspeed.GroupHour
+	control codexspeed.GroupHour
+}
+
+func (a *codexFastSessionHourAcc) group(name string) *codexspeed.GroupHour {
+	switch name {
+	case CodexFastSessionGroupFast:
+		return &a.fast
+	case CodexFastSessionGroupControl:
+		return &a.control
+	}
+	return nil
+}
+
 type codexFastSessionGroupStats struct {
 	requests int64
 	failures int64
-	buckets  [60]codexFastSessionBucket
+	// buckets back the reported rolling window.
+	buckets [60]codexFastSessionBucket
+	// decision holds the same requests and failures for EvaluateRollback, which clears it on
+	// each adjustment so that buckets keep their rolling-window meaning.
+	decision [60]codexFastSessionBucket
 }
 
 // CodexFastSessionGroupSnapshot is a read-only view of one group's stats. Window fields cover
@@ -146,8 +175,8 @@ func (p *CodexFastSessionPool) now() time.Time {
 
 // ApplyConfig syncs enable/percent and, when the configured seed changed since the last call,
 // replaces the pool members with the new seed. Members added or removed at runtime survive
-// until the seed itself changes. Changes to enable/percent/seed/rollback.enable clear
-// a runtime rollback and start a new evaluation generation.
+// until the seed itself changes. Changes to enable/percent/seed/rollback.enable reset the
+// runtime share to the configured cap and start a new evaluation generation.
 func (p *CodexFastSessionPool) ApplyConfig(cfg config.CodexFastSessionIDsConfig) {
 	if p == nil {
 		return
@@ -172,6 +201,7 @@ func (p *CodexFastSessionPool) ApplyConfig(cfg config.CodexFastSessionIDsConfig)
 	p.epoch.Add(1)
 	for _, stats := range p.stats {
 		stats.buckets = [60]codexFastSessionBucket{}
+		stats.decision = [60]codexFastSessionBucket{}
 	}
 	p.statsMu.Unlock()
 	p.lastRollback = CodexFastSessionRollbackCheck{}
@@ -181,35 +211,8 @@ func (p *CodexFastSessionPool) ApplyConfig(cfg config.CodexFastSessionIDsConfig)
 		p.members = slices.Clone(cfg.Seed)
 		log.WithFields(log.Fields{"members": len(p.members)}).Info("codex fast session pool reloaded from seed")
 	}
-	if p.disabled {
-		now := p.now()
-		p.disabled = false
-		p.rollback.Disabled = false
-		p.rollback.ReenabledAt = now
-		p.addEventLocked(now, "reenable", "", "config changed")
-		log.Info("codex fast session pool re-enabled after config change")
-	}
-}
-
-// Disable turns mapping off until enable/percent/seed/rollback.enable changes.
-func (p *CodexFastSessionPool) Disable(reason string) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.disableLocked(reason)
-}
-
-func (p *CodexFastSessionPool) disableLocked(reason string) {
-	if p.disabled {
-		return
-	}
-	now := p.now()
-	p.disabled = true
-	p.rollback = CodexFastSessionRollbackStatus{Disabled: true, Reason: reason, DisabledAt: now, ReenabledAt: p.rollback.ReenabledAt}
-	p.addEventLocked(now, "disable", "", reason)
-	log.WithField("reason", reason).Warn("codex fast session pool disabled by rollback")
+	p.adaptivePercent = p.percentCapLocked()
+	p.lastAdjustAt = time.Time{}
 }
 
 // Replace sets the pool members.
@@ -318,11 +321,19 @@ func (p *CodexFastSessionPool) Select(originalID string) (string, string) {
 }
 
 // effectivePercentLocked reserves a stable control cohort while automatic rollback is enabled.
-func (p *CodexFastSessionPool) effectivePercentLocked() int {
+// percentCapLocked is the configured share, capped so that rollback keeps a control cohort.
+func (p *CodexFastSessionPool) percentCapLocked() int {
 	if p.rollbackEnabled {
 		return min(p.percent, 99)
 	}
 	return p.percent
+}
+
+func (p *CodexFastSessionPool) effectivePercentLocked() int {
+	if !p.rollbackEnabled {
+		return p.percent
+	}
+	return min(p.adaptivePercent, p.percentCapLocked())
 }
 
 func (p *CodexFastSessionPool) selectTracked(originalID string) (string, string, uint64) {
@@ -332,11 +343,17 @@ func (p *CodexFastSessionPool) selectTracked(originalID string) (string, string,
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	epoch := p.epoch.Load()
-	if originalID == "" || !p.enabled || p.disabled || len(p.members) == 0 {
+	if originalID == "" || !p.enabled || len(p.members) == 0 {
 		return originalID, CodexFastSessionGroupOff, epoch
 	}
-	if codexFastSessionHash(codexFastSessionCanarySalt+originalID)%100 >= uint64(p.effectivePercentLocked()) {
+	// Keep the salted hash: a share change only moves identities on its boundary, and the
+	// buckets at or above the cap stay a fixed control cohort.
+	bucket := codexFastSessionHash(codexFastSessionCanarySalt+originalID) % 100
+	if bucket >= uint64(p.percentCapLocked()) {
 		return originalID, CodexFastSessionGroupControl, epoch
+	}
+	if bucket >= uint64(p.effectivePercentLocked()) {
+		return originalID, CodexFastSessionGroupOff, epoch
 	}
 	return codexFastSessionRendezvous(originalID, p.members), CodexFastSessionGroupFast, epoch
 }
@@ -405,10 +422,17 @@ func (p *CodexFastSessionPool) observeGeneration(group string, failed bool, ttft
 		return
 	}
 	minute := now.Truncate(time.Minute)
-	idx := (minute.Unix() / 60) % 60
-	if idx < 0 {
-		idx += 60
+	idx := codexFastSessionBucketIndex(minute)
+	d := &stats.decision[idx]
+	if !d.minute.Equal(minute) {
+		*d = codexFastSessionBucket{minute: minute}
 	}
+	d.requests++
+	if failed {
+		d.failures++
+	}
+	small := ttft > 0 && inputTokens < codexFastSessionSmallInputTokens
+	p.observeHourLocked(now, group, failed, small, ttft, epoch)
 	b := &stats.buckets[idx]
 	if !b.minute.Equal(minute) {
 		*b = codexFastSessionBucket{minute: minute}
@@ -418,9 +442,108 @@ func (p *CodexFastSessionPool) observeGeneration(group string, failed bool, ttft
 		b.failures++
 		return
 	}
-	if ttft > 0 && inputTokens < codexFastSessionSmallInputTokens && len(b.ttft) < codexFastSessionBucketSamples {
+	if small && len(b.ttft) < codexFastSessionBucketSamples {
 		b.ttft = append(b.ttft, ttft)
 	}
+}
+
+// observeHourLocked adds one attempt to the hourly accumulator. statsMu must be held.
+func (p *CodexFastSessionPool) observeHourLocked(now time.Time, group string, failed, small bool, ttft time.Duration, epoch uint64) {
+	hour := now.Truncate(time.Hour)
+	if p.hours == nil {
+		p.hours = map[time.Time]*codexFastSessionHourAcc{}
+	}
+	acc := p.hours[hour]
+	if acc == nil || acc.epoch != epoch {
+		acc = &codexFastSessionHourAcc{epoch: epoch}
+		p.hours[hour] = acc
+	}
+	g := acc.group(group)
+	if g == nil {
+		return
+	}
+	g.Requests++
+	if failed {
+		g.Failures++
+		return
+	}
+	if small {
+		g.Hist.Add(ttft)
+	}
+}
+
+// RollHours returns the finished hours (before now's hour) and forgets them. Members, share and
+// enable reflect the pool at roll time.
+func (p *CodexFastSessionPool) RollHours(now time.Time) []codexspeed.FastSessionHour {
+	if p == nil {
+		return nil
+	}
+	current := now.Truncate(time.Hour)
+	p.statsMu.Lock()
+	var done []time.Time
+	accs := map[time.Time]*codexFastSessionHourAcc{}
+	for hour, acc := range p.hours {
+		if hour.Before(current) {
+			done = append(done, hour)
+			accs[hour] = acc
+			delete(p.hours, hour)
+		}
+	}
+	p.statsMu.Unlock()
+	slices.SortFunc(done, func(a, b time.Time) int { return a.Compare(b) })
+	out := make([]codexspeed.FastSessionHour, 0, len(done))
+	for _, hour := range done {
+		out = append(out, p.hourRecord(hour, accs[hour]))
+	}
+	return out
+}
+
+// CurrentHour returns the unfinished hour so far.
+func (p *CodexFastSessionPool) CurrentHour(now time.Time) codexspeed.FastSessionHour {
+	if p == nil {
+		return codexspeed.FastSessionHour{}
+	}
+	hour := now.Truncate(time.Hour)
+	p.statsMu.Lock()
+	var acc codexFastSessionHourAcc
+	if src := p.hours[hour]; src != nil {
+		acc.epoch = src.epoch
+		acc.fast = cloneGroupHour(src.fast)
+		acc.control = cloneGroupHour(src.control)
+	}
+	p.statsMu.Unlock()
+	return p.hourRecord(hour, &acc)
+}
+
+func cloneGroupHour(g codexspeed.GroupHour) codexspeed.GroupHour {
+	g.Hist = slices.Clone(g.Hist)
+	return g
+}
+
+func (p *CodexFastSessionPool) hourRecord(hour time.Time, acc *codexFastSessionHourAcc) codexspeed.FastSessionHour {
+	rec := codexspeed.FastSessionHour{Hour: hour}
+	if acc != nil {
+		rec.Epoch = acc.epoch
+		rec.Fast = acc.fast
+		rec.Control = acc.control
+	}
+	rec.Fast.Finalize()
+	rec.Control.Finalize()
+	p.mu.RLock()
+	rec.Members = len(p.members)
+	rec.EffectivePercent = p.effectivePercentLocked()
+	rec.Enabled = p.enabled
+	p.mu.RUnlock()
+	rec.Label = codexspeed.FastSessionLabel(rec.Fast, rec.Control)
+	return rec
+}
+
+func codexFastSessionBucketIndex(minute time.Time) int64 {
+	idx := (minute.Unix() / 60) % 60
+	if idx < 0 {
+		idx += 60
+	}
+	return idx
 }
 
 func (p *CodexFastSessionPool) groupWindow(group string, windowMinutes int) CodexFastSessionGroupSnapshot {
@@ -435,11 +558,7 @@ func (p *CodexFastSessionPool) groupWindow(group string, windowMinutes int) Code
 		out.TotalFailures = stats.failures
 		for i := 0; i < windowMinutes; i++ {
 			minute := now.Add(-time.Duration(i) * time.Minute)
-			idx := (minute.Unix() / 60) % 60
-			if idx < 0 {
-				idx += 60
-			}
-			b := &stats.buckets[idx]
+			b := &stats.buckets[codexFastSessionBucketIndex(minute)]
 			if !b.minute.Equal(minute) {
 				continue
 			}
@@ -458,52 +577,95 @@ func (p *CodexFastSessionPool) groupWindow(group string, windowMinutes int) Code
 	return out
 }
 
-// EvaluateRollback compares the fast and control groups over the rollback window and
-// disables the pool when the fast group is worse by more than the configured margins. It only
-// reads in-memory stats.
+// EvaluateRollback adjusts the runtime fast share. The share halves, down to MinPercent, when
+// the fast group's failure rate is clearly worse than the control group's, and otherwise
+// climbs back to the configured cap by one step per RecoverIntervalSeconds. Recovery needs no
+// proof that the fast group improved: a lowered share may leave too few samples to prove
+// anything, so only failure evidence can hold the share down. TTFT is reported, not judged.
 func (p *CodexFastSessionPool) EvaluateRollback(cfg config.CodexFastSessionRollbackConfig) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	outcome := p.rollbackOutcome(cfg)
-	p.lastRollback = CodexFastSessionRollbackCheck{Time: p.now(), Outcome: outcome.message}
-	if outcome.trigger {
-		p.disableLocked(outcome.message)
-	}
+	p.lastRollback = CodexFastSessionRollbackCheck{Time: p.now(), Outcome: p.adjustShareLocked(cfg)}
 }
 
-type codexFastSessionRollbackOutcome struct {
-	trigger bool
-	message string
-}
-
-// rollbackOutcome requires p.mu to be held so configuration changes cannot race evaluation.
-func (p *CodexFastSessionPool) rollbackOutcome(cfg config.CodexFastSessionRollbackConfig) codexFastSessionRollbackOutcome {
+// adjustShareLocked requires p.mu. It holds statsMu across reading and clearing the decision
+// window, so a request finishing meanwhile lands wholly before or after the clear.
+func (p *CodexFastSessionPool) adjustShareLocked(cfg config.CodexFastSessionRollbackConfig) string {
 	if !cfg.Enable {
-		return codexFastSessionRollbackOutcome{message: "rollback disabled"}
+		return "rollback disabled"
 	}
-	active := p.enabled && !p.disabled
-	if !active {
-		return codexFastSessionRollbackOutcome{message: "mapping not active"}
+	limit := p.percentCapLocked()
+	if !p.enabled || limit <= 0 || len(p.members) == 0 {
+		return "mapping not active"
 	}
-	fast := p.groupWindow(CodexFastSessionGroupFast, cfg.WindowMinutes)
-	control := p.groupWindow(CodexFastSessionGroupControl, cfg.WindowMinutes)
+	now := p.now()
+	sinceAdjust := now.Sub(p.lastAdjustAt)
+	if !p.lastAdjustAt.IsZero() && sinceAdjust < time.Duration(cfg.CooldownSeconds)*time.Second {
+		return "cooling"
+	}
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	fastRequests, fastFailures := p.decisionWindowLocked(CodexFastSessionGroupFast, cfg.WindowMinutes, now)
+	controlRequests, controlFailures := p.decisionWindowLocked(CodexFastSessionGroupControl, cfg.WindowMinutes, now)
 	minSamples := int64(max(cfg.MinSamples, 1))
-	if fast.WindowRequests < minSamples || control.WindowRequests < minSamples {
-		return codexFastSessionRollbackOutcome{message: "insufficient samples"}
+	enough := fastRequests >= minSamples && controlRequests >= minSamples
+	current := p.effectivePercentLocked()
+	if enough {
+		fastRate := float64(fastFailures) / float64(fastRequests)
+		controlRate := float64(controlFailures) / float64(controlRequests)
+		if (fastRate-controlRate)*100 > cfg.FailureWorsePoints {
+			message := fmt.Sprintf("fast failure rate %.1f%% vs control %.1f%%", fastRate*100, controlRate*100)
+			next := min(current, max(cfg.MinPercent, current/2))
+			p.applyShareLocked(now, next, "decrease", message)
+			return message
+		}
 	}
-	if diff := (fast.WindowFailureRate - control.WindowFailureRate) * 100; diff > cfg.FailureWorsePoints {
-		return codexFastSessionRollbackOutcome{trigger: true, message: fmt.Sprintf("fast failure rate %.1f%% vs control %.1f%%", fast.WindowFailureRate*100, control.WindowFailureRate*100)}
+	if current < limit && (p.lastAdjustAt.IsZero() || sinceAdjust >= time.Duration(cfg.RecoverIntervalSeconds)*time.Second) {
+		p.applyShareLocked(now, min(limit, current+cfg.IncreaseStepPercent), "increase", "no failure evidence since the last adjustment")
+		return "recovering"
 	}
-	if int64(fast.SmallTTFTSamples) < minSamples || int64(control.SmallTTFTSamples) < minSamples {
-		return codexFastSessionRollbackOutcome{message: "failure rate ok; insufficient ttft samples"}
+	if !enough {
+		return "insufficient samples"
 	}
-	if float64(fast.SmallTTFTP50Ms) > float64(control.SmallTTFTP50Ms)*(1+cfg.TTFTWorsePercent/100) {
-		return codexFastSessionRollbackOutcome{trigger: true, message: fmt.Sprintf("fast small-request ttft p50 %dms vs control %dms", fast.SmallTTFTP50Ms, control.SmallTTFTP50Ms)}
+	return "ok"
+}
+
+// applyShareLocked requires p.mu and statsMu. The epoch stays put: in-flight requests remain
+// evidence about the group they were sent in.
+func (p *CodexFastSessionPool) applyShareLocked(now time.Time, next int, action, detail string) {
+	previous := p.adaptivePercent
+	p.adaptivePercent = next
+	p.lastAdjustAt = now
+	for _, stats := range p.stats {
+		stats.decision = [60]codexFastSessionBucket{}
 	}
-	return codexFastSessionRollbackOutcome{message: "ok"}
+	p.rollback.Reason = detail
+	if next == previous {
+		return
+	}
+	p.addEventLocked(now, action, "", fmt.Sprintf("%d%% -> %d%%: %s", previous, next, detail))
+	log.WithFields(log.Fields{"from": previous, "to": next, "detail": detail}).Info("codex fast session share adjusted")
+}
+
+func (p *CodexFastSessionPool) decisionWindowLocked(group string, windowMinutes int, now time.Time) (requests, failures int64) {
+	stats, ok := p.stats[group]
+	if !ok {
+		return 0, 0
+	}
+	windowMinutes = min(max(windowMinutes, 1), 60)
+	current := now.Truncate(time.Minute)
+	for i := 0; i < windowMinutes; i++ {
+		minute := current.Add(-time.Duration(i) * time.Minute)
+		b := &stats.decision[codexFastSessionBucketIndex(minute)]
+		if b.minute.Equal(minute) {
+			requests += b.requests
+			failures += b.failures
+		}
+	}
+	return requests, failures
 }
 
 // SelectCodexFastSession maps originalID with the process-wide pool. Once a prober is attached,

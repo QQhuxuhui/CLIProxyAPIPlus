@@ -211,6 +211,22 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}
+	oldSpeed, newSpeed := oldCfg.Codex.SpeedPriority, newCfg.Codex.SpeedPriority
+	if oldSpeed.Enable != newSpeed.Enable {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.enable: %t -> %t", oldSpeed.Enable, newSpeed.Enable))
+	}
+	if oldSpeed.FastPercent != newSpeed.FastPercent {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.fast-percent: %d -> %d", oldSpeed.FastPercent, newSpeed.FastPercent))
+	}
+	if oldSpeed.Probe != newSpeed.Probe {
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.probe: %d min %d/s %s -> %d min %d/s %s", oldSpeed.Probe.IntervalMinutes, oldSpeed.Probe.RatePerSecond, oldSpeed.Probe.Model, newSpeed.Probe.IntervalMinutes, newSpeed.Probe.RatePerSecond, newSpeed.Probe.Model))
+	}
+	oldScore, newScore := oldSpeed, newSpeed
+	oldScore.Enable, oldScore.FastPercent, oldScore.Probe = false, 0, config.CodexSpeedProbeConfig{}
+	newScore.Enable, newScore.FastPercent, newScore.Probe = false, 0, config.CodexSpeedProbeConfig{}
+	if oldScore != newScore {
+		changes = append(changes, "codex.speed-priority: score thresholds updated")
+	}
 	oldFastSession := oldCfg.Codex.FastSessionIDs
 	newFastSession := newCfg.Codex.FastSessionIDs
 	if oldFastSession.Enable != newFastSession.Enable {

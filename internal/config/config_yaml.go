@@ -57,6 +57,9 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-request-scoped-errors")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "provider-proxy-url")
+	// Speed priority replaced its v98 keys; drop any that the new structure no longer writes.
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "codex", "speed-priority", "probe")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "codex", "speed-priority")
 	replacePluginConfigsSubtree(original.Content[0], generated.Content[0])
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
