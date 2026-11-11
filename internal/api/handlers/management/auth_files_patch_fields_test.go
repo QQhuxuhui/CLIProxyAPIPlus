@@ -713,3 +713,99 @@ func TestPatchAuthFileFields_ClearsPlanTypeWhenRemoved(t *testing.T) {
 		t.Fatalf("expected plan_type attribute to be deleted after clearing plan_type, got %q", auth.Attributes["plan_type"])
 	}
 }
+
+func TestPatchAuthFileFields_SyncsServiceTier(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	fileName := "codex-st-patch.json"
+	filePath := filepath.Join(authDir, fileName)
+	if errWrite := os.WriteFile(filePath, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	record := &coreauth.Auth{
+		ID:         fileName,
+		FileName:   fileName,
+		Provider:   "codex",
+		Attributes: map[string]string{"path": filePath},
+		Metadata:   map[string]any{"type": "codex"},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+
+	body := fmt.Sprintf(`{"name":%q,"service_tier":"priority"}`, fileName)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+
+	handler.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAuthFileFields status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	auth, ok := manager.GetByID(fileName)
+	if !ok || auth == nil {
+		t.Fatal("auth not found after patch")
+	}
+	if got := auth.Attributes["service_tier"]; got != "priority" {
+		t.Fatalf("auth service_tier attribute = %q, want priority", got)
+	}
+}
+
+func TestPatchAuthFileFields_ClearsServiceTierWhenRemoved(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	fileName := "codex-clear-st.json"
+	filePath := filepath.Join(authDir, fileName)
+	if errWrite := os.WriteFile(filePath, []byte(`{"type":"codex","service_tier":"priority"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	record := &coreauth.Auth{
+		ID:       fileName,
+		FileName: fileName,
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path":         filePath,
+			"service_tier": "priority",
+		},
+		Metadata: map[string]any{
+			"type":         "codex",
+			"service_tier": "priority",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	body := fmt.Sprintf(`{"name":%q,"service_tier":null}`, fileName)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+
+	handler.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAuthFileFields status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	auth, ok := manager.GetByID(fileName)
+	if !ok || auth == nil {
+		t.Fatal("auth not found after patch")
+	}
+	if _, exists := auth.Attributes["service_tier"]; exists {
+		t.Fatalf("expected service_tier attribute to be deleted, got %q", auth.Attributes["service_tier"])
+	}
+}
