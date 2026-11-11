@@ -40,11 +40,11 @@ type codexSpeedPriorityView struct {
 }
 
 type codexSpeedPriorityConfigView struct {
-	Enable               bool `json:"enable"`
-	FastPercent          int  `json:"fast_percent"`
-	ProbeIntervalMinutes int  `json:"probe_interval_minutes"`
-	PoolsConfigured      bool `json:"pools_configured"`
-	PoolsRunning         bool `json:"pools_running"`
+	Enable                bool    `json:"enable"`
+	FastPercent           int     `json:"fast_percent"`
+	ProbePercentPerMinute float64 `json:"probe_percent_per_minute"`
+	PoolsConfigured       bool    `json:"pools_configured"`
+	PoolsRunning          bool    `json:"pools_running"`
 }
 
 // GetCodexSpeed reports the speed-strategy page data: the fast Session-Id pool state, its
@@ -106,9 +106,9 @@ type codexSpeedConfigUpdate struct {
 		Percent *int  `json:"percent"`
 	} `json:"fast_session"`
 	SpeedPriority *struct {
-		Enable               *bool `json:"enable"`
-		FastPercent          *int  `json:"fast_percent"`
-		ProbeIntervalMinutes *int  `json:"probe_interval_minutes"`
+		Enable                *bool    `json:"enable"`
+		FastPercent           *int     `json:"fast_percent"`
+		ProbePercentPerMinute *float64 `json:"probe_percent_per_minute"`
 	} `json:"speed_priority"`
 }
 
@@ -155,12 +155,13 @@ func (h *Handler) PutCodexSpeedConfig(c *gin.Context) {
 			}
 			speed.FastPercent = *sp.FastPercent
 		}
-		if sp.ProbeIntervalMinutes != nil {
-			if *sp.ProbeIntervalMinutes < 1 || *sp.ProbeIntervalMinutes > config.MaxCodexSpeedProbeInterval {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("speed_priority.probe_interval_minutes must be between 1 and %d", config.MaxCodexSpeedProbeInterval)})
+		if sp.ProbePercentPerMinute != nil {
+			// The negated range check also rejects NaN.
+			if p := *sp.ProbePercentPerMinute; !(p >= config.MinCodexSpeedProbePercent && p <= config.MaxCodexSpeedProbePercent) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("speed_priority.probe_percent_per_minute must be between %g and %g", config.MinCodexSpeedProbePercent, config.MaxCodexSpeedProbePercent)})
 				return
 			}
-			speed.Probe.IntervalMinutes = *sp.ProbeIntervalMinutes
+			speed.Probe.PercentPerMinute = *sp.ProbePercentPerMinute
 		}
 		if sp.Enable != nil {
 			if *sp.Enable {
@@ -193,7 +194,7 @@ func (h *Handler) codexSpeedPriorityView(cfg *config.Config, records []codexspee
 		speedCfg := cfg.Codex.SpeedPriority
 		speedCfg.Normalize()
 		view.Config = codexSpeedPriorityConfigView{
-			Enable: speedCfg.Enable, FastPercent: speedCfg.FastPercent, ProbeIntervalMinutes: speedCfg.Probe.IntervalMinutes,
+			Enable: speedCfg.Enable, FastPercent: speedCfg.FastPercent, ProbePercentPerMinute: speedCfg.Probe.PercentPerMinute,
 			PoolsConfigured: cfg.Codex.Pools.Enable && !cfg.Home.Enabled,
 			PoolsRunning:    h.authManager != nil && h.authManager.CodexPoolsRunning(),
 		}

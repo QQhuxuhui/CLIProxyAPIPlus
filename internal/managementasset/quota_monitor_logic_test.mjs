@@ -957,3 +957,20 @@ test('pool view rpm chart pairs each minute capacity with its requests and shows
   assert.match(tip, /可用容量 40 次\/分/);
   assert.match(tip, /快速失败 529：2/);
 });
+
+test('pool view turns the probe share into a rate and a round time', () => {
+  const v = poolView();
+  const big = v.probePlan(23000, 1.7);
+  assert.ok(Math.abs(big.perSecond - 6.5167) < 0.001);
+  assert.ok(Math.abs(big.roundMinutes - 58.82) < 0.01);
+  assert.equal(big.text, '按当前 23,000 个可调度账号：约每秒 6.5 个，一轮约 59 分钟');
+  assert.equal(v.probePlan(23000, '10').text, '按当前 23,000 个可调度账号：约每秒 38 个，一轮约 10 分钟');
+  assert.equal(v.probePlan(600, 1.7).text, '按当前 600 个可调度账号：约每秒 0.17 个，一轮约 59 分钟');
+  assert.equal(v.probePlan(0, 2).text, '按当前 0 个可调度账号：约每秒 0 个，一轮约 50 分钟');
+  assert.equal(v.probePlan(undefined, 2).perSecond, 0);
+  for (const bad of [0.5, 10.5, '', 'x', NaN]) {
+    const plan = v.probePlan(23000, bad);
+    assert.equal(plan.perSecond, null);
+    assert.equal(plan.text, '比例需在 1% 到 10% 之间');
+  }
+});

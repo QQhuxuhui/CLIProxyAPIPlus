@@ -82,14 +82,14 @@ func TestCodexSpeedPriorityConfigRequiresRunningPools(t *testing.T) {
 	if rec := call(`{"speed_priority":{"enable":true}}`); rec.Code != 400 || !strings.Contains(rec.Body.String(), "restart") {
 		t.Fatalf("pools not running: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := call(`{"speed_priority":{"fast_percent":25,"probe_interval_minutes":20}}`); rec.Code != 200 {
+	if rec := call(`{"speed_priority":{"fast_percent":25,"probe_percent_per_minute":2.5}}`); rec.Code != 200 {
 		t.Fatalf("fast percent save: %d %s", rec.Code, rec.Body.String())
 	}
 	got := h.cfg.Codex.SpeedPriority
-	if got.Enable || got.FastPercent != 25 || got.Probe.IntervalMinutes != 20 || got.Probe.RatePerSecond != 3 {
+	if got.Enable || got.FastPercent != 25 || got.Probe.PercentPerMinute != 2.5 {
 		t.Fatalf("saved: %+v", got)
 	}
-	for _, body := range []string{`{"speed_priority":{"fast_percent":0}}`, `{"speed_priority":{"fast_percent":91}}`, `{"speed_priority":{"probe_interval_minutes":61}}`, `{"speed_priority":{"percent":20}}`, `{"speed_priority":{"weights":{"fast":2}}}`, `{"speed_priority":{"x":1}}`} {
+	for _, body := range []string{`{"speed_priority":{"fast_percent":0}}`, `{"speed_priority":{"fast_percent":91}}`, `{"speed_priority":{"probe_percent_per_minute":0.5}}`, `{"speed_priority":{"probe_percent_per_minute":10.1}}`, `{"speed_priority":{"probe_interval_minutes":20}}`, `{"speed_priority":{"percent":20}}`, `{"speed_priority":{"weights":{"fast":2}}}`, `{"speed_priority":{"x":1}}`} {
 		if rec := call(body); rec.Code != 400 {
 			t.Fatalf("invalid %s: %d", body, rec.Code)
 		}
@@ -115,7 +115,7 @@ func TestCodexSpeedPriorityViewShape(t *testing.T) {
 	legacy := codexspeed.SpeedHour{Hour: time.Date(2026, 11, 2, 11, 0, 0, 0, time.UTC), Schema: codexspeed.SpeedSchemaLegacyAB}
 	legacy.Overall.Hist.Add(time.Second)
 	view := h.codexSpeedPriorityView(h.cfg, []codexspeed.HourRecord{{Hour: legacy.Hour, Speed: &legacy}, {Hour: legacy.Hour.Add(time.Hour)}})
-	if view.Config.FastPercent != 40 || view.Config.ProbeIntervalMinutes != 10 {
+	if view.Config.FastPercent != 40 || view.Config.ProbePercentPerMinute != 1.7 {
 		t.Fatalf("config: %+v", view.Config)
 	}
 	if len(view.Hours) != 1 || view.Hours[0].Schema != codexspeed.SpeedSchemaLegacyAB || view.Hours[0].Overall.Hist != nil {
@@ -128,7 +128,7 @@ func TestCodexSpeedPriorityViewShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"fast_percent"`, `"probe_interval_minutes"`, `"bins"`, `"overflow_share"`, `"ready_min"`, `"schema"`} {
+	for _, key := range []string{`"fast_percent"`, `"probe_percent_per_minute"`, `"probe_round_minutes"`, `"probe_rate_per_second"`, `"bins"`, `"overflow_share"`, `"ready_min"`, `"schema"`} {
 		if !strings.Contains(string(data), key) {
 			t.Fatalf("missing %s in %s", key, data)
 		}

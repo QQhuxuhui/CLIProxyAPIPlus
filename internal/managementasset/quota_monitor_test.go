@@ -415,3 +415,23 @@ func TestQuotaMonitorHTMLHasCodexQuotaViews(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaMonitorHTMLProbesByShareOfAccounts(t *testing.T) {
+	s := string(QuotaMonitorHTML())
+	for _, marker := range []string{
+		`每分钟探测比例（%）<input id="speed-sp-probe-percent" type="number" min="1" max="10" step="0.1" required`,
+		`id="speed-sp-probe-plan"`,
+		`probe_percent_per_minute:Number(speedEl('sp-probe-percent').value)`,
+		`speedEl('sp-probe-percent').value=sp.config.probe_percent_per_minute`,
+		`live.probe_round_minutes`,
+	} {
+		if !strings.Contains(s, marker) {
+			t.Fatalf("quota monitor page is missing %q", marker)
+		}
+	}
+	for _, stale := range []string{"sp-probe-interval", "probe_interval_minutes", "慢号探测间隔"} {
+		if strings.Contains(s, stale) {
+			t.Fatalf("quota monitor page still carries %q", stale)
+		}
+	}
+}

@@ -162,25 +162,30 @@ func (t *CodexSpeedTracker) Tick() {
 
 // CodexSpeedSnapshot is the live state shown by the management API.
 type CodexSpeedSnapshot struct {
-	Enabled           bool            `json:"enabled"`
-	Active            bool            `json:"active"`
-	Inactive          string          `json:"inactive,omitempty"`
-	Ready             bool            `json:"ready"`
-	Scored            int             `json:"scored"`
-	ReadyMin          int             `json:"ready_min"`
-	Total             int             `json:"total"`
-	Fast              int             `json:"fast"`
-	Slow              int             `json:"slow"`
-	Unscored          int             `json:"unscored"`
-	FastPercent       int             `json:"fast_percent"`
-	FastUtil          *float64        `json:"fast_util"`
-	SlowUtil          *float64        `json:"slow_util"`
-	OverflowShare     *float64        `json:"overflow_share"`
-	FastP50Ms         *int64          `json:"fast_p50_ms"`
-	SlowP50Ms         *int64          `json:"slow_p50_ms"`
-	OverallP50Ms      *int64          `json:"overall_p50_ms"`
-	Probes            int64           `json:"probes"`
-	ProbeIntervalMin  int             `json:"probe_interval_minutes"`
+	Enabled       bool     `json:"enabled"`
+	Active        bool     `json:"active"`
+	Inactive      string   `json:"inactive,omitempty"`
+	Ready         bool     `json:"ready"`
+	Scored        int      `json:"scored"`
+	ReadyMin      int      `json:"ready_min"`
+	Total         int      `json:"total"`
+	Fast          int      `json:"fast"`
+	Slow          int      `json:"slow"`
+	Unscored      int      `json:"unscored"`
+	FastPercent   int      `json:"fast_percent"`
+	FastUtil      *float64 `json:"fast_util"`
+	SlowUtil      *float64 `json:"slow_util"`
+	OverflowShare *float64 `json:"overflow_share"`
+	FastP50Ms     *int64   `json:"fast_p50_ms"`
+	SlowP50Ms     *int64   `json:"slow_p50_ms"`
+	OverallP50Ms  *int64   `json:"overall_p50_ms"`
+	Probes        int64    `json:"probes"`
+	// ProbePercentPerMinute is the configured share of accounts probed each minute,
+	// ProbeRoundMinutes the round it implies and ProbeRatePerSecond the resulting target rate.
+	ProbePercentPerMinute float64 `json:"probe_percent_per_minute"`
+	ProbeRoundMinutes     float64 `json:"probe_round_minutes"`
+	ProbeRatePerSecond    float64 `json:"probe_rate_per_second"`
+	// ProbeCycleMinutes is the estimated time of one round at the effective rate.
 	ProbeCycleMinutes float64         `json:"probe_cycle_minutes"`
 	ProbeBehind       bool            `json:"probe_behind"`
 	Bins              []CodexSpeedBin `json:"bins"`
@@ -240,15 +245,17 @@ func (t *CodexSpeedTracker) snapshotFrom(view *codexSpeedView) CodexSpeedSnapsho
 	if bins == nil {
 		bins = make([]CodexSpeedBin, codexSpeedBinCount)
 	}
-	interval := time.Duration(cfg.Probe.IntervalMinutes) * time.Minute
+	round := cfg.Probe.Round()
 	return CodexSpeedSnapshot{
 		Enabled: cfg.Enable, Active: t.Active(), Inactive: t.InactiveReason(), Ready: view.ready,
 		Scored: view.scored, ReadyMin: codexSpeedReadyMinScored, Total: view.total,
 		Fast: view.fastCount, Slow: view.slowCount, Unscored: view.unscored, FastPercent: cfg.FastPercent,
 		FastUtil: view.fastUtil, SlowUtil: view.slowUtil, OverflowShare: cur.OverflowShare,
 		FastP50Ms: cur.Fast.P50Ms, SlowP50Ms: cur.Slow.P50Ms, OverallP50Ms: cur.Overall.P50Ms,
-		Probes: cur.Probes, ProbeIntervalMin: cfg.Probe.IntervalMinutes,
-		ProbeCycleMinutes: view.probeCycle.Minutes(), ProbeBehind: t.Active() && view.probeCycle > interval,
+		Probes: cur.Probes, ProbePercentPerMinute: cfg.Probe.PercentPerMinute,
+		ProbeRoundMinutes: round.Minutes(), ProbeRatePerSecond: view.probeRate,
+		// A round estimate more than 5% over the target means probing cannot keep up.
+		ProbeCycleMinutes: view.probeCycle.Minutes(), ProbeBehind: t.Active() && view.probeCycle > round+round/20,
 		Bins: bins, Current: cur.StripHist(),
 	}
 }
