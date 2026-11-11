@@ -270,6 +270,13 @@
   .acct-name:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
   .del-btn { color: var(--text-3); background: none; border: none; padding: 0; font-size: 13px; cursor: pointer; }
   .del-btn:hover { color: var(--danger); text-decoration: underline; text-underline-offset: 3px; }
+  .st-toggle { position: relative; display: inline-block; width: 32px; height: 18px; vertical-align: middle; cursor: pointer; }
+  .st-toggle input { position: absolute; opacity: 0; width: 32px; height: 18px; margin: 0; cursor: pointer; }
+  .st-toggle i { display: block; width: 32px; height: 18px; background: var(--surface-3); border-radius: 9px; transition: background .15s; }
+  .st-toggle i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: var(--text); border-radius: 50%; transition: left .15s; }
+  .st-toggle input:checked + i { background: var(--accent-strong); }
+  .st-toggle input:checked + i::after { left: 16px; }
+  .st-toggle input:disabled + i { opacity: .4; cursor: default; }
   .refresh-credits { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 8px; font-size: 11px; line-height: 1.6; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 9999px; cursor: pointer; }
   .refresh-credits:hover { background: rgba(74, 163, 255, .2); }
   .refresh-credits[disabled] { opacity: .5; cursor: default; }
@@ -689,7 +696,7 @@
         <table id="table" class="data-table" hidden>
           <thead><tr>
             <th class="select-col"><input id="account-select-all" type="checkbox" data-tip="全选当前筛选结果" aria-label="全选当前筛选结果"></th>
-            <th>账号名称</th><th>provider</th><th>套餐</th><th>额度</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>并发</th><th>操作</th><th>状态</th><th>错误</th>
+            <th>账号名称</th><th>provider</th><th>套餐</th><th>额度</th><th>导入时间</th><th>请求数</th><th>成功率</th><th>并发</th><th>fast</th><th>操作</th><th>状态</th><th>错误</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -2035,6 +2042,7 @@
 
   function accountPlan(a) { return AccountViewLogic.accountPlan(a); }
   function isAntigravity(a) { return String(a && a.provider || '').toLowerCase() === 'antigravity'; }
+  function isCodexAccount(a) { return String(a && a.provider || '').toLowerCase() === 'codex'; }
   // Antigravity accounts carry a manual quota-refresh control because their plan/credits
   // are only fetched lazily by the executor; non-antigravity rows show plain text.
   function planCell(a) {
@@ -2192,6 +2200,14 @@
     return '<td><span data-tip="' + tip + '">' + text + '</span> <button type="button" class="concurrency-edit text-xs text-indigo-600" data-name="' + escapeHtml(a.name || '') + '">改</button></td>';
   }
 
+  function serviceTierCell(a) {
+    if (!isCodexAccount(a)) return '<td></td>';
+    var on = String(a.service_tier || '') === 'priority';
+    return '<td><label class="st-toggle" data-tip="' + (on ? 'priority（快速模式）' : '关闭') + '">' +
+      '<input type="checkbox" class="st-check" data-name="' + escapeHtml(a.name || '') + '"' + (on ? ' checked' : '') + '>' +
+      '<i aria-hidden="true"></i></label></td>';
+  }
+
   function selectCell(a) {
     var name = AccountViewLogic.accountKey(a);
     var checked = selectedAccounts.indexOf(name) >= 0 ? ' checked' : '';
@@ -2205,7 +2221,7 @@
         '<td><button type="button" class="acct-name" data-name="' + escapeHtml(a.name || '') + '" data-index="' + escapeHtml(a.auth_index || '') + '">' + escapeHtml(a.name || '') + '</button></td>' +
         td(a.provider) + planCell(a) + quotaCell(a) +
         '<td>' + fmtCreated(a.created_at) + '</td>' +
-        requestCells(a) + concurrencyCell(a) +
+        requestCells(a) + concurrencyCell(a) + serviceTierCell(a) +
         '<td><button type="button" class="del-btn" data-name="' + escapeHtml(a.name || '') + '">删除</button></td>' +
         statusCell(a) + errorCell(a) +
         '</tr>';
@@ -2460,6 +2476,19 @@
     patchConcurrencyLimit('/fields/batch', { names: selectedAccounts.slice(), concurrency_limit: limit }, function (result) {
       setStatus('批量修改并发上限：' + AccountViewLogic.concurrencyBatchMessage(result), (result.failed || []).length ? 'err' : 'ok');
     });
+  }
+
+  function patchServiceTier(name, enable) {
+    var value = enable ? 'priority' : null;
+    return fetch(ENDPOINT + '/fields', {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + getStoredKey(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, service_tier: value })
+    }).then(function (resp) {
+      if (!resp.ok) return readError(resp).then(function (msg) { throw new Error(msg || 'HTTP ' + resp.status); });
+      return resp.json();
+    }).then(function () { setStatus((enable ? '已开启' : '已关闭') + ' ' + name + ' 的 fast 模式', 'ok'); fetchData('auto'); })
+      .catch(function (e) { setStatus('修改 fast 模式失败：' + e.message, 'err'); fetchData('auto'); });
   }
 
   function deleteSelectedAccounts(names) {
@@ -3980,6 +4009,12 @@
   els.rows.addEventListener('click', function (e) {
     var button = e.target && e.target.closest ? e.target.closest('.concurrency-edit') : null;
     if (button) editConcurrencyLimit(button.getAttribute('data-name') || '');
+  });
+  els.rows.addEventListener('change', function (e) {
+    if (!e.target || !e.target.classList.contains('st-check')) return;
+    var name = e.target.getAttribute('data-name') || '';
+    if (!name) return;
+    patchServiceTier(name, e.target.checked);
   });
   els['account-bulk-concurrency'].addEventListener('click', function () {
     var input = window.prompt('为选中的 ' + selectedAccounts.length + ' 个账号设置并发上限（非负整数，0 表示不限额）');

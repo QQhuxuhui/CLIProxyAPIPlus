@@ -641,6 +641,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	} else if _, ok := touchedRoots["id_token"]; ok {
 		syncAuthFilePlanTypeAttribute(auth)
 	}
+	if _, ok := touchedRoots["service_tier"]; ok {
+		syncAuthFileServiceTierAttribute(auth)
+	}
 }
 
 func syncAuthFilePlanTypeAttribute(auth *coreauth.Auth) {
@@ -669,6 +672,23 @@ func syncAuthFilePlanTypeAttribute(auth *coreauth.Auth) {
 		auth.Attributes["plan_type"] = newPlanType
 	} else {
 		delete(auth.Attributes, "plan_type")
+	}
+}
+
+func syncAuthFileServiceTierAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	if st, ok := auth.Metadata["service_tier"].(string); ok && strings.EqualFold(strings.TrimSpace(st), "priority") {
+		auth.Attributes["service_tier"] = "priority"
+	} else {
+		delete(auth.Attributes, "service_tier")
 	}
 }
 

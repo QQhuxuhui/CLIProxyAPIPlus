@@ -874,3 +874,75 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestFileSynthesizer_Synthesize_CodexServiceTier(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		wantAttr string
+	}{
+		{
+			name:     "priority value",
+			metadata: map[string]any{"type": "codex", "service_tier": "priority"},
+			wantAttr: "priority",
+		},
+		{
+			name:     "Priority mixed case",
+			metadata: map[string]any{"type": "codex", "service_tier": "Priority"},
+			wantAttr: "priority",
+		},
+		{
+			name:     "PRIORITY upper case with spaces",
+			metadata: map[string]any{"type": "codex", "service_tier": " PRIORITY "},
+			wantAttr: "priority",
+		},
+		{
+			name:     "auto value ignored",
+			metadata: map[string]any{"type": "codex", "service_tier": "auto"},
+			wantAttr: "",
+		},
+		{
+			name:     "empty string ignored",
+			metadata: map[string]any{"type": "codex", "service_tier": ""},
+			wantAttr: "",
+		},
+		{
+			name:     "missing field",
+			metadata: map[string]any{"type": "codex"},
+			wantAttr: "",
+		},
+		{
+			name:     "non-codex provider ignored",
+			metadata: map[string]any{"type": "claude", "service_tier": "priority"},
+			wantAttr: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			data, _ := json.Marshal(tt.metadata)
+			if err := os.WriteFile(filepath.Join(tempDir, "codex-st.json"), data, 0o644); err != nil {
+				t.Fatalf("write auth file: %v", err)
+			}
+
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{
+				Config:      &config.Config{},
+				AuthDir:     tempDir,
+				Now:         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+				IDGenerator: NewStableIDGenerator(),
+			}
+			auths, err := synth.Synthesize(ctx)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+			got := auths[0].Attributes["service_tier"]
+			if got != tt.wantAttr {
+				t.Errorf("service_tier attribute = %q, want %q", got, tt.wantAttr)
+			}
+		})
+	}
+}

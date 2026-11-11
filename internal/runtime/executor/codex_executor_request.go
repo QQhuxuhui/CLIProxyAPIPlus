@@ -505,6 +505,16 @@ func normalizeCodexInstructions(body []byte, nativeRequest ...bool) []byte {
 var imageGenToolJSON = []byte(`{"type":"image_generation","output_format":"png"}`)
 var imageGenToolArrayJSON = []byte(`[{"type":"image_generation","output_format":"png"}]`)
 
+func applyCodexAuthServiceTier(body []byte, auth *cliproxyauth.Auth) []byte {
+	if auth == nil || auth.Attributes == nil {
+		return body
+	}
+	if auth.Attributes["service_tier"] == "priority" {
+		body, _ = sjson.SetBytes(body, "service_tier", "priority")
+	}
+	return body
+}
+
 func isCodexFreePlanAuth(auth *cliproxyauth.Auth) bool {
 	if auth == nil || auth.Attributes == nil {
 		return false

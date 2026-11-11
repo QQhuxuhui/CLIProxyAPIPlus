@@ -244,6 +244,13 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 		}
 	}
+	if provider == "codex" {
+		if st, ok := metadata["service_tier"].(string); ok {
+			if strings.EqualFold(strings.TrimSpace(st), "priority") {
+				a.Attributes["service_tier"] = "priority"
+			}
+		}
+	}
 	return []*coreauth.Auth{a}, nil
 }
 

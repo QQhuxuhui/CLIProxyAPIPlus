@@ -661,6 +661,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 	if requestRetry, ok := auth.RequestRetryOverride(); ok {
 		entry["request_retry"] = requestRetry
 	}
+	if st := strings.TrimSpace(authAttribute(auth, "service_tier")); st != "" {
+		entry["service_tier"] = st
+	}
 	return entry
 }
 
