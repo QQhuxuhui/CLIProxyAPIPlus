@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexspeed"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -173,8 +174,25 @@ func TestCodexSpeedProbeBudgetIsFractional(t *testing.T) {
 	if probes < 100 || probes > 103 {
 		t.Fatalf("started %d probes in ten minutes, want about 102", probes)
 	}
-	if got := sim.svc.probeStep(context.Background(), time.Hour, sim.cfg); got > 1 {
+	if got := sim.svc.probeStep(context.Background(), time.Hour, sim.cfg); got > 2 {
 		t.Fatalf("an hour-long stall released %d probes at once", got)
+	}
+	// Rates just under and just over one a second must not lose the fraction left each step.
+	// Half an hour stays inside the first round, so every start has a fresh candidate.
+	for accounts, want := range map[int]int{3500: 1785, 6000: 3060} {
+		steady := newSpeedSim(accounts, time.Second, nil)
+		steady.run(30 * time.Minute)
+		started := 0
+		for _, n := range steady.started {
+			started += n
+		}
+		if started < want-2 || started > want+2 {
+			t.Fatalf("%d accounts: started %d probes in half an hour, want about %d", accounts, started, want)
+		}
+	}
+	burst := newSpeedSim(23000, time.Second, nil)
+	if got := burst.svc.probeStep(context.Background(), time.Hour, burst.cfg); got > 8 {
+		t.Fatalf("an hour-long stall on a large pool released %d probes at once", got)
 	}
 	empty := newSpeedSim(0, time.Second, nil)
 	empty.run(time.Minute)
@@ -190,5 +208,36 @@ func TestCodexSpeedProbeInFlightLimitHolds(t *testing.T) {
 	limit := coreauth.CodexSpeedProbeInFlightLimit(coreauth.CodexSpeedProbeRate(23000, sim.cfg))
 	if got := int(sim.svc.inflight.Load()); got != limit {
 		t.Fatalf("in flight %d, want the limit %d", got, limit)
+	}
+}
+
+// Startup restores samples through the service: with a sample floor of 32 the oldest valid
+// samples are over a day old, and they must survive because the config is applied first.
+func TestCodexSpeedStartupRestoresSamplesWithTheConfiguredFloor(t *testing.T) {
+	clock := &speedSimClock{now: time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)}
+	cfg := &internalconfig.Config{}
+	cfg.Codex.SpeedPriority = internalconfig.CodexSpeedPriorityConfig{Enable: true, ScoreMinSamples: 32}
+	speedCfg := cfg.Codex.SpeedPriority
+	speedCfg.Normalize()
+
+	old := coreauth.NewCodexSpeedTracker(clock.Now)
+	old.SetConfig(speedCfg, true, true)
+	for probe := 0; probe < 32; probe++ {
+		if probe > 0 {
+			clock.Advance(speedCfg.Probe.Round())
+		}
+		old.ObserveProbe(coreauth.CodexSpeedProbeResult{AuthID: "patient", Success: true, Gap: time.Second})
+	}
+	store := codexspeed.NewStore(t.TempDir())
+	if err := store.SaveSamples(old.ExportSamples()); err != nil {
+		t.Fatalf("SaveSamples: %v", err)
+	}
+
+	fresh := coreauth.NewCodexSpeedTracker(clock.Now)
+	svc := &codexSpeedService{s: &Service{cfg: cfg}, tracker: fresh}
+	svc.restoreSamples(store)
+	fresh.Recompute([]coreauth.CodexSpeedAuthInfo{{ID: "patient", Schedulable: true, QuotaUsed: -1}})
+	if snap := fresh.Snapshot(); snap.Scored != 1 {
+		t.Fatalf("scored %d accounts after the restart, want 1", snap.Scored)
 	}
 }

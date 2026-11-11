@@ -63,9 +63,7 @@ func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 	rt := codexspeed.NewRuntime(store, time.Now)
 	codexspeed.SetDefault(rt)
 	svc := &codexSpeedService{s: s, rt: rt, tracker: coreauth.CodexSpeed()}
-	if restored := svc.tracker.ImportSamples(store.LoadSamples()); restored > 0 {
-		log.Infof("codex speed: restored samples of %d accounts", restored)
-	}
+	svc.restoreSamples(store)
 	svc.acquire = func(id, model string) *coreauth.Auth {
 		auth, _ := s.coreManager.AcquireCodexProbeAuthByID(id, model)
 		return auth
@@ -73,7 +71,6 @@ func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 	svc.launch = func(ctx context.Context, auth *coreauth.Auth, model string) {
 		go svc.probe(ctx, auth, model)
 	}
-	svc.applyConfig()
 	go svc.runTicker(ctx)
 	go svc.runProber(ctx)
 }
@@ -85,6 +82,15 @@ func (s *Service) currentConfig() *internalconfig.Config {
 		return &internalconfig.Config{}
 	}
 	return s.cfg
+}
+
+// restoreSamples applies the current config and then loads the saved samples. The order
+// matters: how old a sample may be depends on the configured sample floor and probe share.
+func (c *codexSpeedService) restoreSamples(store *codexspeed.Store) {
+	c.applyConfig()
+	if restored := c.tracker.ImportSamples(store.LoadSamples()); restored > 0 {
+		log.Infof("codex speed: restored samples of %d accounts", restored)
+	}
 }
 
 func (c *codexSpeedService) applyConfig() internalconfig.CodexSpeedPriorityConfig {
@@ -198,9 +204,9 @@ func (c *codexSpeedService) runProber(ctx context.Context) {
 }
 
 // probeStep adds the probe budget earned over elapsed and starts as many probes as it covers.
-// The rate is a share of the schedulable accounts, so the budget is fractional: it accumulates
-// across steps, and is capped at about one second's worth so a stall never ends in a burst.
-// It returns the number of probes started.
+// The rate is a share of the schedulable accounts, so the budget is fractional: the part of a
+// probe left after a step carries over, and the saved budget stays near one second's worth so
+// a stall never ends in a burst. It returns the number of probes started.
 func (c *codexSpeedService) probeStep(ctx context.Context, elapsed time.Duration, speedCfg internalconfig.CodexSpeedPriorityConfig) int {
 	c.infosMu.Lock()
 	infos := c.infos
@@ -216,7 +222,9 @@ func (c *codexSpeedService) probeStep(ctx context.Context, elapsed time.Duration
 		c.probeTokens = 0
 		return 0
 	}
-	c.probeTokens = min(c.probeTokens+rate*elapsed.Seconds(), max(1, rate))
+	// One second's worth plus the carried fraction: capping at the rate alone would drop the
+	// fraction every step and probe slower than configured.
+	c.probeTokens = min(c.probeTokens+rate*elapsed.Seconds(), max(1, rate)+1)
 	budget := int(c.probeTokens)
 	if budget <= 0 {
 		return 0
