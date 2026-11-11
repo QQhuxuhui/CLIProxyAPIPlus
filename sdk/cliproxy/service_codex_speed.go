@@ -23,6 +23,9 @@ import (
 // codexSpeedTickInterval drives the recompute, hourly rollover and the minute summary.
 const codexSpeedTickInterval = time.Minute
 
+// codexSpeedSaveEveryTicks is how often the speed samples are written to disk.
+const codexSpeedSaveEveryTicks = 5
+
 type codexSpeedService struct {
 	s       *Service
 	rt      *codexspeed.Runtime
@@ -31,6 +34,9 @@ type codexSpeedService struct {
 	infosMu sync.Mutex
 	infos   []coreauth.CodexSpeedAuthInfo
 
+	// ticks counts maintenance rounds; only the ticker goroutine touches it.
+	ticks int
+
 	inflight atomic.Int64
 	// acquire and launch are the probe admission and start hooks; tests replace them.
 	acquire func(id, model string) *coreauth.Auth
@@ -38,9 +44,9 @@ type codexSpeedService struct {
 }
 
 // startCodexSpeedRuntime loads the speed-strategy history under the auth dir, then runs the
-// minute maintenance and the probe loop for the service lifetime. Speed samples are not
-// persisted: after a restart ranking waits until enough accounts have a score. Without an auth
-// dir the tracker still runs; only history is disabled.
+// minute maintenance and the probe loop for the service lifetime. Speed samples are saved every
+// few minutes and restored here, so ranking resumes after a restart instead of re-measuring the
+// whole pool. Without an auth dir the tracker still runs; history and samples are not kept.
 func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 	if s == nil {
 		return
@@ -55,6 +61,9 @@ func (s *Service) startCodexSpeedRuntime(ctx context.Context) {
 	rt := codexspeed.NewRuntime(store, time.Now)
 	codexspeed.SetDefault(rt)
 	svc := &codexSpeedService{s: s, rt: rt, tracker: coreauth.CodexSpeed()}
+	if restored := svc.tracker.ImportSamples(store.LoadSamples()); restored > 0 {
+		log.Infof("codex speed: restored samples of %d accounts", restored)
+	}
 	svc.acquire = func(id, model string) *coreauth.Auth {
 		auth, _ := s.coreManager.AcquireCodexProbeAuthByID(id, model)
 		return auth
@@ -92,6 +101,7 @@ func (c *codexSpeedService) runTicker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.saveSamples()
 			return
 		case <-ticker.C:
 			c.tick(time.Now())
@@ -119,7 +129,17 @@ func (c *codexSpeedService) tick(now time.Time) {
 	c.tracker.Recompute(infos)
 	c.tracker.Tick()
 	c.rollHours(now)
+	if c.ticks++; c.ticks%codexSpeedSaveEveryTicks == 0 {
+		c.saveSamples()
+	}
 	log.Info(c.tracker.SummaryLine())
+}
+
+// saveSamples writes the tracker's current samples to the store.
+func (c *codexSpeedService) saveSamples() {
+	if err := c.rt.Store().SaveSamples(c.tracker.ExportSamples()); err != nil {
+		log.WithError(err).Warn("codex speed: save samples failed")
+	}
 }
 
 // rollHours persists every finished hour, merging fast session and speed records by hour.
