@@ -196,3 +196,38 @@ func TestLegacyHourMigratesOnceAndKeepsFastSession(t *testing.T) {
 		t.Fatalf("ranked record must keep its schema: %+v", recs)
 	}
 }
+
+func TestStoreSamplesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	if got := store.LoadSamples(); len(got.Accounts) != 0 || got.ProbeCycle != 0 {
+		t.Fatalf("missing file must load empty, got %+v", got)
+	}
+	want := SampleSnapshot{ProbeCycle: 129 * time.Minute, Accounts: []AccountSamples{
+		{ID: "a.json", LastProbe: 1700000000000, Samples: [][3]int64{{1700000000000, 2500, 1}, {1700000100000, 900, 0}}},
+		{ID: "b.json", Samples: [][3]int64{{1700000200000, 4000, 1}}},
+	}}
+	if err := store.SaveSamples(want); err != nil {
+		t.Fatalf("SaveSamples: %v", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, samplesFile), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open samples: %v", err)
+	}
+	if _, errWrite := f.WriteString("{broken\n"); errWrite != nil {
+		t.Fatalf("append: %v", errWrite)
+	}
+	if errClose := f.Close(); errClose != nil {
+		t.Fatalf("close: %v", errClose)
+	}
+	got := store.LoadSamples()
+	if got.ProbeCycle != want.ProbeCycle || len(got.Accounts) != 2 {
+		t.Fatalf("loaded cycle %v, %d accounts", got.ProbeCycle, len(got.Accounts))
+	}
+	if got.Accounts[0].ID != "a.json" || got.Accounts[0].LastProbe != 1700000000000 || got.Accounts[0].Samples[1] != [3]int64{1700000100000, 900, 0} {
+		t.Fatalf("account 0 = %+v", got.Accounts[0])
+	}
+	if strings.HasSuffix(samplesFile, ".json") {
+		t.Fatal("samples file must not look like a credential file")
+	}
+}
