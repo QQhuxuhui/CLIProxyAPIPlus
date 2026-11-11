@@ -537,14 +537,13 @@ codex:
   # speed-priority:
   #   enable: false
   #   fast-percent: 30            # share of schedulable accounts in the fast group (1-90)
-  #   score-window-minutes: 30    # passive samples; probe samples stay valid long enough for min samples
+  #   score-window-minutes: 30    # floor; samples stay valid long enough to collect min samples from probe rounds
   #   score-half-life-minutes: 5
-  #   score-min-samples: 3
+  #   score-min-samples: 1
   #   score-overload-percent: 30  # accounts above this decayed overload rate are not ranked
   #   max-reasoning-tokens: 64
   #   probe:
-  #     interval-minutes: 10      # per account (1-60)
-  #     rate-per-second: 3        # 1-3
+  #     percent-per-minute: 1.7   # share of schedulable accounts probed each minute (1-10); 1.7 = one round per hour
   #     model: "gpt-6-luna"
   # Outbound proxy pool for HTTP/SSE /responses attempts. Credentials with their own proxy_url
   # never use it. Retries after an upstream overload/5xx/transport error go through the pool

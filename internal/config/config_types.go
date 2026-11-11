@@ -402,11 +402,12 @@ type CodexSpeedPriorityConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// FastPercent is the share of schedulable accounts in the fast group. Default 30, range 1-90.
 	FastPercent int `yaml:"fast-percent,omitempty" json:"fast-percent,omitempty"`
-	// ScoreWindowMinutes bounds how long a passive sample stays valid. Default 30.
+	// ScoreWindowMinutes is the floor of how long a sample stays valid; samples otherwise stay
+	// valid long enough to collect the minimum sample count from probe rounds. Default 30.
 	ScoreWindowMinutes int `yaml:"score-window-minutes,omitempty" json:"score-window-minutes,omitempty"`
 	// ScoreHalfLifeMinutes is the decay half-life of samples and overload counts. Default 5.
 	ScoreHalfLifeMinutes int `yaml:"score-half-life-minutes,omitempty" json:"score-half-life-minutes,omitempty"`
-	// ScoreMinSamples is the valid-sample floor for a score. Default 3.
+	// ScoreMinSamples is the valid-sample floor for a score. Default 1.
 	ScoreMinSamples int `yaml:"score-min-samples,omitempty" json:"score-min-samples,omitempty"`
 	// ScoreOverloadPercent is the overload rate above which an account is not ranked. Default 30.
 	ScoreOverloadPercent int `yaml:"score-overload-percent,omitempty" json:"score-overload-percent,omitempty"`
@@ -418,20 +419,28 @@ type CodexSpeedPriorityConfig struct {
 
 // CodexSpeedProbeConfig configures background speed probes.
 type CodexSpeedProbeConfig struct {
-	// IntervalMinutes is the minimum gap between two probes of one account. Default 10, range 1-60.
-	IntervalMinutes int `yaml:"interval-minutes,omitempty" json:"interval-minutes,omitempty"`
-	// RatePerSecond caps probe starts per second. Default 3, range 1-3.
-	RatePerSecond int    `yaml:"rate-per-second,omitempty" json:"rate-per-second,omitempty"`
-	Model         string `yaml:"model,omitempty" json:"model,omitempty"`
+	// PercentPerMinute is the share of schedulable accounts probed each minute, so the probe
+	// volume follows the pool size. Default 1.7 (one round per hour), range 1-10.
+	PercentPerMinute float64 `yaml:"percent-per-minute,omitempty" json:"percent-per-minute,omitempty"`
+	Model            string  `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
+// Round is the target time for one probe round over the pool.
+func (c CodexSpeedProbeConfig) Round() time.Duration {
+	if !(c.PercentPerMinute > 0) {
+		return 0
+	}
+	return time.Duration(100 / c.PercentPerMinute * float64(time.Minute))
 }
 
 // Codex speed-priority defaults.
 const (
-	DefaultCodexSpeedFastPercent = 30
-	DefaultCodexSpeedProbeModel  = "gpt-6-luna"
-	MaxCodexSpeedFastPercent     = 90
-	MaxCodexSpeedProbeInterval   = 60
-	MaxCodexSpeedProbeRate       = 3
+	DefaultCodexSpeedFastPercent  = 30
+	DefaultCodexSpeedProbeModel   = "gpt-6-luna"
+	MaxCodexSpeedFastPercent      = 90
+	DefaultCodexSpeedProbePercent = 1.7
+	MinCodexSpeedProbePercent     = 1.0
+	MaxCodexSpeedProbePercent     = 10.0
 )
 
 // Normalize fills defaults and clamps values.
@@ -442,11 +451,14 @@ func (c *CodexSpeedPriorityConfig) Normalize() {
 	c.FastPercent = normalizeBoundedInt(c.FastPercent, DefaultCodexSpeedFastPercent, MaxCodexSpeedFastPercent)
 	c.ScoreWindowMinutes = max(normalizeBoundedInt(c.ScoreWindowMinutes, 30, 120), 5)
 	c.ScoreHalfLifeMinutes = normalizeBoundedInt(c.ScoreHalfLifeMinutes, 5, 60)
-	c.ScoreMinSamples = normalizeBoundedInt(c.ScoreMinSamples, 3, 32)
+	c.ScoreMinSamples = normalizeBoundedInt(c.ScoreMinSamples, 1, 32)
 	c.ScoreOverloadPercent = normalizeBoundedInt(c.ScoreOverloadPercent, 30, 100)
 	c.MaxReasoningTokens = normalizeBoundedInt(c.MaxReasoningTokens, 64, 1000000)
-	c.Probe.IntervalMinutes = normalizeBoundedInt(c.Probe.IntervalMinutes, 10, MaxCodexSpeedProbeInterval)
-	c.Probe.RatePerSecond = normalizeBoundedInt(c.Probe.RatePerSecond, MaxCodexSpeedProbeRate, MaxCodexSpeedProbeRate)
+	// The negated comparison also sends NaN to the default.
+	if !(c.Probe.PercentPerMinute > 0) {
+		c.Probe.PercentPerMinute = DefaultCodexSpeedProbePercent
+	}
+	c.Probe.PercentPerMinute = min(max(c.Probe.PercentPerMinute, MinCodexSpeedProbePercent), MaxCodexSpeedProbePercent)
 	c.Probe.Model = strings.TrimSpace(c.Probe.Model)
 	if c.Probe.Model == "" {
 		c.Probe.Model = DefaultCodexSpeedProbeModel

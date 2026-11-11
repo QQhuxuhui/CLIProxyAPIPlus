@@ -219,7 +219,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("codex.speed-priority.fast-percent: %d -> %d", oldSpeed.FastPercent, newSpeed.FastPercent))
 	}
 	if oldSpeed.Probe != newSpeed.Probe {
-		changes = append(changes, fmt.Sprintf("codex.speed-priority.probe: %d min %d/s %s -> %d min %d/s %s", oldSpeed.Probe.IntervalMinutes, oldSpeed.Probe.RatePerSecond, oldSpeed.Probe.Model, newSpeed.Probe.IntervalMinutes, newSpeed.Probe.RatePerSecond, newSpeed.Probe.Model))
+		changes = append(changes, fmt.Sprintf("codex.speed-priority.probe: %g%%/min %s -> %g%%/min %s", oldSpeed.Probe.PercentPerMinute, oldSpeed.Probe.Model, newSpeed.Probe.PercentPerMinute, newSpeed.Probe.Model))
 	}
 	oldScore, newScore := oldSpeed, newSpeed
 	oldScore.Enable, oldScore.FastPercent, oldScore.Probe = false, 0, config.CodexSpeedProbeConfig{}

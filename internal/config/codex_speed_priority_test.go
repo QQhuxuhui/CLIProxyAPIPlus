@@ -1,31 +1,82 @@
 package config
 
 import (
+	"math"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexSpeedPriorityNormalizeDefaults(t *testing.T) {
 	var c CodexSpeedPriorityConfig
 	c.Normalize()
 	want := CodexSpeedPriorityConfig{
-		FastPercent: 30, ScoreWindowMinutes: 30, ScoreHalfLifeMinutes: 5, ScoreMinSamples: 3, ScoreOverloadPercent: 30,
-		MaxReasoningTokens: 64, Probe: CodexSpeedProbeConfig{IntervalMinutes: 10, RatePerSecond: 3, Model: "gpt-6-luna"},
+		FastPercent: 30, ScoreWindowMinutes: 30, ScoreHalfLifeMinutes: 5, ScoreMinSamples: 1, ScoreOverloadPercent: 30,
+		MaxReasoningTokens: 64, Probe: CodexSpeedProbeConfig{PercentPerMinute: 1.7, Model: "gpt-6-luna"},
 	}
 	if c != want {
 		t.Fatalf("defaults: %+v", c)
 	}
-	c = CodexSpeedPriorityConfig{FastPercent: 500, ScoreWindowMinutes: 2, Probe: CodexSpeedProbeConfig{IntervalMinutes: 500, RatePerSecond: 20}}
+	c = CodexSpeedPriorityConfig{FastPercent: 500, ScoreWindowMinutes: 2, ScoreMinSamples: 3, Probe: CodexSpeedProbeConfig{PercentPerMinute: 50}}
 	c.Normalize()
-	if c.FastPercent != 90 || c.ScoreWindowMinutes != 5 || c.Probe.IntervalMinutes != 60 || c.Probe.RatePerSecond != 3 {
+	if c.FastPercent != 90 || c.ScoreWindowMinutes != 5 || c.ScoreMinSamples != 3 || c.Probe.PercentPerMinute != 10 {
 		t.Fatalf("clamp: %+v", c)
 	}
-	c = CodexSpeedPriorityConfig{Probe: CodexSpeedProbeConfig{RatePerSecond: 1}}
-	c.Normalize()
-	if c.Probe.RatePerSecond != 1 {
-		t.Fatalf("lower rate must be kept: %+v", c.Probe)
+	for in, want := range map[float64]float64{0.2: 1, 2.5: 2.5, -4: 1.7, math.NaN(): 1.7} {
+		c = CodexSpeedPriorityConfig{Probe: CodexSpeedProbeConfig{PercentPerMinute: in}}
+		c.Normalize()
+		if c.Probe.PercentPerMinute != want {
+			t.Fatalf("percent %v normalized to %v, want %v", in, c.Probe.PercentPerMinute, want)
+		}
+	}
+	if got := (CodexSpeedProbeConfig{PercentPerMinute: 2}).Round(); got != 50*time.Minute {
+		t.Fatalf("round = %v, want 50m", got)
+	}
+	if got := (CodexSpeedProbeConfig{}).Round(); got != 0 {
+		t.Fatalf("round without a percent = %v, want 0", got)
+	}
+}
+
+// Configs written before the percent setting carry an interval and a per-second cap; both are
+// ignored on load and dropped on save, while an explicit sample floor is kept.
+func TestCodexSpeedPriorityDropsIntervalAndRateKeys(t *testing.T) {
+	path := writeConfig(t, `port: 8317
+codex:
+  speed-priority:
+    enable: true
+    score-min-samples: 3
+    probe:
+      model: gpt-6-luna
+      interval-minutes: 10
+      rate-per-second: 3
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Codex.SpeedPriority
+	if got.Probe.PercentPerMinute != 1.7 || got.ScoreMinSamples != 3 {
+		t.Fatalf("loaded: %+v", got)
+	}
+	if err = SaveConfigPreserveComments(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := speedPriorityBlock(string(data))
+	for _, stale := range []string{"interval-minutes", "rate-per-second"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("stale key %q survived save:\n%s", stale, text)
+		}
+	}
+	for _, kept := range []string{"percent-per-minute: 1.7", "score-min-samples: 3"} {
+		if !strings.Contains(text, kept) {
+			t.Fatalf("key %q missing after save:\n%s", kept, text)
+		}
 	}
 }
 
@@ -64,7 +115,7 @@ func TestCodexSpeedPriorityIgnoresV98Keys(t *testing.T) {
 	}
 	got := cfg.Codex.SpeedPriority
 	if !got.Enable || got.FastPercent != 30 || got.ScoreWindowMinutes != 30 || got.ScoreHalfLifeMinutes != 5 ||
-		got.Probe.IntervalMinutes != 10 || got.Probe.RatePerSecond != 3 || got.Probe.Model != "gpt-6-luna" {
+		got.Probe.PercentPerMinute != 1.7 || got.Probe.Model != "gpt-6-luna" {
 		t.Fatalf("v98 keys must not apply: %+v", got)
 	}
 	if err = SaveConfigPreserveComments(path, cfg); err != nil {
@@ -80,7 +131,7 @@ func TestCodexSpeedPriorityIgnoresV98Keys(t *testing.T) {
 			t.Fatalf("stale key %q survived save:\n%s", stale, text)
 		}
 	}
-	for _, kept := range []string{"enable: true", "fast-percent: 30", "interval-minutes: 10", "model: gpt-6-luna"} {
+	for _, kept := range []string{"enable: true", "fast-percent: 30", "percent-per-minute: 1.7", "model: gpt-6-luna"} {
 		if !strings.Contains(text, kept) {
 			t.Fatalf("key %q missing after save:\n%s", kept, text)
 		}

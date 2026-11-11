@@ -34,7 +34,8 @@ func newTestSpeedTracker(t *testing.T, mutate func(*internalconfig.CodexSpeedPri
 	t.Helper()
 	clock := &speedClock{now: time.Date(2026, 11, 3, 6, 10, 0, 0, time.UTC)}
 	tr := NewCodexSpeedTracker(clock.Now)
-	cfg := internalconfig.CodexSpeedPriorityConfig{Enable: true}
+	// The shared fixtures feed three samples per account and treat fewer as "no score yet".
+	cfg := internalconfig.CodexSpeedPriorityConfig{Enable: true, ScoreMinSamples: 3}
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -297,12 +298,12 @@ func TestCodexSpeedUnscoredOverloadedAccountsSortWithPenalized(t *testing.T) {
 	if got := tr.pickRanked([]*Auth{{ID: "storm"}, {ID: "fresh"}}, false); got == nil || got.ID != "fresh" {
 		t.Fatalf("overflow must prefer the healthy unscored account: %v", got)
 	}
-	// Samples older than the 30-minute window leave the demoted account without a score.
+	// Samples older than the sample window leave the demoted account without a score.
 	sh := tr.shard(fast)
 	sh.mu.Lock()
 	acct := sh.accounts[fast]
 	for i := 0; i < acct.count; i++ {
-		acct.samples[i].at = clock.Now().Add(-time.Hour)
+		acct.samples[i].at = clock.Now().Add(-codexSpeedEntryTTL)
 	}
 	sh.mu.Unlock()
 	tr.Recompute(infosOf(all...))
@@ -389,54 +390,139 @@ func TestCodexSpeedSlowGapsDemote(t *testing.T) {
 	}
 }
 
-func TestCodexSpeedProbeWindowCoversSlowCycles(t *testing.T) {
+func TestCodexSpeedSampleWindowFollowsTheRound(t *testing.T) {
 	cfg := internalconfig.CodexSpeedPriorityConfig{}
 	cfg.Normalize()
-	if got := probeWindow(cfg, 0); got != 40*time.Minute {
-		t.Fatalf("10 min interval: %v", got)
+	round := cfg.Probe.Round()
+	if round < 58*time.Minute || round > 59*time.Minute {
+		t.Fatalf("1.7%% per minute is about one round an hour: %v", round)
 	}
-	cfg.Probe.IntervalMinutes = 60
-	if got := probeWindow(cfg, 0); got != 240*time.Minute {
-		t.Fatalf("60 min interval: %v", got)
+	if got := sampleWindow(cfg, 0); got != 2*round {
+		t.Fatalf("one sample floor keeps samples for two rounds: %v", got)
 	}
-	cfg.Probe.IntervalMinutes = 10
-	if got := probeWindow(cfg, 32*time.Minute); got != 128*time.Minute {
+	cfg.ScoreMinSamples = 3
+	if got := sampleWindow(cfg, 0); got != 4*round {
+		t.Fatalf("three sample floor keeps samples for four rounds: %v", got)
+	}
+	if got := sampleWindow(cfg, 3*time.Hour); got != 12*time.Hour {
 		t.Fatalf("a slow cycle must widen the window: %v", got)
 	}
-	tr, _ := newTestSpeedTracker(t, func(c *internalconfig.CodexSpeedPriorityConfig) { c.Probe.RatePerSecond = 1 })
-	if got := tr.probeCycle(tr.config(), 1900); got < 31*time.Minute {
-		t.Fatalf("1900 accounts at 1/s take over 31 minutes: %v", got)
+	cfg.ScoreMinSamples, cfg.Probe.PercentPerMinute = 1, 10
+	if got := sampleWindow(cfg, 0); got != 30*time.Minute {
+		t.Fatalf("the score window is the floor: %v", got)
 	}
 }
 
-// Without user traffic, probes alone give a score at a 10 and a 60 minute interval, and with
-// 1900 accounts at 1/s the widened window still keeps three probe samples.
+func TestCodexSpeedProbeRateScalesWithThePool(t *testing.T) {
+	cfg := internalconfig.CodexSpeedPriorityConfig{}
+	cfg.Normalize()
+	if got := CodexSpeedProbeRate(23000, cfg); got < 6.5 || got > 6.53 {
+		t.Fatalf("23000 accounts at 1.7%%: %v/s", got)
+	}
+	if got := CodexSpeedProbeRate(0, cfg); got != 0 {
+		t.Fatalf("an empty pool needs no probes: %v", got)
+	}
+	for rate, want := range map[float64]int{0.01: 32, 6.52: 196, 38.34: 1151, 500: 2048} {
+		if got := CodexSpeedProbeInFlightLimit(rate); got != want {
+			t.Fatalf("in-flight limit at %v/s = %d, want %d", rate, got, want)
+		}
+	}
+	tr, _ := newTestSpeedTracker(t, nil)
+	rate := CodexSpeedProbeRate(23000, tr.config())
+	if got := tr.probeCycle(rate, 23000); got != tr.config().Probe.Round() {
+		t.Fatalf("a full round at the target rate takes the target round: %v", got)
+	}
+	if got := tr.probeCycle(0, 23000); got != 0 {
+		t.Fatalf("no rate, no cycle: %v", got)
+	}
+}
+
+// Slow probes hold their in-flight slots long enough to cap the rate; the snapshot reports it.
+func TestCodexSpeedProbeBehindWhenInFlightLimitBinds(t *testing.T) {
+	ids := make([]string, 23000)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("acct-%05d", i)
+	}
+	infos := infosOf(ids...)
+	tr, _ := newTestSpeedTracker(t, nil)
+	tr.ObserveProbe(CodexSpeedProbeResult{AuthID: ids[0], Success: true, Gap: time.Second, Duration: 10 * time.Second})
+	tr.Recompute(infos)
+	snap := tr.Snapshot()
+	if snap.ProbeBehind || snap.ProbePercentPerMinute != 1.7 || snap.ProbeRatePerSecond < 6.5 || snap.ProbeRoundMinutes < 58 {
+		t.Fatalf("10s probes keep up: %+v behind=%v", snap.ProbeCycleMinutes, snap.ProbeBehind)
+	}
+	slow, _ := newTestSpeedTracker(t, nil)
+	slow.ObserveProbe(CodexSpeedProbeResult{AuthID: ids[0], Success: true, Gap: time.Second, Duration: 2 * time.Minute})
+	slow.Recompute(infos)
+	if snap = slow.Snapshot(); !snap.ProbeBehind || snap.ProbeCycleMinutes < 200 {
+		t.Fatalf("2 minute probes cannot keep up: cycle=%v behind=%v", snap.ProbeCycleMinutes, snap.ProbeBehind)
+	}
+}
+
+// Without user traffic, probes alone give a score: after one probe with the default floor and
+// after three probes, one per round, with a floor of three.
 func TestCodexSpeedProbesAloneScoreAnAccount(t *testing.T) {
 	for _, tc := range []struct {
-		interval, rate, accounts int
-	}{{10, 3, 1}, {60, 3, 1}, {10, 1, 1900}} {
+		percent float64
+		floor   int
+	}{{1.7, 1}, {1.7, 3}, {10, 3}} {
 		tr, clock := newTestSpeedTracker(t, func(c *internalconfig.CodexSpeedPriorityConfig) {
-			c.Probe.IntervalMinutes, c.Probe.RatePerSecond = tc.interval, tc.rate
+			c.Probe.PercentPerMinute, c.ScoreMinSamples = tc.percent, tc.floor
 		})
-		ids := make([]string, tc.accounts)
-		for i := range ids {
-			ids[i] = fmt.Sprintf("idle-%04d", i)
-		}
-		cycle := tr.probeCycle(tr.config(), tc.accounts)
-		step := max(time.Duration(tc.interval)*time.Minute, cycle) + time.Minute
-		for round := 0; round < 3; round++ {
-			if !tr.ReserveProbe(ids[0]) {
-				t.Fatalf("%+v: probe %d must be due", tc, round)
+		infos := infosOf("idle")
+		for probe := 0; probe < tc.floor; probe++ {
+			if probe > 0 {
+				if tr.ReserveProbe("idle") {
+					t.Fatalf("%+v: a probe inside the round must be refused", tc)
+				}
+				clock.Advance(tr.config().Probe.Round())
 			}
-			tr.ObserveProbe(CodexSpeedProbeResult{AuthID: ids[0], Success: true, Gap: 800 * time.Millisecond})
-			if round < 2 {
-				clock.Advance(step)
+			if !tr.ReserveProbe("idle") {
+				t.Fatalf("%+v: probe %d must be due", tc, probe)
 			}
-			tr.Recompute(infosOf(ids...))
+			tr.ObserveProbe(CodexSpeedProbeResult{AuthID: "idle", Success: true, Gap: 800 * time.Millisecond})
+			tr.Recompute(infos)
+			_, scored := tr.view.Load().score["idle"]
+			if want := probe == tc.floor-1; scored != want {
+				t.Fatalf("%+v: after probe %d scored=%v, want %v", tc, probe, scored, want)
+			}
 		}
-		if _, ok := tr.view.Load().score[ids[0]]; !ok {
-			t.Fatalf("%+v: three probes must give a score", tc)
-		}
+	}
+}
+
+// A sample from a real request counts like a probe sample: it lasts as long, and the account
+// is not probed again until a round has passed.
+func TestCodexSpeedRealTrafficReplacesProbes(t *testing.T) {
+	tr, clock := newTestSpeedTracker(t, func(c *internalconfig.CodexSpeedPriorityConfig) { c.ScoreMinSamples = 1 })
+	infos := infosOf("busy", "idle")
+	feed(tr, "busy", 1, 900*time.Millisecond)
+	tr.Recompute(infos)
+	if _, ok := tr.view.Load().score["busy"]; !ok {
+		t.Fatal("one real sample must give a score")
+	}
+	if got := tr.ProbeCandidates(infos, 10); len(got) != 1 || got[0] != "idle" {
+		t.Fatalf("an account measured by real traffic is not a probe candidate: %v", got)
+	}
+	if tr.ReserveProbe("busy") {
+		t.Fatal("a probe of a freshly measured account must be refused")
+	}
+	// A large request leaves no sample, so it does not postpone the probe either.
+	tr.ObserveAttempt(CodexSpeedAttempt{AuthID: "idle", Success: true, Gap: time.Second, InputTokens: codexSpeedSmallInputTokens})
+	if got := tr.ProbeCandidates(infos, 10); len(got) != 1 || got[0] != "idle" {
+		t.Fatalf("a request without a sample must not hide the account: %v", got)
+	}
+	clock.Advance(90 * time.Minute)
+	tr.Recompute(infos)
+	if _, ok := tr.view.Load().score["busy"]; !ok {
+		t.Fatal("a real sample stays valid past the old 30 minute window")
+	}
+	if got := tr.ProbeCandidates(infos, 10); len(got) != 2 || got[0] != "idle" || got[1] != "busy" {
+		t.Fatalf("after a round the account is due again, behind the unscored one: %v", got)
+	}
+	clock.Advance(time.Hour)
+	tr.Recompute(infos)
+	if _, ok := tr.view.Load().score["busy"]; ok {
+		t.Fatal("the sample must expire after two rounds")
 	}
 }
 
@@ -444,8 +530,12 @@ func TestCodexSpeedProbeCandidatesSkipFastAndPreferUnscored(t *testing.T) {
 	tr, clock := newTestSpeedTracker(t, nil)
 	ids := rankPool(tr, "acct", 30)
 	infos := append(infosOf(ids...), CodexSpeedAuthInfo{ID: "new", Schedulable: true, QuotaUsed: 5})
+	if got := tr.ProbeCandidates(infos, 100); len(got) != 1 || got[0] != "new" {
+		t.Fatalf("freshly measured accounts wait a round; only the new one is due: %v", got)
+	}
+	clock.Advance(tr.config().Probe.Round())
 	got := tr.ProbeCandidates(infos, 100)
-	if len(got) == 0 || got[0] != "new" {
+	if len(got) < 2 || got[0] != "new" {
 		t.Fatalf("unscored accounts go first: %v", got)
 	}
 	for _, id := range got {

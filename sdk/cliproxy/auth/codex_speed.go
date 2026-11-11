@@ -43,9 +43,29 @@ const (
 	codexSpeedDemoteStreak = 2
 	// codexSpeedBandPoints is the hysteresis band around the fast-group cut, in percent points.
 	codexSpeedBandPoints = 5.0
-	// CodexSpeedMaxProbesInFlight bounds concurrent probes; it also caps the effective probe rate.
-	CodexSpeedMaxProbesInFlight = 32
+	// codexSpeedDemoteCooldown is how long an instantly demoted account stays out of the fast group.
+	codexSpeedDemoteCooldown = 10 * time.Minute
+	// Concurrent probes are bounded by the target rate times codexSpeedProbeHoldSeconds, within
+	// these limits; the bound also caps the effective probe rate.
+	codexSpeedProbeHoldSeconds  = 30
+	codexSpeedMinProbesInFlight = 32
+	codexSpeedMaxProbesInFlight = 2048
 )
+
+// CodexSpeedProbeRate is the target probe starts per second for a pool of schedulable accounts.
+func CodexSpeedProbeRate(schedulable int, cfg internalconfig.CodexSpeedPriorityConfig) float64 {
+	if schedulable <= 0 || !(cfg.Probe.PercentPerMinute > 0) {
+		return 0
+	}
+	return float64(schedulable) * cfg.Probe.PercentPerMinute / 100 / 60
+}
+
+// CodexSpeedProbeInFlightLimit bounds concurrent probes for a target rate, so the bound grows
+// with the pool instead of throttling a large one.
+func CodexSpeedProbeInFlightLimit(ratePerSecond float64) int {
+	limit := int(math.Ceil(ratePerSecond * codexSpeedProbeHoldSeconds))
+	return min(max(limit, codexSpeedMinProbesInFlight), codexSpeedMaxProbesInFlight)
+}
 
 // CodexSpeedAttempt is one finished upstream Codex attempt as seen by usage reporting. Group is
 // the account's group when the attempt started ("" excludes it from every speed statistic).
@@ -96,14 +116,16 @@ type codexSpeedSample struct {
 }
 
 type codexSpeedAccount struct {
-	samples        [codexSpeedRingSize]codexSpeedSample
-	count          int
-	next           int
-	okWeight       float64
-	ovWeight       float64
-	decayAt        time.Time
-	lastSeen       time.Time
-	lastProbe      time.Time
+	samples   [codexSpeedRingSize]codexSpeedSample
+	count     int
+	next      int
+	okWeight  float64
+	ovWeight  float64
+	decayAt   time.Time
+	lastSeen  time.Time
+	lastProbe time.Time
+	// lastPassive is the last real request that produced a sample.
+	lastPassive    time.Time
 	probing        bool
 	overloadStreak int
 	recentGaps     [codexSpeedRecentGaps]time.Duration
@@ -150,6 +172,8 @@ type codexSpeedView struct {
 	binIDs [][]string
 	// probeCycle is the time one probe round over the non-fast accounts takes at the effective rate.
 	probeCycle time.Duration
+	// probeRate is the target probe starts per second for this view's pool size.
+	probeRate float64
 }
 
 func emptyCodexSpeedView() *codexSpeedView {
@@ -308,6 +332,9 @@ func (t *CodexSpeedTracker) observeLocked(a *codexSpeedAccount, id string, succe
 		a.overloadStreak = 0
 		if sample && gap > 0 {
 			a.addSampleLocked(codexSpeedSample{at: now, gap: gap, probe: probe})
+			if !probe {
+				a.lastPassive = now
+			}
 		}
 	default:
 		return
@@ -323,7 +350,7 @@ func (t *CodexSpeedTracker) observeLocked(a *codexSpeedAccount, id string, succe
 	if a.overloadStreak < codexSpeedDemoteStreak && !slowGaps {
 		return
 	}
-	a.demotedUntil = now.Add(time.Duration(cfg.Probe.IntervalMinutes) * time.Minute)
+	a.demotedUntil = now.Add(codexSpeedDemoteCooldown)
 	t.demoted.Store(id, a.demotedUntil)
 	a.overloadStreak, a.recentN = 0, 0
 	t.stats.countDemotion(now)
@@ -382,8 +409,14 @@ func (t *CodexSpeedTracker) ObserveProbe(res CodexSpeedProbeResult) {
 	t.stats.countProbe(now)
 }
 
+// measuredWithinLocked reports whether the account was probed or measured by a real request
+// within the last round, so it does not need a probe yet.
+func (a *codexSpeedAccount) measuredWithinLocked(now time.Time, round time.Duration) bool {
+	return (!a.lastProbe.IsZero() && now.Sub(a.lastProbe) < round) || (!a.lastPassive.IsZero() && now.Sub(a.lastPassive) < round)
+}
+
 // ReserveProbe marks an account as probing before the network call; it fails when the account
-// is already being probed or was probed within the configured interval.
+// is already being probed, or was probed or measured by a real request within the last round.
 func (t *CodexSpeedTracker) ReserveProbe(authID string) bool {
 	if t == nil || authID == "" {
 		return false
@@ -394,8 +427,7 @@ func (t *CodexSpeedTracker) ReserveProbe(authID string) bool {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	a := t.account(sh, authID, now)
-	interval := time.Duration(cfg.Probe.IntervalMinutes) * time.Minute
-	if a.probing || (!a.lastProbe.IsZero() && now.Sub(a.lastProbe) < interval) {
+	if a.probing || a.measuredWithinLocked(now, cfg.Probe.Round()) {
 		return false
 	}
 	a.probing = true
@@ -428,17 +460,16 @@ func (t *CodexSpeedTracker) LastProbe(authID string) time.Time {
 	return time.Time{}
 }
 
-// probeWindow is how long a probe sample stays valid: long enough for min samples even when one
-// probe round takes longer than the configured interval.
-func probeWindow(cfg internalconfig.CodexSpeedPriorityConfig, cycle time.Duration) time.Duration {
-	interval := max(time.Duration(cfg.Probe.IntervalMinutes)*time.Minute, cycle)
-	return max(time.Duration(cfg.ScoreWindowMinutes)*time.Minute, time.Duration(cfg.ScoreMinSamples+1)*interval)
+// sampleWindow is how long a sample stays valid, whether it came from a probe or a real request:
+// long enough for min samples even when one probe round takes longer than its target.
+func sampleWindow(cfg internalconfig.CodexSpeedPriorityConfig, cycle time.Duration) time.Duration {
+	round := max(cfg.Probe.Round(), cycle)
+	return max(time.Duration(cfg.ScoreWindowMinutes)*time.Minute, time.Duration(cfg.ScoreMinSamples+1)*round)
 }
 
 // scoreLocked is the decay-weighted median gap of the valid samples; ok is false with fewer
 // than the minimum samples.
-func (a *codexSpeedAccount) scoreLocked(cfg internalconfig.CodexSpeedPriorityConfig, now time.Time, probeValid time.Duration) (time.Duration, bool) {
-	passive := time.Duration(cfg.ScoreWindowMinutes) * time.Minute
+func (a *codexSpeedAccount) scoreLocked(cfg internalconfig.CodexSpeedPriorityConfig, now time.Time, window time.Duration) (time.Duration, bool) {
 	halfLife := halfLifeOf(cfg)
 	type weighted struct {
 		gap time.Duration
@@ -447,10 +478,6 @@ func (a *codexSpeedAccount) scoreLocked(cfg internalconfig.CodexSpeedPriorityCon
 	var valid []weighted
 	for i := 0; i < a.count; i++ {
 		s := a.samples[i]
-		window := passive
-		if s.probe {
-			window = probeValid
-		}
 		age := now.Sub(s.at)
 		if age < 0 || age > window {
 			continue
@@ -521,7 +548,7 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 	cfg := t.config()
 	now := t.now()
 	prev := t.view.Load()
-	probeValid := probeWindow(cfg, prev.probeCycle)
+	window := sampleWindow(cfg, prev.probeCycle)
 	halfLife := halfLifeOf(cfg)
 	schedulable := make(map[string]CodexSpeedAuthInfo, len(infos))
 	for _, info := range infos {
@@ -553,7 +580,7 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 			if penalized {
 				view.penalized[id] = true
 			}
-			score, ok := a.scoreLocked(cfg, now, probeValid)
+			score, ok := a.scoreLocked(cfg, now, window)
 			if !ok {
 				continue
 			}
@@ -605,7 +632,8 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 	}
 	view.fastUtil, view.slowUtil = fastUtil.value(), slowUtil.value()
 	view.bins, view.binIDs = codexSpeedBins(schedulable, view)
-	view.probeCycle = t.probeCycle(cfg, view.total-view.fastCount)
+	view.probeRate = CodexSpeedProbeRate(view.total, cfg)
+	view.probeCycle = t.probeCycle(view.probeRate, view.total-view.fastCount)
 
 	var toSlow, toFast int64
 	if prev.ready {
@@ -630,17 +658,17 @@ func (t *CodexSpeedTracker) Recompute(infos []CodexSpeedAuthInfo) {
 	t.stats.sampleMinute(now, cfg, t.Active(), view, toSlow, toFast)
 }
 
-// probeCycle estimates one probe round over n accounts at the effective probe rate.
-func (t *CodexSpeedTracker) probeCycle(cfg internalconfig.CodexSpeedPriorityConfig, n int) time.Duration {
+// probeCycle estimates one probe round over n accounts: the target rate, lowered when probes
+// take so long that the in-flight bound limits them.
+func (t *CodexSpeedTracker) probeCycle(rate float64, n int) time.Duration {
 	if n <= 0 {
 		return 0
 	}
-	rate := float64(cfg.Probe.RatePerSecond)
 	t.probeDurMu.Lock()
 	dur := t.probeDur
 	t.probeDurMu.Unlock()
 	if dur > 0 {
-		rate = min(rate, float64(CodexSpeedMaxProbesInFlight)/dur.Seconds())
+		rate = min(rate, float64(CodexSpeedProbeInFlightLimit(rate))/dur.Seconds())
 	}
 	if rate <= 0 {
 		return 0
@@ -769,8 +797,9 @@ func (t *CodexSpeedTracker) pickRanked(auths []*Auth, fastOnly bool) *Auth {
 }
 
 // ProbeCandidates returns up to limit schedulable accounts outside the effective fast group that
-// are due for a probe: unscored ones first (never probed ordered by quota used ascending), then
-// by last probe time.
+// are due for a probe, skipping accounts probed or measured by a real request within the last
+// round: unscored ones first (never measured ordered by quota used ascending), then by the last
+// measurement, oldest first.
 func (t *CodexSpeedTracker) ProbeCandidates(infos []CodexSpeedAuthInfo, limit int) []string {
 	if t == nil || limit <= 0 {
 		return nil
@@ -778,7 +807,7 @@ func (t *CodexSpeedTracker) ProbeCandidates(infos []CodexSpeedAuthInfo, limit in
 	cfg := t.config()
 	now := t.now()
 	view := t.view.Load()
-	interval := time.Duration(cfg.Probe.IntervalMinutes) * time.Minute
+	round := cfg.Probe.Round()
 	type cand struct {
 		id        string
 		scored    bool
@@ -796,7 +825,10 @@ func (t *CodexSpeedTracker) ProbeCandidates(infos []CodexSpeedAuthInfo, limit in
 		need, last := true, time.Time{}
 		if a != nil {
 			last = a.lastProbe
-			need = !a.probing && (a.lastProbe.IsZero() || now.Sub(a.lastProbe) >= interval)
+			if a.lastPassive.After(last) {
+				last = a.lastPassive
+			}
+			need = !a.probing && !a.measuredWithinLocked(now, round)
 		}
 		sh.mu.Unlock()
 		if !need {

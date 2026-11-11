@@ -40,10 +40,10 @@ func TestCodexSpeedRestoredSamplesStillExpire(t *testing.T) {
 	ids := rankPool(old, "acct", 40)
 	snap := old.ExportSamples()
 
-	// Passive samples are valid for the 30-minute score window only.
-	clock.Advance(31 * time.Minute)
+	// Restored samples keep their timestamps, so they still leave the sample window.
+	clock.Advance(sampleWindow(old.config(), 0) + time.Minute)
 	fresh := NewCodexSpeedTracker(clock.Now)
-	fresh.SetConfig(internalconfig.CodexSpeedPriorityConfig{Enable: true}, true, true)
+	fresh.SetConfig(old.config(), true, true)
 	fresh.ImportSamples(snap)
 	fresh.Recompute(infosOf(ids...))
 	if scored := fresh.view.Load().scored; scored != 0 {
@@ -63,29 +63,28 @@ func TestCodexSpeedRestoredProbeSamplesUseSavedCycle(t *testing.T) {
 	for i := range ids {
 		ids[i] = fmt.Sprintf("probe-%03d", i)
 	}
-	// Three probe rounds two hours apart, as on a pool too large for the probe interval.
+	// Three probe rounds four hours apart, as when slow probes keep rounds far over the target.
 	for round := 0; round < 3; round++ {
 		for i, id := range ids {
 			old.ObserveProbe(CodexSpeedProbeResult{AuthID: id, Success: true, Gap: time.Duration(i+1) * time.Second})
 		}
-		clock.Advance(2 * time.Hour)
+		clock.Advance(4 * time.Hour)
 	}
 	snap := old.ExportSamples()
-	snap.ProbeCycle = 2 * time.Hour
 	if len(snap.Accounts) != 0 {
 		t.Fatalf("without a known cycle the old probes must not export, got %d", len(snap.Accounts))
 	}
 
 	seeded := emptyCodexSpeedView()
-	seeded.probeCycle = 2 * time.Hour
+	seeded.probeCycle = 4 * time.Hour
 	old.view.Store(seeded)
 	snap = old.ExportSamples()
-	if len(snap.Accounts) != 30 || snap.ProbeCycle != 2*time.Hour {
+	if len(snap.Accounts) != 30 || snap.ProbeCycle != 4*time.Hour {
 		t.Fatalf("exported %d accounts, cycle %v", len(snap.Accounts), snap.ProbeCycle)
 	}
 
 	fresh := NewCodexSpeedTracker(clock.Now)
-	fresh.SetConfig(internalconfig.CodexSpeedPriorityConfig{Enable: true}, true, true)
+	fresh.SetConfig(old.config(), true, true)
 	fresh.ImportSamples(snap)
 	fresh.Recompute(infosOf(ids...))
 	if scored := fresh.view.Load().scored; scored != 30 {
@@ -93,5 +92,41 @@ func TestCodexSpeedRestoredProbeSamplesUseSavedCycle(t *testing.T) {
 	}
 	if last := fresh.LastProbe(ids[0]); !last.IsZero() {
 		t.Fatalf("unreserved probes must not invent a last probe time, got %v", last)
+	}
+}
+
+// A high sample floor keeps samples valid for longer than a day; a restart must not cut them.
+func TestCodexSpeedRestoreKeepsSamplesOlderThanADay(t *testing.T) {
+	old, clock := newTestSpeedTracker(t, func(c *internalconfig.CodexSpeedPriorityConfig) { c.ScoreMinSamples = 32 })
+	round := old.config().Probe.Round()
+	for probe := 0; probe < 32; probe++ {
+		if probe > 0 {
+			clock.Advance(round)
+		}
+		old.ObserveProbe(CodexSpeedProbeResult{AuthID: "patient", Success: true, Gap: time.Second})
+	}
+	if age := 31 * round; age <= codexSpeedEntryTTL {
+		t.Fatalf("setup: the oldest sample must be over a day old, is %v", age)
+	}
+	fresh := NewCodexSpeedTracker(clock.Now)
+	fresh.SetConfig(old.config(), true, true)
+	if got := fresh.ImportSamples(old.ExportSamples()); got != 1 {
+		t.Fatalf("restored %d accounts, want 1", got)
+	}
+	fresh.Recompute(infosOf("patient"))
+	if _, ok := fresh.view.Load().score["patient"]; !ok {
+		t.Fatal("all 32 samples must survive the restart")
+	}
+}
+
+func TestCodexSpeedRestoreRemembersRealTraffic(t *testing.T) {
+	old, clock := newTestSpeedTracker(t, func(c *internalconfig.CodexSpeedPriorityConfig) { c.ScoreMinSamples = 1 })
+	feed(old, "busy", 1, time.Second)
+	clock.Advance(10 * time.Minute)
+	fresh := NewCodexSpeedTracker(clock.Now)
+	fresh.SetConfig(old.config(), true, true)
+	fresh.ImportSamples(old.ExportSamples())
+	if fresh.ReserveProbe("busy") {
+		t.Fatal("an account measured by real traffic before the restart must not be probed in the same round")
 	}
 }

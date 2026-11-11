@@ -1005,9 +1005,10 @@
           <div class="pool-switches"><label><input id="speed-sp-enable" type="checkbox"> 启用快号优先（需要 Codex 分池）</label></div>
           <div class="pool-fields">
             <label>快组比例（%）<input id="speed-sp-fast-percent" type="number" min="1" max="90" step="1" required data-tip="有测速分数的账号里，按速度排名的前 X% 进入快组（没分数的号不计入）；也可以在快慢池图上拖动竖线"></label>
-            <label>慢号探测间隔（分钟）<input id="speed-sp-probe-interval" type="number" min="1" max="60" step="1" required data-tip="快组以外的账号多久探测一次，用来发现恢复变快的账号"></label>
+            <label>每分钟探测比例（%）<input id="speed-sp-probe-percent" type="number" min="1" max="10" step="0.1" required data-tip="每分钟探测可调度账号的这个比例，探测量随账号数量变化；1.7% 约一小时轮完一遍。快组和刚被真实请求测过的号不探测"></label>
             <button id="speed-sp-save" class="rounded-lg bg-indigo-600 text-white px-3 py-1.5" type="submit" disabled>保存设置</button>
           </div>
+          <p id="speed-sp-probe-plan" class="pv-note" aria-live="polite"></p>
           <p id="speed-sp-status" class="text-xs text-slate-500" role="status" aria-live="polite">加载中…</p>
         </form>
         <form id="quota-settings" class="pool-settings pv-group">
@@ -2822,6 +2823,15 @@
       if (caveat) return head + '。限制用户的不是容量，是' + caveat.cause + '：近 5 分钟成功率只有 ' + (100 * caveat.rate).toFixed(1) + '%。';
       return head + (r < 50 && (conc == null || conc < 50) ? '，号池容量还很空。' : '，已经接近上限，考虑加号。');
     },
+    // probePlan turns the probe share into what it costs for the current pool: probe starts per
+    // second and the minutes one round takes. An out-of-range share has no plan.
+    probePlan: function (total, percent) {
+      var p = Number(percent), n = Math.max(0, Number(total) || 0);
+      if (!isFinite(p) || p < 1 || p > 10) return {perSecond: null, roundMinutes: null, text: '比例需在 1% 到 10% 之间'};
+      var perSecond = n * p / 100 / 60, round = 100 / p;
+      var rate = perSecond >= 10 ? Math.round(perSecond) : perSecond >= 1 ? perSecond.toFixed(1) : perSecond > 0 ? perSecond.toFixed(2) : '0';
+      return {perSecond: perSecond, roundMinutes: round, text: '按当前 ' + this.num(n) + ' 个可调度账号：约每秒 ' + rate + ' 个，一轮约 ' + Math.round(round) + ' 分钟'};
+    },
     // boardOption draws the speed stairs, the fast-member strip and the capacity tanks on one shared cut.
     boardOption: function (sp, cut, width) {
       var self = this, live = (sp && sp.live) || {}, bins = live.bins || [], total = live.total || 0, max = this.BOARD_MAX_S;
@@ -2971,7 +2981,7 @@
   function renderSpeedPriority(sp) {
     if (!sp) return;
     if (!speedState.spDirty && !speedState.spSaving) {
-      speedEl('sp-enable').checked=sp.config.enable;speedEl('sp-fast-percent').value=sp.config.fast_percent;speedEl('sp-probe-interval').value=sp.config.probe_interval_minutes;
+      speedEl('sp-enable').checked=sp.config.enable;speedEl('sp-fast-percent').value=sp.config.fast_percent;speedEl('sp-probe-percent').value=sp.config.probe_percent_per_minute;
     }
     speedEl('sp-save').disabled=speedState.spSaving;
     var live=sp.live||{}, answer=PoolViewLogic.speedAnswer(sp);
@@ -2979,7 +2989,8 @@
     speedEl('sp-state').innerHTML='<b>'+escapeHtml(answer.state)+'</b><span>'+escapeHtml(SpeedViewLogic.statusText(sp))+'</span>';
     renderSpeedActive(!!live.active);
     speedEl('sp-bucket-note').innerHTML='共 <b>'+PoolViewLogic.num(live.total||0)+'</b> 个可调度账号，其中有测速分数 <b>'+PoolViewLogic.num(live.scored||0)+'</b> 个；快组比例只按有分数的账号算，竖线是目标位置。现在快组实际 <b>'+PoolViewLogic.num(live.fast||0)+'</b> 个（过载或刚降级的号会被跳过，分界附近还有缓冲，所以实际成员可能越过竖线，也可能比目标少）· 最近 1 分钟快组 <b>'+PoolViewLogic.pct(live.fast_used_share)+'</b> 的号被用过，慢组 <b>'+PoolViewLogic.pct(live.slow_used_share)+'</b>（含测速）· 本小时探测慢号 <b>'+PoolViewLogic.num(live.probes||0)+'</b> 次'+
-      (live.probe_cycle_minutes?'，一轮约 '+Math.round(live.probe_cycle_minutes)+' 分钟（设定 '+(live.probe_interval_minutes||sp.config.probe_interval_minutes)+' 分钟，'+(live.probe_behind?'<span class="speed-warn">排不过来</span>':'排得过来')+'）':'');
+      (live.probe_cycle_minutes?'，一轮约 '+Math.round(live.probe_cycle_minutes)+' 分钟（目标 '+Math.round(live.probe_round_minutes||0)+' 分钟，'+(live.probe_behind?'<span class="speed-warn">排不过来</span>':'排得过来')+'）':'');
+    syncProbePlan();
     var cliff=PoolViewLogic.cliff(live.bins,live.active && live.ready,live.scored||0,live.total||0);
     speedState.cliff=cliff;
     speedEl('sp-cliff').disabled=cliff.percent==null;
@@ -2998,7 +3009,12 @@
     if (speedState.active!==active) {speedState.active=active;speedEl('board-more').open=active;}
   }
   function speedFastPercentInput() {return SpeedViewLogic.snapPercent(speedEl('sp-fast-percent').value);}
-  function speedPriorityForm() {return [speedEl('sp-enable').checked,speedEl('sp-fast-percent').value,speedEl('sp-probe-interval').value];}
+  function speedPriorityForm() {return [speedEl('sp-enable').checked,speedEl('sp-fast-percent').value,speedEl('sp-probe-percent').value];}
+  // syncProbePlan shows what the probe share in the form means for the current pool size.
+  function syncProbePlan() {
+    var sp=speedState.data && speedState.data.speed;
+    speedEl('sp-probe-plan').textContent=sp?PoolViewLogic.probePlan((sp.live||{}).total,speedEl('sp-probe-percent').value).text:'';
+  }
   // syncSpeedCut mirrors the pending fast percent onto the slider, number box, readout and board.
   function syncSpeedCut() {
     var sp=speedState.data && speedState.data.speed;if(!sp) return;
@@ -3029,7 +3045,7 @@
     event.preventDefault();
     var key=getStoredKey();if(!key || speedState.spSaving || !speedEl('sp-config').reportValidity()) return;
     speedState.spSaving=true;speedEl('sp-save').disabled=true;speedSpStatus('保存中…',false);syncSpeedCut();
-    var body={speed_priority:{enable:speedEl('sp-enable').checked,fast_percent:speedFastPercentInput(),probe_interval_minutes:Number(speedEl('sp-probe-interval').value)}};
+    var body={speed_priority:{enable:speedEl('sp-enable').checked,fast_percent:speedFastPercentInput(),probe_percent_per_minute:Number(speedEl('sp-probe-percent').value)}};
     var sent=JSON.stringify(speedPriorityForm());
     fetch('/v0/management/codex-speed/config',{method:'PUT',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(resp){if(resp.ok)return;return readError(resp).then(function(message){throw new Error(message || 'HTTP '+resp.status);});})
@@ -3429,7 +3445,7 @@
   speedEl('fs-config').addEventListener('submit',saveSpeedFastSession);
   speedEl('fs-config').addEventListener('input',function(){speedState.dirty=true;speedStatus('有未保存的修改',false);});
   speedEl('sp-config').addEventListener('submit',saveSpeedPriority);
-  speedEl('sp-config').addEventListener('input',function(){speedState.spDirty=true;speedSpStatus('有未保存的修改',false);syncSpeedCut();});
+  speedEl('sp-config').addEventListener('input',function(){speedState.spDirty=true;speedSpStatus('有未保存的修改',false);syncSpeedCut();syncProbePlan();});
   speedEl('sp-cut-range').addEventListener('input',function(){setSpeedCut(this.value);});
   speedEl('sp-cut-num').addEventListener('change',function(){setSpeedCut(this.value);});
   speedEl('sp-cliff').addEventListener('click',function(){if(speedState.cliff && speedState.cliff.percent!=null)setSpeedCut(speedState.cliff.percent);});

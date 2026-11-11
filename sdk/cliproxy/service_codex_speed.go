@@ -36,6 +36,8 @@ type codexSpeedService struct {
 
 	// ticks counts maintenance rounds; only the ticker goroutine touches it.
 	ticks int
+	// probeTokens is the accumulated probe budget; only the prober goroutine touches it.
+	probeTokens float64
 
 	inflight atomic.Int64
 	// acquire and launch are the probe admission and start hooks; tests replace them.
@@ -171,33 +173,64 @@ func (c *codexSpeedService) rollHours(now time.Time) {
 	}
 }
 
-// runProber sends up to probe.rate-per-second probes each second while speed priority is active.
+// runProber probes the configured share of the pool each minute while speed priority is active.
 func (c *codexSpeedService) runProber(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	last := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
+		now := time.Now()
+		elapsed := now.Sub(last)
+		last = now
 		if !c.tracker.Active() || c.s.coreManager == nil {
+			c.probeTokens = 0
 			continue
 		}
 		speedCfg := c.s.currentConfig().Codex.SpeedPriority
 		speedCfg.Normalize()
-		c.infosMu.Lock()
-		infos := c.infos
-		c.infosMu.Unlock()
-		c.probeRound(ctx, infos, speedCfg.Probe.RatePerSecond, speedCfg.Probe.Model)
+		c.probeStep(ctx, elapsed, speedCfg)
 	}
 }
 
-// probeRound starts up to maxPerSecond probes, walking the whole candidate order until the
-// budget, the in-flight cap or the candidates run out. A failed admission restores the
-// reservation and spends no budget. It returns the number of probes started.
-func (c *codexSpeedService) probeRound(ctx context.Context, infos []coreauth.CodexSpeedAuthInfo, maxPerSecond int, model string) int {
-	budget := min(maxPerSecond, coreauth.CodexSpeedMaxProbesInFlight-int(c.inflight.Load()))
+// probeStep adds the probe budget earned over elapsed and starts as many probes as it covers.
+// The rate is a share of the schedulable accounts, so the budget is fractional: it accumulates
+// across steps, and is capped at about one second's worth so a stall never ends in a burst.
+// It returns the number of probes started.
+func (c *codexSpeedService) probeStep(ctx context.Context, elapsed time.Duration, speedCfg internalconfig.CodexSpeedPriorityConfig) int {
+	c.infosMu.Lock()
+	infos := c.infos
+	c.infosMu.Unlock()
+	schedulable := 0
+	for i := range infos {
+		if infos[i].Schedulable {
+			schedulable++
+		}
+	}
+	rate := coreauth.CodexSpeedProbeRate(schedulable, speedCfg)
+	if rate <= 0 {
+		c.probeTokens = 0
+		return 0
+	}
+	c.probeTokens = min(c.probeTokens+rate*elapsed.Seconds(), max(1, rate))
+	budget := int(c.probeTokens)
+	if budget <= 0 {
+		return 0
+	}
+	started := c.probeRound(ctx, infos, budget, coreauth.CodexSpeedProbeInFlightLimit(rate), speedCfg.Probe.Model)
+	c.probeTokens -= float64(started)
+	return started
+}
+
+// probeRound starts up to budget probes, walking the whole candidate order until the budget,
+// the in-flight limit or the candidates run out. A failed admission restores the reservation
+// and spends no budget. It returns the number of probes started.
+func (c *codexSpeedService) probeRound(ctx context.Context, infos []coreauth.CodexSpeedAuthInfo, budget, inFlightLimit int, model string) int {
+	budget = min(budget, inFlightLimit-int(c.inflight.Load()))
 	started := 0
 	if budget <= 0 {
 		return 0
