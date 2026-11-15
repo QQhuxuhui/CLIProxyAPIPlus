@@ -130,22 +130,19 @@ func TestNonCodexCredentialQuotaStillBlocksEveryModel(t *testing.T) {
 	}
 }
 
-func TestCodexWebImageModelsFollowConfig(t *testing.T) {
-	t.Cleanup(func() { setCodexWebImageModels(nil) })
+func TestCodexWebImageDomainUsesInternalSelectionModel(t *testing.T) {
+	// The images handler always selects with the internal model, whatever
+	// client-facing names web-image-models configures.
 	m, id := newQuotaDomainManager(t, "codex", nil)
 	custom := &internalconfig.Config{}
-	custom.WebImageModels = []string{"My-Image-Web"}
+	custom.WebImageModels = []string{"my-image-web"}
 	m.SetConfig(custom)
 	quotaTextExhausted(m, "codex", id, time.Hour)
-	if quotaBlocked(t, m, id, "my-image-web") {
-		t.Fatal("configured web-image model blocked by text quota")
+	if quotaBlocked(t, m, id, internalconfig.DefaultWebImageModel) || quotaBlocked(t, m, id, "GPT-Image-Web") {
+		t.Fatal("internal web-image selection model blocked by text quota")
 	}
-	if !quotaBlocked(t, m, id, quotaWebModel) {
-		t.Fatal("default name still treated as web image after it was replaced")
-	}
-	m.SetConfig(&internalconfig.Config{})
-	if quotaBlocked(t, m, id, quotaWebModel) {
-		t.Fatal("empty config did not restore the default web-image model")
+	if !quotaBlocked(t, m, id, "my-image-web") {
+		t.Fatal("client-facing name treated as a selection model")
 	}
 	if isCodexWebImageSelection([]string{"claude"}, quotaWebModel) || !isCodexWebImageSelection([]string{"claude", "codex"}, quotaWebModel) {
 		t.Fatal("request classification ignores the provider list")

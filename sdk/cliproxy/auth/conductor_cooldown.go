@@ -240,7 +240,6 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	m.runtimeConfig.Store(cfg)
 	m.configureCodexPools(cfg)
 	m.rateCap.configure(cfg.ProviderRequestRateCap["codex"])
-	setCodexWebImageModels(cfg.WebImageModels)
 	m.rateCap.mu.Lock()
 	m.rateCap.home = cfg.Home.Enabled
 	m.rateCap.mu.Unlock()

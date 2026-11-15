@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -15,34 +14,11 @@ import (
 // (auth-level "credential_quota") must not block web-image models and vice
 // versa, while credential invalidation stays shared by both lines.
 
-var codexWebImageModels atomic.Pointer[map[string]struct{}]
-
-// setCodexWebImageModels replaces the set of selection models that belong to
-// the web-image quota domain. An empty list restores the default model.
-func setCodexWebImageModels(models []string) {
-	set := make(map[string]struct{}, len(models)+1)
-	for _, model := range models {
-		if key := strings.ToLower(canonicalModelKey(model)); key != "" {
-			set[key] = struct{}{}
-		}
-	}
-	if len(set) == 0 {
-		set[strings.ToLower(canonicalModelKey(internalconfig.DefaultWebImageModel))] = struct{}{}
-	}
-	codexWebImageModels.Store(&set)
-}
-
+// codexWebImageModelKey reports whether model is the internal selection model
+// of the web-image line. Client-facing names from web-image-models are mapped
+// to this one key by the images handler before a credential is selected.
 func codexWebImageModelKey(model string) bool {
-	key := strings.ToLower(canonicalModelKey(model))
-	if key == "" {
-		return false
-	}
-	set := codexWebImageModels.Load()
-	if set == nil {
-		return key == strings.ToLower(canonicalModelKey(internalconfig.DefaultWebImageModel))
-	}
-	_, ok := (*set)[key]
-	return ok
+	return strings.EqualFold(canonicalModelKey(model), internalconfig.DefaultWebImageModel)
 }
 
 // isCodexWebImageModel reports whether model belongs to the web-image quota
