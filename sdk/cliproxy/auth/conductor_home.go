@@ -1413,13 +1413,13 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				if isCredentialScopedError(errExec) {
 					result.CredentialScope = true
 				}
-				m.MarkResult(creditsCtx, result)
+				m.MarkResult(withResultAccessToken(creditsCtx, c.auth), result)
 				if result.CredentialScope {
 					break
 				}
 				continue
 			}
-			m.MarkResult(creditsCtx, result)
+			m.MarkResult(withResultAccessToken(creditsCtx, c.auth), result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, c.auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, true, nil

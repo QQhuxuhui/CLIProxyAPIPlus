@@ -401,3 +401,28 @@ func TestCodexLegacySchedulerFollowsQuotaDomains(t *testing.T) {
 		t.Fatal("web image shard kept a credential revoked on the text line")
 	}
 }
+
+func TestCodexLateProbeRevocationOfReplacedTokenIsIgnored(t *testing.T) {
+	revoked := &Error{Message: "Encountered invalidated oauth token for user, failing request", HTTPStatus: http.StatusUnauthorized}
+	m, id := newQuotaDomainManager(t, "codex", map[string]any{"access_token": "old-token"})
+	newProbe := func() *Auth {
+		probe := quotaAuth(t, m, id)
+		probe.codexProbeAttempt = &rateAttemptRef{authID: id}
+		probe.codexProbeAttempt.token.Store(1)
+		return probe
+	}
+	stale := newProbe()
+	fresh := quotaAuth(t, m, id)
+	fresh.Metadata = map[string]any{"access_token": "new-token"}
+	if _, err := m.Update(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	m.MarkCodexProbeResult(context.Background(), stale, quotaTextModel, revoked)
+	if quotaBlocked(t, m, id, quotaWebModel) || quotaBlocked(t, m, id, quotaTextModel) {
+		t.Fatalf("late probe revocation of the old token blocked the new token: %+v", quotaAuth(t, m, id))
+	}
+	m.MarkCodexProbeResult(context.Background(), newProbe(), quotaTextModel, revoked)
+	if !quotaBlocked(t, m, id, quotaWebModel) || !quotaBlocked(t, m, id, quotaTextModel) {
+		t.Fatal("probe revocation of the current token was ignored")
+	}
+}
