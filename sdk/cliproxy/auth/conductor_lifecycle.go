@@ -350,7 +350,8 @@ func (m *Manager) prepareAuthUpdateLocked(ctx context.Context, base, auth *Auth,
 		// Fresh credential material resets the consecutive-401 counter and lifts
 		// a codex credential-invalidated park so the new tokens get probed.
 		auth.AuthFailures = 0
-		if codexCredentialInvalidated(existing) {
+		auth.CredentialRevoked = false
+		if codexCredentialInvalidated(existing) || existing.CredentialRevoked {
 			invalidatedCredentialsChanged = true
 			auth.Unavailable = false
 			auth.NextRetryAfter = time.Time{}
@@ -370,6 +371,7 @@ func (m *Manager) prepareAuthUpdateLocked(ctx context.Context, base, auth *Auth,
 		}
 	} else {
 		auth.AuthFailures = existing.AuthFailures
+		auth.CredentialRevoked = existing.CredentialRevoked
 		if codexAuthFailureParkActive(existing, time.Now()) {
 			auth.Unavailable = existing.Unavailable
 			auth.NextRetryAfter = existing.NextRetryAfter

@@ -128,6 +128,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
 	opts.EnsureMetadata()
 	ctx = m.codexRequestContext(ctx, providers)
+	ctx = withCodexWebImageRateExemption(ctx, providers, authSelectionModelFromOptions(opts, req.Model))
 	ctx = withCodexSpeedState(ctx, providers)
 	defer func() {
 		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
@@ -200,6 +201,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, resultErr error) {
 	ctx = m.codexRequestContext(ctx, providers)
+	ctx = withCodexWebImageRateExemption(ctx, providers, authSelectionModelFromOptions(opts, req.Model))
 	defer func() {
 		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)
 		m.recordConcurrencyRejection(resultErr)
@@ -267,6 +269,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response *cliproxyexecutor.StreamResult, resultErr error) {
 	opts.EnsureMetadata()
 	ctx = m.codexRequestContext(ctx, providers)
+	ctx = withCodexWebImageRateExemption(ctx, providers, authSelectionModelFromOptions(opts, req.Model))
 	ctx = withCodexSpeedState(ctx, providers)
 	defer func() {
 		resultErr = m.finalizeMixedCodexRetry(ctx, providers, authSelectionModelFromOptions(opts, req.Model), resultErr)

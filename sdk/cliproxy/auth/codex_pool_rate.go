@@ -75,7 +75,7 @@ func (m *Manager) pooledRateAvailableLocked(p *codexAccountPool, a *Auth, ctx co
 	if allow, _ := ctx.Value(poolAllowSaturatedKey{}).(bool); allow && !p.rate.config.FailFast {
 		return true, time.Time{}
 	}
-	if rateBypassed(ctx) || !p.rate.config.Enabled {
+	if rateCapSkipped(ctx) || !p.rate.config.Enabled {
 		return true, time.Time{}
 	}
 	count, limit, next := p.rate.accountLocked(a.ID, p.rate.nowFunc())

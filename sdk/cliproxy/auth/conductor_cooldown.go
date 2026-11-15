@@ -240,6 +240,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	m.runtimeConfig.Store(cfg)
 	m.configureCodexPools(cfg)
 	m.rateCap.configure(cfg.ProviderRequestRateCap["codex"])
+	setCodexWebImageModels(cfg.WebImageModels)
 	m.rateCap.mu.Lock()
 	m.rateCap.home = cfg.Home.Enabled
 	m.rateCap.mu.Unlock()
@@ -989,13 +990,14 @@ func (m *Manager) finishMarkResult(ctx context.Context, result Result, probe boo
 	}
 	if m.scheduler != nil && authSnapshot != nil && !update.pooled {
 		var targetModels []string
-		if !result.CredentialScope && modelKey != "" {
+		credentialScoped := result.CredentialScope || update.credentialWide
+		if !credentialScoped && modelKey != "" {
 			targetModels = append(targetModels, modelKey)
 			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
 				targetModels = append(targetModels, routeKey)
 			}
 		}
-		m.scheduler.upsertAuthResult(authSnapshot, targetModels, result.CredentialScope)
+		m.scheduler.upsertAuthResult(authSnapshot, targetModels, credentialScoped)
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -1030,6 +1032,9 @@ type markResultUpdate struct {
 	cooldownStateChanged bool
 	modelKey             string
 	now                  time.Time
+	// credentialWide is set when the result changed availability shared by every
+	// model (revocation or credential park), so all scheduler shards must follow.
+	credentialWide bool
 }
 
 // markResultLocked applies one result to the in-memory auth state. The caller holds m.mu.
@@ -1042,6 +1047,10 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 	now := time.Now()
 	var credentialParkUntil time.Time
 	explicitQuotaReset := false
+	credentialWide := false
+	if auth != nil && m.markRevokedCredentialResultLocked(ctx, result, probe, auth, now) {
+		return markResultUpdate{authSnapshot: auth.Clone(), modelKey: modelKey, now: now}
+	}
 	if auth != nil {
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
 			if m != nil {
@@ -1061,8 +1070,16 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 		}
 		statusCode := statusCodeFromResult(result.Error)
 		if codexCredentialInvalidated(auth) && (result.Success || statusCode != http.StatusUnauthorized) {
-			clearCodexCredentialInvalidation(auth, now)
+			credentialWide = clearCodexCredentialInvalidation(auth, now)
 		}
+		revoked := isCodexAuth(auth) && codexRevocationResult(result.Error)
+		if revoked {
+			auth.CredentialRevoked = true
+			credentialWide = true
+		}
+		// While the text quota cooldown is active the auth-level error fields
+		// describe the text line; a web-image failure must not replace them.
+		keepAuthError := !revoked && isCodexWebImageModel(auth, modelKey) && codexTextQuotaActive(auth, now)
 		if !probe {
 			auth.recordRecentRequest(now, result.Success)
 			if result.Success {
@@ -1086,7 +1103,14 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 
 		if result.Success {
 			if auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
-				// Retain active credential-scoped cooldown
+				// Retain active credential-scoped cooldown. A codex web-image
+				// success still recovers its own state: the cooldown is the text line's.
+				if isCodexWebImageModel(auth, modelKey) {
+					if state := existingModelState(auth, modelKey); state != nil {
+						modelState = state
+						resetModelState(state, now)
+					}
+				}
 			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
 				modelState = state
@@ -1116,8 +1140,10 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 					if result.Error != nil {
 						state.LastError = cloneError(result.Error)
 						state.StatusMessage = result.Error.Message
-						auth.LastError = cloneError(result.Error)
-						auth.StatusMessage = result.Error.Message
+						if !keepAuthError {
+							auth.LastError = cloneError(result.Error)
+							auth.StatusMessage = result.Error.Message
+						}
 					}
 
 					if isModelSupportResultError(result.Error) {
@@ -1131,7 +1157,7 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 						next, backoffLevel := nextCloudflareCooldown(state.Quota.BackoffLevel, disableCooling, now)
 						state.NextRetryAfter = next
 						state.StatusMessage = "cloudflare challenge"
-						if auth.LastError != nil {
+						if auth.LastError != nil && !keepAuthError {
 							auth.StatusMessage = "cloudflare challenge"
 						}
 						applyCooldownFields(&state.Quota, QuotaState{
@@ -1232,8 +1258,9 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 								UpstreamModel: upstreamModel,
 							})
 							if result.CredentialScope && !disableCooling {
-								for _, otherState := range auth.ModelStates {
-									if otherState != nil && otherState != state {
+								for otherKey, otherState := range auth.ModelStates {
+									// The web-image line has its own quota.
+									if otherState != nil && otherState != state && !isCodexWebImageModel(auth, otherKey) {
 										otherState.Unavailable = true
 										otherState.Status = StatusError
 										otherQuotaNext := next
@@ -1268,12 +1295,26 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 										})
 									}
 								}
+								prevAuthRecover := auth.Quota.NextRecoverAt
+								if isCodexAuth(auth) && auth.Quota.Reason != "credential_quota" {
+									// The previous value aggregates per-model states and may
+									// come from the web-image line; inherit text states only.
+									prevAuthRecover = time.Time{}
+									for otherKey, otherState := range auth.ModelStates {
+										if otherState == nil || isCodexWebImageModel(auth, otherKey) {
+											continue
+										}
+										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(prevAuthRecover) {
+											prevAuthRecover = otherState.Quota.NextRecoverAt
+										}
+									}
+								}
 								auth.Unavailable = true
 								auth.Quota.Exceeded = true
 								auth.Quota.Reason = "credential_quota"
 								authNext := next
-								if !(auth.Provider == "codex" && explicitReset && reasonCode == "RATE_LIMIT_EXCEEDED" && auth.Quota.ReasonCode == "RATE_LIMIT_EXCEEDED") && auth.Quota.NextRecoverAt.After(authNext) {
-									authNext = auth.Quota.NextRecoverAt
+								if !(auth.Provider == "codex" && explicitReset && reasonCode == "RATE_LIMIT_EXCEEDED" && auth.Quota.ReasonCode == "RATE_LIMIT_EXCEEDED") && prevAuthRecover.After(authNext) {
+									authNext = prevAuthRecover
 								}
 								if auth.Provider == "codex" && authNext.Equal(next) {
 									auth.Quota.ReasonCode = reasonCode
@@ -1330,6 +1371,7 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 		}
 
 		if !credentialParkUntil.IsZero() {
+			credentialWide = true
 			auth.Unavailable = true
 			auth.NextRetryAfter = credentialParkUntil
 			auth.Status = StatusError
@@ -1358,7 +1400,39 @@ func (m *Manager) markAuthResultLocked(ctx context.Context, result Result, model
 			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 		}
 	}
-	return markResultUpdate{authSnapshot: authSnapshot, cooldownStateChanged: cooldownStateChanged, modelKey: modelKey, now: now}
+	return markResultUpdate{authSnapshot: authSnapshot, cooldownStateChanged: cooldownStateChanged, modelKey: modelKey, now: now, credentialWide: credentialWide}
+}
+
+// markRevokedCredentialResultLocked handles results that must not change
+// availability: any result while the credential is revoked (requests that were
+// in flight cannot release or relabel it), and a revocation answer for an
+// access token that has been replaced since. Only request counters are
+// updated. It reports whether the result was consumed.
+func (m *Manager) markRevokedCredentialResultLocked(ctx context.Context, result Result, probe bool, auth *Auth, now time.Time) bool {
+	if !isCodexAuth(auth) {
+		return false
+	}
+	if !auth.CredentialRevoked && !(codexRevocationResult(result.Error) && resultFromReplacedToken(ctx, auth)) {
+		return false
+	}
+	if !probe {
+		auth.recordRecentRequest(now, result.Success)
+		if result.Success {
+			auth.Success++
+		} else {
+			auth.Failed++
+		}
+	}
+	if !result.Success {
+		auth.lastFailureAt = now
+	}
+	auth.Generation++
+	auth.UpdatedAt = now
+	return true
+}
+
+func isCodexAuth(auth *Auth) bool {
+	return auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex")
 }
 
 func (m *Manager) updateSessionAffinityWithEpoch(result Result, snapshot *Auth) {
@@ -2049,6 +2123,9 @@ func isUnauthorizedError(err error) bool {
 }
 
 func hasUnauthorizedAuthFailure(auth *Auth) bool {
+	if auth != nil && auth.CredentialRevoked {
+		return true
+	}
 	if auth == nil || auth.LastError == nil {
 		return false
 	}

@@ -200,6 +200,7 @@ func (m *Manager) markExecutionResult(ctx context.Context, result Result, auth *
 	if m.codexPools.Load() != nil && auth != nil {
 		ctx = context.WithValue(nonNilContext(ctx), poolResultEpochKey{}, auth.RegistrationEpoch)
 	}
+	ctx = withResultAccessToken(ctx, auth)
 	m.MarkResult(ctx, result)
 }
 

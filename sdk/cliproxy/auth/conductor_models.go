@@ -236,7 +236,13 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 
 	state := existingModelState(auth, targetKey)
 	isSuspended := auth.Disabled || auth.Status == StatusDisabled
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+	// Invalidation is shared by every model of the credential.
+	if hasUnauthorizedAuthFailure(auth) || codexAuthFailureParkActive(auth, now) {
+		isSuspended = true
+	}
+	// The credential-wide quota of a codex credential belongs to the text line.
+	textQuotaOnly := isCodexWebImageModel(auth, targetKey) && codexTextQuotaActive(auth, now)
+	if !textQuotaOnly && auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		isSuspended = true
 	}
 	isQuotaExceeded := false
@@ -254,7 +260,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
 		}
 	}
-	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
+	if !textQuotaOnly && len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
 		// With no per-model states, scheduling falls back to the credential-wide
 		// cooldown (isAuthBlockedForModel); the projection must agree with it.
 		// When states exist, unmatched models stay schedulable by design, so the

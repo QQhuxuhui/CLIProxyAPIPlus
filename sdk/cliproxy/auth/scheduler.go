@@ -1598,7 +1598,7 @@ func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]in
 
 // ratePredicateLocked filters capacity before priority and transport preferences.
 func (s *authScheduler) ratePredicateLocked(ctx context.Context, providers []string, model string, base func(*scheduledAuth) bool) (func(*scheduledAuth) bool, error) {
-	if rateBypassed(ctx) || !s.rateCap.enabled() {
+	if rateCapSkipped(ctx) || !s.rateCap.enabled() {
 		return base, nil
 	}
 	candidates := make([]rateCandidate, 0)

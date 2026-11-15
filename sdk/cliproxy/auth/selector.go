@@ -861,7 +861,10 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
 		return true, blockReasonOther, time.Time{}
 	}
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+	// The credential-wide quota of a codex credential belongs to the text line
+	// and does not block web-image models.
+	textQuotaOnly := isCodexWebImageModel(auth, model) && codexTextQuotaActive(auth, now)
+	if !textQuotaOnly && auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true, blockReasonCooldown, auth.Quota.NextRecoverAt
 	}
 	if model != "" {
@@ -895,6 +898,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 			if matched {
 				return blocked, blockedReason, nextRetry
 			}
+			return false, blockReasonNone, time.Time{}
+		}
+		if textQuotaOnly {
 			return false, blockReasonNone, time.Time{}
 		}
 		return availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
