@@ -147,5 +147,5 @@ func (m *Manager) MarkCodexProbeResult(ctx context.Context, auth *Auth, model st
 	if m.codexPools.Load() != nil {
 		ctx = context.WithValue(ctx, poolResultEpochKey{}, auth.RegistrationEpoch)
 	}
-	m.markResult(ctx, result, true)
+	m.markResult(withResultAccessToken(ctx, auth), result, true)
 }

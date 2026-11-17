@@ -191,6 +191,10 @@ func (m *Manager) beginRateAttempt(ctx context.Context, a *Auth) (context.Contex
 	if err := admitCodexDispatch(ctx); err != nil {
 		return ctx, err
 	}
+	if rateExempt(ctx) {
+		// Web image keeps the retry budget but is neither counted nor capped.
+		return ctx, nil
+	}
 	if m.codexPools.Load() != nil {
 		return m.beginPooledRateAttempt(ctx, a)
 	}
@@ -311,7 +315,7 @@ func rateCapRequiresPositiveWeight(selector Selector) bool {
 }
 
 func (m *Manager) filterRateCandidates(ctx context.Context, selector Selector, auths []*Auth, model string, now time.Time) ([]*Auth, error) {
-	if rateBypassed(ctx) || !m.rateCap.enabled() {
+	if rateCapSkipped(ctx) || !m.rateCap.enabled() {
 		return auths, nil
 	}
 	candidates := make([]rateCandidate, 0, len(auths))
@@ -398,7 +402,7 @@ func (m *Manager) poolCapacityAfterPickFailure(ctx context.Context, providers []
 	if m.codexPools.Load() != nil {
 		return m.pooledCapacityAfterPickFailure(ctx, providers, model, opts, err)
 	}
-	if err == nil || isPoolCapacityError(err) || rateBypassed(ctx) || !m.rateCap.enabled() {
+	if err == nil || isPoolCapacityError(err) || rateCapSkipped(ctx) || !m.rateCap.enabled() {
 		return err
 	}
 	var authErr *Error

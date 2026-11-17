@@ -126,7 +126,7 @@ func (m *Manager) poolCandidates(ctx context.Context, p *codexAccountPool, model
 		return nil, nil, false, err
 	}
 	shared := m.shared.Load()
-	if hint := p.availability.Load(); hint != nil && pinnedAuthIDFromMetadata(opts.Metadata) == "" && len(tried) == 0 && hint.potential == 0 && !rateBypassed(ctx) && time.Now().Before(hint.until) {
+	if hint := p.availability.Load(); hint != nil && pinnedAuthIDFromMetadata(opts.Metadata) == "" && len(tried) == 0 && hint.potential == 0 && !rateCapSkipped(ctx) && time.Now().Before(hint.until) {
 		delay := time.Until(hint.until)
 		if hint.capacity {
 			return nil, nil, false, newPoolCapacityError(delay)

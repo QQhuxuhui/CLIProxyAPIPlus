@@ -104,6 +104,10 @@ type Auth struct {
 	// AuthFailures counts consecutive 401 results since the last success. It
 	// drives the codex "dead credential" escalation in MarkResult.
 	AuthFailures int `json:"-"`
+	// CredentialRevoked is set when upstream explicitly revoked the token. It
+	// blocks every model until the credential material changes and is kept in
+	// memory only.
+	CredentialRevoked bool `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`

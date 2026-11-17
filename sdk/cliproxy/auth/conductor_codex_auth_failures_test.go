@@ -14,7 +14,7 @@ func markUnauthorized(m *Manager, authID string) {
 		Provider: "codex",
 		Model:    "gpt-image-2",
 		Success:  false,
-		Error:    &Error{Message: "web image credential was rejected (token_invalidated)", HTTPStatus: 401},
+		Error:    &Error{Message: "web image credential was rejected (401)", HTTPStatus: 401},
 	})
 }
 
@@ -57,7 +57,7 @@ func TestMarkResult_CodexConsecutiveUnauthorizedParksCredential(t *testing.T) {
 	if state.NextRetryAfter.Before(time.Now().Add(codexAuthFailureCooldown - time.Minute)) {
 		t.Fatalf("NextRetryAfter = %v, want roughly %v ahead", state.NextRetryAfter, codexAuthFailureCooldown)
 	}
-	if !strings.Contains(message, "re-login required") || !strings.Contains(message, "token_invalidated") {
+	if !strings.Contains(message, "re-login required") || !strings.Contains(message, "rejected (401)") {
 		t.Fatalf("unexpected auth status message: %q", message)
 	}
 	if stateMessage != message {

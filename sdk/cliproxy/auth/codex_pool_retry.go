@@ -82,7 +82,7 @@ func (m *Manager) poolRetryAvailability(providers []string, model string, attemp
 	return best, found
 }
 func (m *Manager) pooledCapacityAfterPickFailure(ctx context.Context, providers []string, model string, opts exec.Options, original error) error {
-	if original == nil || isPoolCapacityError(original) || rateBypassed(ctx) || !hasCodexProvider(providers) {
+	if original == nil || isPoolCapacityError(original) || rateCapSkipped(ctx) || !hasCodexProvider(providers) {
 		return original
 	}
 	var authErr *Error
