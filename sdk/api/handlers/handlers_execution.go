@@ -57,17 +57,19 @@ func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handle
 // ExecuteWebImageWithAuthManager executes a web image request while preserving
 // the standard OpenAI Images response protocol for downstream interceptors.
 func (h *BaseAPIHandler) ExecuteWebImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	return h.ExecuteWebImageForPathWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, authSelectionModel, "")
+	return h.ExecuteWebImageForPathWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, authSelectionModel, "", "")
 }
 
 // ExecuteWebImageForPathWithAuthManager executes a web image request on behalf of an entry point
 // whose inbound path is not an Images API path. executorRequestPath is the Images API path the
-// executor should see; an empty value keeps the inbound path.
-func (h *BaseAPIHandler) ExecuteWebImageForPathWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel, executorRequestPath string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+// executor should serve; clientSourceFormat is the client protocol plugins should see. Empty
+// values keep the inbound path and the entry protocol.
+func (h *BaseAPIHandler) ExecuteWebImageForPathWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel, executorRequestPath, clientSourceFormat string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	return h.executeWithAuthManagerFormats(ctx, handlerType, "openai-image", modelName, rawJSON, alt, true, modelExecutionOptions{
 		ForcedProvider:      "codex",
 		AuthSelectionModel:  authSelectionModel,
 		ExecutorRequestPath: executorRequestPath,
+		ClientSourceFormat:  clientSourceFormat,
 	})
 }
 
@@ -78,7 +80,11 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	ctx = coreauth.WithCodexRetryBudget(ctx)
 	originalRequestedModel := modelName
-	routeDecision := h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, false, execOptions)
+	pluginProtocol := entryProtocol
+	if clientFormat := strings.TrimSpace(execOptions.ClientSourceFormat); clientFormat != "" {
+		pluginProtocol = clientFormat
+	}
+	routeDecision := h.applyModelRouter(ctx, pluginProtocol, modelName, rawJSON, false, execOptions)
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
 		return nil, nil, errMsg
@@ -111,7 +117,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		Payload: payload,
 	}
 	afterAuthCapture := &requestAfterAuthCapture{}
-	lifecycle := h.newRequestLifecycleTracker(ctx, entryProtocol, normalizedModel, originalRequestedModel, false, reqMeta, execOptions.SkipInterceptorPluginID)
+	lifecycle := h.newRequestLifecycleTracker(ctx, pluginProtocol, normalizedModel, originalRequestedModel, false, reqMeta, execOptions.SkipInterceptorPluginID)
 	opts := coreexecutor.Options{
 		Stream:                              false,
 		Alt:                                 alt,
@@ -125,9 +131,16 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		WebSocketResponseObserver:           h.webSocketResponseObserver(lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta
+	if afterAuth := opts.RequestAfterAuthInterceptor; afterAuth != nil && pluginProtocol != entryProtocol {
+		clientFormat := sdktranslator.FromString(pluginProtocol)
+		opts.RequestAfterAuthInterceptor = func(ctx context.Context, event coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
+			event.SourceFormat = clientFormat
+			return afterAuth(ctx, event)
+		}
+	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	var interceptErr *interfaces.ErrorMessage
-	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
+	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, pluginProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr

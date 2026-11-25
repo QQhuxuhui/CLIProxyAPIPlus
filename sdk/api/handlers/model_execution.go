@@ -26,6 +26,11 @@ type modelExecutionOptions struct {
 	// (ImagesRequestPathMetadataKey). The inbound request_path is left untouched for routers,
 	// interceptors and observers.
 	ExecutorRequestPath string
+	// ClientSourceFormat, when set, is the client protocol reported to model routers, request
+	// interceptors and lifecycle observers in place of the entry protocol. It lets an internal
+	// execution protocol (such as chatgpt-web-image) keep plugin filters keyed on the real
+	// client protocol working.
+	ClientSourceFormat string
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.

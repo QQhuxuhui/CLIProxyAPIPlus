@@ -625,7 +625,7 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 	}
 	imageReq := buildChatWebImageImagesRequest(model, parsed, references)
 	execute := func() chatWebImageResult {
-		body, headers, errMsg := h.ExecuteWebImageForPathWithAuthManager(cliCtx, webImagesHandlerType, model, imageReq, "", internalconfig.DefaultWebImageModel, executorPath)
+		body, headers, errMsg := h.ExecuteWebImageForPathWithAuthManager(cliCtx, webImagesHandlerType, model, imageReq, "", internalconfig.DefaultWebImageModel, executorPath, h.HandlerType())
 		return chatWebImageResult{body: body, headers: headers, errMsg: errMsg}
 	}
 	id := newChatCompletionID()

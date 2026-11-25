@@ -123,6 +123,41 @@ func (h *chatWebImageRouterHost) RouteModel(_ context.Context, req pluginapi.Mod
 
 func (h *chatWebImageRouterHost) HasModelRouters() bool { return true }
 
+// chatWebImageInterceptorHost records the protocol request interceptors observe and, when
+// denyOpenAI is set, terminates requests whose client protocol is openai with 403, as a plugin
+// configured with source-formats: [openai] would.
+type chatWebImageInterceptorHost struct {
+	mu         sync.Mutex
+	denyOpenAI bool
+	beforeAuth string
+	afterAuth  string
+}
+
+func (h *chatWebImageInterceptorHost) InterceptRequestBeforeAuth(_ context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	h.mu.Lock()
+	h.beforeAuth = req.SourceFormat
+	h.mu.Unlock()
+	if h.denyOpenAI && req.SourceFormat == "openai" {
+		return pluginapi.RequestInterceptResponse{Terminate: true, StatusCode: http.StatusForbidden, ResponseBody: []byte(`{"error":"denied"}`)}
+	}
+	return pluginapi.RequestInterceptResponse{}
+}
+
+func (h *chatWebImageInterceptorHost) InterceptRequestAfterAuth(_ context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	h.mu.Lock()
+	h.afterAuth = req.SourceFormat
+	h.mu.Unlock()
+	return pluginapi.RequestInterceptResponse{}
+}
+
+func (h *chatWebImageInterceptorHost) InterceptResponse(context.Context, pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+	return pluginapi.ResponseInterceptResponse{}
+}
+
+func (h *chatWebImageInterceptorHost) InterceptStreamChunk(context.Context, pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+	return pluginapi.StreamChunkInterceptResponse{}
+}
+
 func defaultChatWebImageConfig() *sdkconfig.SDKConfig {
 	return &sdkconfig.SDKConfig{WebImageConfig: sdkconfig.WebImageConfig{
 		WebImageGeneration: true,
@@ -212,6 +247,37 @@ func TestChatCompletionsWebImageNonStreamingReturnsMarkdownImage(t *testing.T) {
 	if router.requestPath != "/v1/chat/completions" {
 		t.Fatalf("router request path = %v, want /v1/chat/completions", router.requestPath)
 	}
+}
+
+func TestChatCompletionsWebImageInterceptorsSeeClientProtocol(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v deny", stream), func(t *testing.T) {
+			executor := &chatWebImageTestExecutor{}
+			handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+			handler.BaseAPIHandler.PluginHost = &chatWebImageInterceptorHost{denyOpenAI: true}
+			resp := performChatWebImageRequest(handler, fmt.Sprintf(`{"model":"gpt-image-web","stream":%v,"messages":[{"role":"user","content":"draw"}]}`, stream))
+			if resp.Code != http.StatusForbidden || executor.callCount() != 0 {
+				t.Fatalf("status = %d, executor calls = %d: %s", resp.Code, executor.callCount(), resp.Body.String())
+			}
+		})
+	}
+
+	t.Run("after auth", func(t *testing.T) {
+		executor := &chatWebImageTestExecutor{}
+		handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+		host := &chatWebImageInterceptorHost{}
+		handler.BaseAPIHandler.PluginHost = host
+		resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":"draw"}]}`)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+		}
+		if host.beforeAuth != "openai" || host.afterAuth != "openai" {
+			t.Fatalf("interceptor protocols = before %q, after %q; want openai", host.beforeAuth, host.afterAuth)
+		}
+		if executor.opts.SourceFormat.String() != webImagesHandlerType {
+			t.Fatalf("executor SourceFormat = %q", executor.opts.SourceFormat)
+		}
+	})
 }
 
 func TestChatCompletionsWebImageDataURLUsesEditsWithActualMIME(t *testing.T) {
