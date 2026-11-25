@@ -769,3 +769,57 @@ func TestCodexWebsocketBridgeErrorBodyUsesConfusedIdentity(t *testing.T) {
 		t.Fatalf("error body = %q, want the confused identity %q", errExec.Error(), confused)
 	}
 }
+
+func TestCodexWebsocketBridgeForwardsOnlyHTTPSessionHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{name: "underscore spelling dropped", headers: map[string]string{"session_id": "client-session-42"}},
+		{name: "canonical spelling kept", headers: map[string]string{"Session-Id": "client-session-43"}, want: "client-session-43"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := withCodexWebsocketBridge(contextWithGinHeaders(tc.headers))
+			ginCtx := ctx.Value("gin").(*gin.Context)
+			// contextWithGinHeaders canonicalises keys; keep the raw underscore spelling.
+			if raw, ok := tc.headers["session_id"]; ok {
+				ginCtx.Request.Header = http.Header{"session_id": []string{raw}}
+			}
+			headers := applyCodexWebsocketHeaders(ctx, http.Header{}, bridgeTestOAuth(""), "oauth-token", &config.Config{}, false, nil)
+			got := codexSessionHeaderValue(headers)
+			if tc.want == "" && strings.Contains(got, "client-session") {
+				t.Fatalf("raw client session forwarded: %q", got)
+			}
+			if tc.want != "" && got != tc.want {
+				t.Fatalf("session header = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexWebsocketBridgeKeepsRetryAfterUnderIdentityRewrite(t *testing.T) {
+	const rateLimited = `{"type":"error","status":429,"error":{"type":"rate_limit_error","message":"slow down"},"headers":{"retry-after":"3600"}}`
+	for _, buffering := range []bool{false, true} {
+		up := newBridgeUpstream(t, func([]byte) []string { return []string{rateLimited} })
+		cfg := bridgeTestConfig(100)
+		cfg.Routing.SessionAffinity = true
+		cfg.Codex.IdentityConfuse = true
+		cfg.Codex.StreamBootstrapBuffering = buffering
+		exec := NewCodexAutoExecutor(cfg)
+		req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"3600"}`)}
+		before := time.Now()
+		result, errExec := exec.ExecuteStream(context.Background(), bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+		if errExec == nil {
+			_, errExec = collectBridgeChunks(t, result)
+		}
+		var se statusErr
+		if !errors.As(errExec, &se) {
+			t.Fatalf("buffering=%v: error = %T %v, want statusErr", buffering, errExec, errExec)
+		}
+		quota, ok := se.QuotaDetail()
+		if !ok || quota.ResetAt.Before(before.Add(59*time.Minute)) {
+			t.Fatalf("buffering=%v: ResetAt = %v (ok=%v), want about one hour", buffering, quota.ResetAt, ok)
+		}
+	}
+}
