@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -910,5 +911,32 @@ func TestConfuseCodexStatusErrMessageKeepsFailureBodyRaw(t *testing.T) {
 	}
 	if strings.Contains(confused.Error(), "can retry your") {
 		t.Fatalf("client error text not identity-replaced: %q", confused.Error())
+	}
+}
+
+func TestConfusedCodexErrorsClassifyOnUpstreamText(t *testing.T) {
+	cfg := &config.Config{Routing: config.RoutingConfig{SessionAffinity: true}, Codex: config.CodexConfig{IdentityConfuse: true}}
+	_, storeState := applyCodexIdentityConfuseBody(cfg, &cliproxyauth.Auth{ID: "auth-bridge-1"}, []byte(`{"prompt_cache_key":"store"}`), []byte(`{"model":"m"}`))
+	notPersisted := []byte("Item with id 'rs_1' not found. Items are not persisted when `store` is set to false.")
+	httpErr := confuseCodexStatusErrMessage(newCodexStatusErrWithHeaders(http.StatusNotFound, notPersisted, nil, false), storeState)
+	if strings.Contains(httpErr.Error(), "`store`") {
+		t.Fatalf("client error text not identity-replaced: %q", httpErr.Error())
+	}
+	if !clienterror.IsRequestFault(http.StatusNotFound, httpErr) {
+		t.Fatal("not-persisted item no longer classified as a request fault after identity replacement")
+	}
+
+	_, retryState := applyCodexIdentityConfuseBody(cfg, &cliproxyauth.Auth{ID: "auth-bridge-1"}, []byte(`{"prompt_cache_key":"retry"}`), []byte(`{"model":"m"}`))
+	frame := []byte(`{"type":"error","status":500,"error":{"type":"server_error","message":"you can retry your request"}}`)
+	wsErr, ok := parseCodexWebsocketErrorWithCooling(frame, false)
+	if !ok {
+		t.Fatal("error frame not recognised")
+	}
+	wsErr = confuseCodexWebsocketErrorMessage(wsErr, retryState)
+	if strings.Contains(wsErr.Error(), "can retry your") {
+		t.Fatalf("client error text not identity-replaced: %q", wsErr.Error())
+	}
+	if text := clienterror.ClassificationError(wsErr).Error(); !strings.Contains(text, "you can retry your request") {
+		t.Fatalf("classification text lost the overload phrase: %q", text)
 	}
 }

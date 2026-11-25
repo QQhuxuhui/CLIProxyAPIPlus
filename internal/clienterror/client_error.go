@@ -68,9 +68,24 @@ func HTTPStatusFromErrorOr(err error, fallback int) int {
 	return fallback
 }
 
+// ClassificationError returns the error to classify. An error whose display text was rewritten
+// (for example Codex identity replacement, which may put client-chosen values into the message)
+// exposes the upstream original through ClassificationError() error; any other error is returned
+// unchanged.
+func ClassificationError(err error) error {
+	var source interface{ ClassificationError() error }
+	if errors.As(err, &source) && source != nil {
+		if original := source.ClassificationError(); original != nil {
+			return original
+		}
+	}
+	return err
+}
+
 // IsRequestFault reports whether an upstream failure is caused by the request
 // and therefore must not rotate or penalize credentials.
 func IsRequestFault(status int, err error) bool {
+	err = ClassificationError(err)
 	if status <= 0 && err != nil {
 		type statusCoder interface {
 			StatusCode() int

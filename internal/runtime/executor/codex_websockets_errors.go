@@ -211,8 +211,17 @@ func closeHTTPResponseBody(resp *http.Response, logPrefix string) {
 // shown to the client, as the HTTP path does with its error bodies. The error is classified from
 // the raw upstream frame, and codexFailureBody stays raw because the conductor classifies
 // overloads from it (CodexFailureInfo).
+// confuseCodexStatusErrMessage rewrites the display text of an error built from the raw upstream
+// body. The raw text stays available through ClassificationError for cooldown and retry decisions.
 func confuseCodexStatusErrMessage(err statusErr, state codexIdentityConfuseState) statusErr {
-	err.msg = string(applyCodexIdentityConfuseResponsePayload([]byte(err.msg), state))
+	confused := string(applyCodexIdentityConfuseResponsePayload([]byte(err.msg), state))
+	if confused == err.msg {
+		return err
+	}
+	if err.classifyMsg == "" {
+		err.classifyMsg = err.msg
+	}
+	err.msg = confused
 	return err
 }
 

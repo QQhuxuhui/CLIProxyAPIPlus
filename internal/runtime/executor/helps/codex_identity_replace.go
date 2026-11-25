@@ -20,21 +20,21 @@ var codexIdentityProtectedKeys = map[string]struct{}{
 // ReplaceCodexIdentityInPayload replaces from with to inside the JSON string values of an
 // upstream payload: a JSON document, an SSE data line, or a full SSE body. Object keys and
 // protocol fields (see codexIdentityProtectedKeys) are left untouched, and replaced values are
-// re-encoded, so a value containing quotes or backslashes keeps the
-// JSON valid. A payload with
-// no JSON string in it (plain text) is replaced byte-wise, except an SSE event line.
+// re-encoded, so a value containing quotes or backslashes keeps the JSON valid. Any other payload
+// (plain text, even with quotes in it) is replaced byte-wise, except an SSE event line.
 func ReplaceCodexIdentityInPayload(payload []byte, from, to string) []byte {
 	if len(payload) == 0 || from == "" || from == to {
 		return payload
 	}
-	if bytes.IndexByte(payload, '"') < 0 {
-		if !bytes.Contains(payload, []byte(from)) || bytes.HasPrefix(bytes.TrimSpace(payload), []byte("event:")) {
+	if !codexIdentityNeedsEscape(from) && !bytes.Contains(payload, []byte(from)) {
+		return payload
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if !codexIdentityStructuredPayload(trimmed) {
+		if bytes.HasPrefix(trimmed, []byte("event:")) {
 			return payload
 		}
 		return bytes.ReplaceAll(payload, []byte(from), []byte(to))
-	}
-	if !codexIdentityNeedsEscape(from) && !bytes.Contains(payload, []byte(from)) {
-		return payload
 	}
 
 	var out []byte
@@ -94,6 +94,12 @@ func ReplaceCodexIdentityInPayload(payload []byte, from, to string) []byte {
 	return append(out, payload[last:]...)
 }
 
+// codexIdentityStructuredPayload reports whether payload is JSON or carries SSE data lines, the
+// shapes whose string values are replaced one by one.
+func codexIdentityStructuredPayload(trimmed []byte) bool {
+	return bytes.HasPrefix(trimmed, []byte("data:")) || bytes.Contains(trimmed, []byte("\ndata:")) || json.Valid(trimmed)
+}
+
 // codexIdentityStringEnd returns the index of the quote closing the JSON string that starts at
 // start, or -1 when the string is not terminated.
 func codexIdentityStringEnd(payload []byte, start int) int {
@@ -118,11 +124,12 @@ func codexIdentityEncodeString(value string) ([]byte, bool) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), true
 }
 
-// codexIdentityNeedsEscape reports whether value may be written differently inside a JSON string,
-// so a raw byte search for it is not a reliable fast path.
+// codexIdentityNeedsEscape reports whether value may be written differently inside a JSON string
+// (escaped, or written as \u by encoders that escape HTML or non-ASCII characters), so a raw byte
+// search for it is not a reliable fast path.
 func codexIdentityNeedsEscape(value string) bool {
 	for i := 0; i < len(value); i++ {
-		if c := value[i]; c == '"' || c == '\\' || c < 0x20 || c >= 0x80 || c == '/' {
+		if c := value[i]; c == '"' || c == '\\' || c < 0x20 || c >= 0x80 || c == '/' || c == '<' || c == '>' || c == '&' || c == '\'' {
 			return true
 		}
 	}

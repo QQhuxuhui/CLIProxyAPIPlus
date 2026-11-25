@@ -58,3 +58,26 @@ func TestReplaceCodexIdentityInPayloadPlainTextAndEventLines(t *testing.T) {
 		t.Fatal("payload without the value was copied")
 	}
 }
+
+func TestReplaceCodexIdentityInPayloadPlainTextWithQuotes(t *testing.T) {
+	got := string(ReplaceCodexIdentityInPayload([]byte(`bad key k1 near "x"`), "k1", "u"))
+	if got != `bad key u near "x"` {
+		t.Fatalf("plain text with quotes not replaced: %q", got)
+	}
+}
+
+func TestReplaceCodexIdentityInPayloadFullSSEBody(t *testing.T) {
+	body := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"prompt_cache_key\":\"completed\"}}\n\n"
+	got := string(ReplaceCodexIdentityInPayload([]byte(body), "completed", "u"))
+	want := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"prompt_cache_key\":\"u\"}}\n\n"
+	if got != want {
+		t.Fatalf("SSE body replaced wrongly: %q", got)
+	}
+}
+
+func TestReplaceCodexIdentityInPayloadUnicodeEscapedValue(t *testing.T) {
+	got := ReplaceCodexIdentityInPayload([]byte(`{"prompt_cache_key":"a\u003cb"}`), "a<b", "u")
+	if gjson.GetBytes(got, "prompt_cache_key").String() != "u" {
+		t.Fatalf("escaped identity not replaced: %s", got)
+	}
+}

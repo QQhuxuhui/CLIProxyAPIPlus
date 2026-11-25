@@ -160,13 +160,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
-			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
+			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), applyCodexIdentityConfuseResponsePayload(bodyErr, identityState))
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
 			unlockStreamSession()
 			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
 				if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
-					return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+					return nil, confuseCodexStatusErrMessage(statusErr{code: respHS.StatusCode, msg: string(bodyErr)}, identityState)
 				}
 				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 
@@ -175,14 +175,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			}
-			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+			return nil, confuseCodexStatusErrMessage(statusErr{code: respHS.StatusCode, msg: string(bodyErr)}, identityState)
 		}
 		if cliproxyexecutor.UpstreamAttempted(dialCtx) {
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
 			unlockStreamSession()
-			return nil, newCodexStatusErrWithHeaders(respHS.StatusCode, bodyErr, respHS.Header, e.modelLevelCooling())
+			return nil, confuseCodexStatusErrMessage(newCodexStatusErrWithHeaders(respHS.StatusCode, bodyErr, respHS.Header, e.modelLevelCooling()), identityState)
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		unlockStreamSession()
@@ -521,7 +521,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					// status the upstream refused to put on the wire.
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
 					cliproxyexecutor.ObserveCodexBootstrapRelease("overload")
-					bootstrapErr := newCodexBootstrapOverloadErr(terminalBody)
+					bootstrapErr := confuseCodexStatusErrMessage(newCodexBootstrapOverloadErr(terminalBody), identityState)
 					bootstrapErr.credentialScoped = streamErr.IsCredentialScoped()
 					return nil, bootstrapErr
 				}

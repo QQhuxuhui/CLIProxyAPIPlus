@@ -149,12 +149,12 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
-			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
+			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), applyCodexIdentityConfuseResponsePayload(bodyErr, identityState))
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
 			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
 				if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
-					return resp, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+					return resp, confuseCodexStatusErrMessage(statusErr{code: respHS.StatusCode, msg: string(bodyErr)}, identityState)
 				}
 				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 
@@ -163,13 +163,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			}
-			return resp, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+			return resp, confuseCodexStatusErrMessage(statusErr{code: respHS.StatusCode, msg: string(bodyErr)}, identityState)
 		}
 		if cliproxyexecutor.UpstreamAttempted(dialCtx) {
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
-			return resp, newCodexStatusErrWithHeaders(respHS.StatusCode, bodyErr, respHS.Header, e.modelLevelCooling())
+			return resp, confuseCodexStatusErrMessage(newCodexStatusErrWithHeaders(respHS.StatusCode, bodyErr, respHS.Header, e.modelLevelCooling()), identityState)
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		return resp, errDial

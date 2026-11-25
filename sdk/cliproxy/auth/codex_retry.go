@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	exec "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
@@ -179,7 +180,7 @@ func codexFailureClass(err error) string {
 		return "overload"
 	}
 	status := statusCodeFromError(err)
-	body := err.Error()
+	body := clienterror.ClassificationError(err).Error()
 	var original interface{ CodexFailureInfo() (int, string, string) }
 	if errors.As(err, &original) {
 		if code, raw, source := original.CodexFailureInfo(); source != "" {
