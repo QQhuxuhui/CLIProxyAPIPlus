@@ -193,8 +193,8 @@ func isCodexWebsocketBridge(ctx context.Context) bool {
 
 // shouldBridgeCodexStreamToWebsocket reports whether an HTTP-downstream streaming request should
 // use the upstream websocket transport, which has no 15-minute stream cap. Only plain
-// /responses traffic on Codex OAuth credentials is bridged; compact, image, Grok client and
-// API key requests keep the HTTP transport.
+// /responses traffic on Codex OAuth credentials is bridged; compact, image, Grok client, API
+// key and explicitly routed (proxy or injected RoundTripper) requests keep the HTTP transport.
 func shouldBridgeCodexStreamToWebsocket(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
 	if cfg == nil || !cfg.Codex.HTTPWebsocketBridge.Enable || cfg.Codex.HTTPWebsocketBridge.Percent <= 0 {
 		return false
@@ -215,6 +215,15 @@ func shouldBridgeCodexStreamToWebsocket(ctx context.Context, cfg *config.Config,
 		return false
 	}
 	if auth == nil || codexAuthUsesAPIKey(auth) {
+		return false
+	}
+	// The websocket dialer does not honour every outbound route the HTTP client does (HTTPS
+	// proxies, context-aware SOCKS5 dialing, an SDK-injected RoundTripper), so a request with an
+	// explicit route keeps the HTTP transport.
+	if helps.ResolveProxyURL(cfg, auth) != "" {
+		return false
+	}
+	if roundTripper, _ := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); roundTripper != nil {
 		return false
 	}
 	if token, _ := codexCreds(auth); strings.TrimSpace(token) == "" {

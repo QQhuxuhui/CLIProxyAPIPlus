@@ -57,6 +57,10 @@ func TestShouldBridgeCodexStreamToWebsocket(t *testing.T) {
 	kindAPIKeyAuth := &cliproxyauth.Auth{Provider: "codex", Attributes: map[string]string{"auth_kind": "apikey"}, Metadata: map[string]any{"access_token": "tok"}}
 	grokOpts := bridgeTestOpts()
 	grokOpts.Headers = http.Header{"User-Agent": []string{"grok-shell/1.0"}}
+	proxyAuth := bridgeTestOAuth("")
+	proxyAuth.ProxyURL = "https://proxy.example.com:8443"
+	proxyCfg := bridgeTestConfig(100)
+	proxyCfg.ProxyURL = "socks5://127.0.0.1:1080"
 	noTokenAuth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{}}
 
 	tests := []struct {
@@ -82,6 +86,9 @@ func TestShouldBridgeCodexStreamToWebsocket(t *testing.T) {
 		{name: "nil auth", ctx: ctx, cfg: bridgeTestConfig(100), opts: bridgeTestOpts()},
 		{name: "no request id below 100", ctx: context.Background(), cfg: bridgeTestConfig(99), auth: bridgeTestOAuth(""), opts: bridgeTestOpts()},
 		{name: "no request id at 100", ctx: context.Background(), cfg: bridgeTestConfig(100), auth: bridgeTestOAuth(""), opts: bridgeTestOpts(), want: true},
+		{name: "auth proxy", ctx: ctx, cfg: bridgeTestConfig(100), auth: proxyAuth, opts: bridgeTestOpts()},
+		{name: "global proxy", ctx: ctx, cfg: proxyCfg, auth: bridgeTestOAuth(""), opts: bridgeTestOpts()},
+		{name: "injected round tripper", ctx: context.WithValue(ctx, "cliproxy.roundtripper", http.RoundTripper(http.DefaultTransport)), cfg: bridgeTestConfig(100), auth: bridgeTestOAuth(""), opts: bridgeTestOpts()},
 		{name: "grok client", ctx: ctx, cfg: bridgeTestConfig(100), auth: bridgeTestOAuth(""), opts: grokOpts},
 	}
 	for _, tt := range tests {
