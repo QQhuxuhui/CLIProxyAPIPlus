@@ -680,3 +680,35 @@ func TestCodexWebsocketBridgeClassifiesErrorBeforeIdentityRewrite(t *testing.T) 
 		}
 	}
 }
+
+func TestCodexWebsocketBridgeTerminalAndQuotaUseRawFrame(t *testing.T) {
+	for _, buffering := range []bool{false, true} {
+		// The upstream keeps the connection open after response.completed, so the stream only
+		// ends if the executor recognises the terminal frame.
+		up := newBridgeUpstream(t, func([]byte) []string {
+			return []string{bridgeRateLimitsFrame, bridgeCreatedFrame, bridgeDeltaFrame, bridgeCompletedFrame}
+		})
+		cfg := bridgeTestConfig(100)
+		cfg.Routing.SessionAffinity = true
+		cfg.Codex.IdentityConfuse = true
+		cfg.Codex.StreamBootstrapBuffering = buffering
+		exec := NewCodexAutoExecutor(cfg)
+		ctx := logging.WithResponseHeadersHolder(context.Background())
+		// A prompt_cache_key equal to "completed" would rewrite the terminal event type.
+		req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"completed"}`)}
+		result, errExec := exec.ExecuteStream(ctx, bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+		if errExec != nil {
+			t.Fatalf("buffering=%v: ExecuteStream() error = %v", buffering, errExec)
+		}
+		chunks, errStream := collectBridgeChunks(t, result)
+		if errStream != nil {
+			t.Fatalf("buffering=%v: stream error = %v", buffering, errStream)
+		}
+		if len(chunks) == 0 || !strings.Contains(string(chunks[len(chunks)-1]), `"type":"response.completed"`) {
+			t.Fatalf("buffering=%v: last chunk is not response.completed: %q", buffering, chunks)
+		}
+		if len(logging.GetResponseHeaders(ctx)) == 0 {
+			t.Fatalf("buffering=%v: quota event was not captured", buffering)
+		}
+	}
+}

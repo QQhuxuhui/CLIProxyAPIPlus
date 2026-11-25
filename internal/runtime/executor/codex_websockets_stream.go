@@ -437,14 +437,16 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				continue
 			}
-			// Decide on the raw upstream frame: identity handling rewrites bytes anywhere in the
-			// frame, which could alter the event type it is matched on.
 			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
-			// Error frames are also classified from the raw frame on the bridge, so a rewritten
-			// type or key cannot turn an upstream rejection into ordinary stream data.
-			errorFrame := payload
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			// The bridge keeps the raw upstream frame for every internal decision (event type,
+			// errors, terminal events, usage, quota). Identity confusion rewrites bytes anywhere
+			// in the frame, so a client value such as "completed" or "error" could change what
+			// the frame is taken to be. Skipping it leaves the downstream output unchanged,
+			// because the expose step before output maps the confused values back on its own.
+			if !bridge {
+				payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			}
 			if bridge {
 				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
 			} else {
@@ -461,7 +463,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 
-			if wsErr, ok := parseCodexWebsocketStreamError(bridge, codexBridgeErrorFrame(bridge, errorFrame, payload), e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketStreamError(bridge, payload, e.modelLevelCooling()); ok {
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 					sess.clearActive(conn, readCh)
@@ -484,7 +486,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				return nil, wsErr
 			}
-			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(codexBridgeErrorFrame(bridge, errorFrame, payload), e.modelLevelCooling()); ok {
+			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 				// A transient capacity rejection is retried on another credential, so the
 				// downstream websocket session must survive this upstream teardown. Notifying
 				// the disconnect here would close the client connection before the retry can
@@ -738,14 +740,16 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if len(payload) == 0 {
 				continue
 			}
-			// Decide on the raw upstream frame: identity handling rewrites bytes anywhere in the
-			// frame, which could alter the event type it is matched on.
 			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
-			// Error frames are also classified from the raw frame on the bridge, so a rewritten
-			// type or key cannot turn an upstream rejection into ordinary stream data.
-			errorFrame := payload
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			// The bridge keeps the raw upstream frame for every internal decision (event type,
+			// errors, terminal events, usage, quota). Identity confusion rewrites bytes anywhere
+			// in the frame, so a client value such as "completed" or "error" could change what
+			// the frame is taken to be. Skipping it leaves the downstream output unchanged,
+			// because the expose step before output maps the confused values back on its own.
+			if !bridge {
+				payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			}
 			if bridge {
 				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
 			} else {
@@ -757,7 +761,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 
-			if wsErr, ok := parseCodexWebsocketStreamError(bridge, codexBridgeErrorFrame(bridge, errorFrame, payload), e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketStreamError(bridge, payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				if sess != nil {
@@ -775,7 +779,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: wsErr})
 				return
 			}
-			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(codexBridgeErrorFrame(bridge, errorFrame, payload), e.modelLevelCooling()); ok {
+			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				if sess != nil {
