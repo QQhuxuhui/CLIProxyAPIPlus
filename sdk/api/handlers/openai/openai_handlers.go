@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -118,12 +119,20 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	stream := streamResult.Type == gjson.True
 
+	originalJSON := rawJSON
+
 	// Some clients send OpenAI Responses-format payloads to /v1/chat/completions.
 	// Convert them to Chat Completions so downstream translators preserve tool metadata.
 	if shouldTreatAsResponsesFormat(rawJSON) {
 		modelName := gjson.GetBytes(rawJSON, "model").String()
 		rawJSON = responsesconverter.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, rawJSON, stream)
 		stream = gjson.GetBytes(rawJSON, "stream").Bool()
+	}
+
+	// Web image models are served by the web image pipeline, not the Codex text backend.
+	if model := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String()); model != "" && h.isWebImageModel(model) {
+		h.chatCompletionsWebImage(c, originalJSON, model, stream)
+		return
 	}
 
 	if stream {

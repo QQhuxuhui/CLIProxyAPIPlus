@@ -22,6 +22,9 @@ type modelExecutionOptions struct {
 	SkipRouterPluginID      string
 	ForcedProvider          string
 	AuthSelectionModel      string
+	// ExecutorRequestPath, when set, replaces the request path in the metadata handed to the
+	// executor only. Model router plugins still observe the real inbound path.
+	ExecutorRequestPath string
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.

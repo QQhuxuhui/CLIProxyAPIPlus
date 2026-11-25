@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -56,9 +57,17 @@ func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handle
 // ExecuteWebImageWithAuthManager executes a web image request while preserving
 // the standard OpenAI Images response protocol for downstream interceptors.
 func (h *BaseAPIHandler) ExecuteWebImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	return h.ExecuteWebImageForPathWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, authSelectionModel, "")
+}
+
+// ExecuteWebImageForPathWithAuthManager executes a web image request on behalf of an entry point
+// whose inbound path is not an Images API path. executorRequestPath is the Images API path the
+// executor should see; an empty value keeps the inbound path.
+func (h *BaseAPIHandler) ExecuteWebImageForPathWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel, executorRequestPath string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	return h.executeWithAuthManagerFormats(ctx, handlerType, "openai-image", modelName, rawJSON, alt, true, modelExecutionOptions{
-		ForcedProvider:     "codex",
-		AuthSelectionModel: authSelectionModel,
+		ForcedProvider:      "codex",
+		AuthSelectionModel:  authSelectionModel,
+		ExecutorRequestPath: executorRequestPath,
 	})
 }
 
@@ -87,6 +96,9 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+	if path := strings.TrimSpace(execOptions.ExecutorRequestPath); path != "" {
+		reqMeta[coreexecutor.RequestPathMetadataKey] = path
+	}
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	setGenerateMetadata(reqMeta, rawJSON)
