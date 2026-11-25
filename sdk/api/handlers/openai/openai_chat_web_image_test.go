@@ -733,8 +733,24 @@ func TestChatCompletionsWebImageChoiceCount(t *testing.T) {
 		}
 	})
 
-	for _, item := range []string{`{"b64_json":"%%%"}`, `{"b64_json":"iVBORw0KGgo"}`, `{"b64_json":123}`} {
-		t.Run("invalid image data is a bad gateway: "+item, func(t *testing.T) {
+	t.Run("line-folded image data becomes a single-line data URL", func(t *testing.T) {
+		encoded := base64.StdEncoding.EncodeToString(chatWebImagePNG)
+		executor := &chatWebImageTestExecutor{respond: func([]byte) ([]byte, error) {
+			return []byte(`{"created":1,"data":[{"b64_json":"` + encoded[:8] + `\r\n` + encoded[8:] + `"}]}`), nil
+		}}
+		handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+		resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":"draw"}]}`)
+		if got := gjson.GetBytes(resp.Body.Bytes(), "choices.0.message.content").String(); got != "![image]("+dataURL("image/png", chatWebImagePNG)+")" {
+			t.Fatalf("status = %d, content = %q", resp.Code, got)
+		}
+	})
+
+	for _, item := range []string{`{"b64_json":"%%%"}`, `{"b64_json":"iVBORw0KGgo"}`, `{"b64_json":123}`, `{"b64_json":"` + strings.Repeat("A", 1020) + `YQ==Yg=="}`, `{"b64_json":"YQ=a"}`} {
+		name := item
+		if len(name) > 40 {
+			name = name[:40]
+		}
+		t.Run("invalid image data is a bad gateway: "+name, func(t *testing.T) {
 			executor := &chatWebImageTestExecutor{respond: func([]byte) ([]byte, error) {
 				return []byte(`{"created":1,"data":[` + item + `]}`), nil
 			}}
