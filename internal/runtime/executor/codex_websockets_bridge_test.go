@@ -654,3 +654,29 @@ func TestCodexWebsocketBridgeLogsFramesAsHTTPResponse(t *testing.T) {
 		t.Fatalf("bridged frames missing from the HTTP response log: %q", data)
 	}
 }
+
+func TestCodexWebsocketBridgeClassifiesErrorBeforeIdentityRewrite(t *testing.T) {
+	const rateLimited = `{"type":"error","status":429,"error":{"type":"rate_limit_error","message":"slow down"},"headers":{"retry-after":"30"}}`
+	for _, buffering := range []bool{false, true} {
+		up := newBridgeUpstream(t, func([]byte) []string { return []string{rateLimited} })
+		cfg := bridgeTestConfig(100)
+		cfg.Routing.SessionAffinity = true
+		cfg.Codex.IdentityConfuse = true
+		cfg.Codex.StreamBootstrapBuffering = buffering
+		exec := NewCodexAutoExecutor(cfg)
+		// A prompt_cache_key equal to "error" makes identity handling rewrite the frame type.
+		req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"error"}`)}
+		result, errExec := exec.ExecuteStream(context.Background(), bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+		if errExec == nil {
+			chunks, errExec2 := collectBridgeChunks(t, result)
+			if len(chunks) != 0 {
+				t.Fatalf("buffering=%v: rejection delivered as stream data: %q", buffering, chunks)
+			}
+			errExec = errExec2
+		}
+		var se statusErr
+		if !errors.As(errExec, &se) || se.StatusCode() != http.StatusTooManyRequests || !se.IsCredentialScoped() {
+			t.Fatalf("buffering=%v: error = %T %v, want account-wide 429", buffering, errExec, errExec)
+		}
+	}
+}

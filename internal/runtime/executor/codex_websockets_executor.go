@@ -262,3 +262,12 @@ func parseCodexWebsocketStreamError(bridge bool, payload []byte, modelLevelCooli
 	}
 	return newCodexStatusErrWithHeaders(status, buildCodexWebsocketErrorPayload(payload, status), parseCodexWebsocketErrorHeaders(payload), modelLevelCooling), true
 }
+
+// codexBridgeErrorFrame returns the frame error classification reads: the raw upstream frame on
+// the bridge, the identity-handled frame otherwise (unchanged behaviour).
+func codexBridgeErrorFrame(bridge bool, raw, handled []byte) []byte {
+	if bridge {
+		return raw
+	}
+	return handled
+}
