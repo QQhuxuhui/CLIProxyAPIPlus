@@ -625,6 +625,20 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 	}
 	imageReq := buildChatWebImageImagesRequest(model, parsed, references)
 	finalizer := chatWebImageFinalizer(cliCtx, newChatCompletionID(), model, parsed, stream, originalJSON)
+	var chunks chan chatWebImageChunk
+	if stream {
+		// Unbuffered: each intercepted chunk is written by the handler goroutine before the
+		// next one is built, so at most one chunk is held outside the Images response.
+		chunks = make(chan chatWebImageChunk)
+		finalizer.Emit = func(headers http.Header, payload []byte) error {
+			select {
+			case chunks <- chatWebImageChunk{headers: headers, payload: payload}:
+				return nil
+			case <-cliCtx.Done():
+				return cliCtx.Err()
+			}
+		}
+	}
 	execute := func() chatWebImageResult {
 		body, headers, errMsg := h.ExecuteWebImageForPathWithAuthManager(cliCtx, webImagesHandlerType, model, imageReq, "", internalconfig.DefaultWebImageModel, executorPath, h.HandlerType(), finalizer)
 		return chatWebImageResult{body: body, headers: headers, errMsg: errMsg}
@@ -646,7 +660,12 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 		return
 	}
 
-	h.streamChatWebImage(c, cfg, cliCancel, execute)
+	h.streamChatWebImage(c, cfg, cliCancel, execute, chunks)
+}
+
+type chatWebImageChunk struct {
+	headers http.Header
+	payload []byte
 }
 
 // chatWebImageFinalizer converts the Images response into the chat completion (or its SSE
@@ -657,39 +676,47 @@ func chatWebImageFinalizer(ctx context.Context, id, model string, parsed chatWeb
 		Protocol:        "openai",
 		Stream:          stream,
 		OriginalRequest: originalJSON,
-		Build: func(imagesResponse []byte) ([][]byte, *interfaces.ErrorMessage) {
+		Build: func(imagesResponse []byte, emit func([]byte) bool) *interfaces.ErrorMessage {
+			// Every image is validated before the first chunk is emitted.
 			contents, created, errImages := chatWebImageMarkdown(imagesResponse, parsed.n)
 			if errImages != nil {
-				return nil, &interfaces.ErrorMessage{StatusCode: errImages.status, Error: errors.New(errImages.message)}
+				return &interfaces.ErrorMessage{StatusCode: errImages.status, Error: errors.New(errImages.message)}
 			}
 			if !stream {
-				return [][]byte{buildChatWebImageCompletion(id, model, created, contents, chatWebImagePromptTokens(ctx, parsed.prompt))}, nil
+				emit(buildChatWebImageCompletion(id, model, created, contents, chatWebImagePromptTokens(ctx, parsed.prompt)))
+				return nil
 			}
-			chunks := make([][]byte, 0, 2*len(contents)+1)
-			for index, content := range contents {
+			count := len(contents)
+			for index := range contents {
 				choice := []byte(`{"delta":{"role":"assistant"},"finish_reason":null}`)
 				choice, _ = sjson.SetBytes(choice, "index", index)
-				choice, _ = sjson.SetBytes(choice, "delta.content", content)
-				chunks = append(chunks, buildChatWebImageChunk(id, model, created, choice))
+				choice, _ = sjson.SetBytes(choice, "delta.content", contents[index])
+				// Release the data URL once its chunk exists.
+				contents[index] = ""
+				if !emit(buildChatWebImageChunk(id, model, created, choice)) {
+					return nil
+				}
 			}
-			for index := range contents {
+			for index := 0; index < count; index++ {
 				choice := []byte(`{"delta":{},"finish_reason":"stop"}`)
 				choice, _ = sjson.SetBytes(choice, "index", index)
-				chunks = append(chunks, buildChatWebImageChunk(id, model, created, choice))
+				if !emit(buildChatWebImageChunk(id, model, created, choice)) {
+					return nil
+				}
 			}
 			if parsed.includeUsage {
 				usageChunk := buildChatWebImageChunk(id, model, created, nil)
 				usageChunk, _ = sjson.SetRawBytes(usageChunk, "usage", chatWebImageUsage(chatWebImagePromptTokens(ctx, parsed.prompt)))
-				chunks = append(chunks, usageChunk)
+				emit(usageChunk)
 			}
-			return chunks, nil
+			return nil
 		},
 	}
 }
 
 // streamChatWebImage runs the generation while sending SSE keep-alives. Headers are committed
 // on the first write, so failures before any keep-alive still return a real status code.
-func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfig.SDKConfig, cliCancel handlers.APIHandlerCancelFunc, execute func() chatWebImageResult) {
+func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfig.SDKConfig, cliCancel handlers.APIHandlerCancelFunc, execute func() chatWebImageResult, chunks <-chan chatWebImageChunk) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		(&chatWebImageError{status: http.StatusInternalServerError, message: "Streaming not supported", errType: "server_error"}).write(c)
@@ -731,6 +758,10 @@ func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfi
 			// unwind so gin does not recycle the context while it is still in use.
 			<-results
 			return
+		case chunk := <-chunks:
+			commit(chunk.headers)
+			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", chunk.payload)
+			flusher.Flush()
 		case <-ticks:
 			commit(nil)
 			_, _ = fmt.Fprint(c.Writer, ": keep-alive\n\n")
@@ -753,9 +784,9 @@ func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfi
 				cliCancel(result.errMsg.Error)
 				return
 			}
-			// The body is already SSE framed and terminated by [DONE].
+			// Every chunk was written as it was emitted; only the terminator is left.
 			commit(result.headers)
-			_, _ = c.Writer.Write(result.body)
+			_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 			flusher.Flush()
 			cliCancel(nil)
 			return

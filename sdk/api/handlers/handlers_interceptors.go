@@ -369,6 +369,7 @@ type requestAfterAuthCapture struct {
 	body                    []byte
 	originalRequest         []byte
 	originalRequestReplaced bool
+	metadata                map[string]any
 }
 
 func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterceptRequest, resp coreexecutor.RequestAfterAuthInterceptResponse) {
@@ -392,6 +393,19 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 	c.body = body
 	c.originalRequest = originalRequest
 	c.originalRequestReplaced = originalRequestReplaced
+	c.metadata = req.Metadata
+}
+
+// executedMetadata returns the metadata snapshot of the last selected-auth attempt, which
+// includes values the auth manager adds during execution (such as the canonical session ID),
+// or nil when no attempt was captured.
+func (c *requestAfterAuthCapture) executedMetadata() map[string]any {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.metadata
 }
 
 func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Request, coreexecutor.Options) {

@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -17,45 +17,72 @@ import (
 type ResponseFinalizer struct {
 	// Protocol is the client response protocol reported to interceptors.
 	Protocol string
-	// Stream selects stream chunk interceptors: Build returns SSE data payloads and the
-	// execution returns them framed as an SSE body terminated by [DONE]. Otherwise Build
-	// returns exactly one body and response interceptors run on it.
+	// Stream selects stream chunk interceptors: Build emits SSE data payloads, each is
+	// intercepted and handed to Emit, and the execution returns no body. Otherwise Build emits
+	// exactly one body and response interceptors run on it.
 	Stream bool
 	// OriginalRequest is the client request reported to interceptors. Empty keeps the
 	// executor's original request.
 	OriginalRequest []byte
-	// Build converts the executor payload into the client payloads.
-	Build func(body []byte) ([][]byte, *interfaces.ErrorMessage)
+	// Build converts the executor payload into client payloads and passes each to emit,
+	// stopping when emit returns false.
+	Build func(body []byte, emit func(payload []byte) bool) *interfaces.ErrorMessage
+	// Emit delivers one intercepted stream payload with the response headers known so far.
+	// It is required when Stream is set; an error stops the stream and fails the request.
+	Emit func(headers http.Header, payload []byte) error
 }
+
+var errFinalizerBodyCount = errors.New("response finalizer must emit exactly one body")
 
 // finalizeResponse runs a ResponseFinalizer and the interceptors for its protocol.
 func (h *BaseAPIHandler) finalizeResponse(ctx context.Context, requestID string, fin *ResponseFinalizer, model, requestedModel string, opts coreexecutor.Options, requestBody []byte, rawHeaders, responseHeaders http.Header, payload []byte, skipPluginID string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	bodies, errMsg := fin.Build(payload)
-	if errMsg != nil {
-		return nil, nil, errMsg
-	}
 	originalRequest := opts.OriginalRequest
 	if len(fin.OriginalRequest) > 0 {
 		originalRequest = fin.OriginalRequest
 	}
 	if !fin.Stream {
+		var bodies [][]byte
+		if errMsg := fin.Build(payload, func(body []byte) bool {
+			bodies = append(bodies, body)
+			return true
+		}); errMsg != nil {
+			return nil, nil, errMsg
+		}
 		if len(bodies) != 1 {
 			return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: errFinalizerBodyCount}
 		}
 		body, headers := h.applyResponseInterceptors(ctx, requestID, fin.Protocol, model, requestedModel, opts, rawHeaders, responseHeaders, originalRequest, requestBody, bodies[0], http.StatusOK, skipPluginID)
 		return body, headers, nil
 	}
-	interceptor := h.newSynthesizedStreamInterceptor(ctx, requestID, fin.Protocol, model, requestedModel, opts.Headers, rawHeaders, originalRequest, requestBody, opts.Metadata, skipPluginID)
-	var out bytes.Buffer
-	for _, body := range bodies {
-		if kept, keep := interceptor.chunk(body); keep {
-			out.WriteString("data: ")
-			out.Write(kept)
-			out.WriteString("\n\n")
-		}
+	if ctx.Err() != nil {
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusRequestTimeout, Error: ctx.Err()}
 	}
-	out.WriteString("data: [DONE]\n\n")
-	return out.Bytes(), interceptor.downstreamHeaders(responseHeaders), nil
+	interceptor := h.newSynthesizedStreamInterceptor(ctx, requestID, fin.Protocol, model, requestedModel, opts.Headers, rawHeaders, originalRequest, requestBody, opts.Metadata, skipPluginID)
+	var errStream error
+	errMsg := fin.Build(payload, func(body []byte) bool {
+		// Stop before the next interceptor call once the client is gone.
+		if errStream = ctx.Err(); errStream != nil {
+			return false
+		}
+		kept, keep := interceptor.chunk(body)
+		if !keep {
+			return true
+		}
+		if errStream = fin.Emit(interceptor.downstreamHeaders(responseHeaders), kept); errStream != nil {
+			return false
+		}
+		return true
+	})
+	if errStream == nil {
+		errStream = ctx.Err()
+	}
+	if errStream != nil {
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusRequestTimeout, Error: errStream}
+	}
+	if errMsg != nil {
+		return nil, nil, errMsg
+	}
+	return nil, interceptor.downstreamHeaders(responseHeaders), nil
 }
 
 // synthesizedStreamInterceptor runs stream chunk interceptors over SSE payloads that are built

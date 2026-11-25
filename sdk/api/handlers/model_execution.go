@@ -37,8 +37,6 @@ type modelExecutionOptions struct {
 	ResponseFinalizer *ResponseFinalizer
 }
 
-var errFinalizerBodyCount = errors.New("response finalizer must return exactly one body")
-
 // pluginProtocol is the protocol reported to plugins: the client protocol when set, otherwise
 // the entry protocol.
 func (o modelExecutionOptions) pluginProtocol(entryProtocol string) string {

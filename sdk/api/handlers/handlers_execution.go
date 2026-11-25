@@ -159,7 +159,11 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	if fin := execOptions.ResponseFinalizer; fin != nil {
-		body, finalHeaders, errFinalize := h.finalizeResponse(ctx, lifecycle.requestID(), fin, normalizedModel, originalRequestedModel, executedOpts, executedReq.Payload, rawResponseHeaders, responseHeaders, resp.Payload, execOptions.SkipInterceptorPluginID)
+		finalOpts := executedOpts
+		if metadata := afterAuthCapture.executedMetadata(); metadata != nil {
+			finalOpts.Metadata = metadata
+		}
+		body, finalHeaders, errFinalize := h.finalizeResponse(ctx, lifecycle.requestID(), fin, normalizedModel, originalRequestedModel, finalOpts, executedReq.Payload, rawResponseHeaders, responseHeaders, resp.Payload, execOptions.SkipInterceptorPluginID)
 		if errFinalize != nil {
 			lifecycle.completeError(ctx, errFinalize)
 			return nil, nil, errFinalize
@@ -281,21 +285,32 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 		lifecycle.completeError(execCtx, errMsg)
 		return nil, nil, errMsg
 	}
-	if reporter != nil && !nestedTracker.hasNestedExecution() {
-		detail := parsePluginExecutorResponseUsage(responseProtocol, resp.Payload)
-		reporter.Publish(execCtx, detail)
-		reporter.EnsurePublished(execCtx)
-	}
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	if fin := execOptions.ResponseFinalizer; fin != nil {
+		// Publish usage only after the finalizer accepted the response, so a response the
+		// client receives as an error is not recorded as a success.
 		body, finalHeaders, errFinalize := h.finalizeResponse(execCtx, lifecycle.requestID(), fin, modelName, originalRequestedModel, opts, req.Payload, rawResponseHeaders, responseHeaders, resp.Payload, execOptions.SkipInterceptorPluginID)
+		if reporter != nil && !nestedTracker.hasNestedExecution() {
+			detail := parsePluginExecutorResponseUsage(responseProtocol, resp.Payload)
+			if errFinalize != nil {
+				reporter.PublishFailureWithDetail(execCtx, detail, errFinalize.Error)
+			} else {
+				reporter.Publish(execCtx, detail)
+			}
+			reporter.EnsurePublished(execCtx)
+		}
 		if errFinalize != nil {
 			lifecycle.completeError(execCtx, errFinalize)
 			return nil, nil, errFinalize
 		}
 		lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 		return body, finalHeaders, nil
+	}
+	if reporter != nil && !nestedTracker.hasNestedExecution() {
+		detail := parsePluginExecutorResponseUsage(responseProtocol, resp.Payload)
+		reporter.Publish(execCtx, detail)
+		reporter.EnsurePublished(execCtx)
 	}
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)

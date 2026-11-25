@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/tidwall/gjson"
@@ -139,9 +140,12 @@ type chatWebImageInterceptorHost struct {
 	// markRequest makes the before-auth interceptor set X-Stage on the request.
 	markRequest bool
 	// events records request IDs in call order: before, response, chunk, complete.
-	events       []string
-	chunkHeaders []http.Header
-	chunkMeta    []map[string]any
+	events        []string
+	chunkHeaders  []http.Header
+	chunkMeta     []map[string]any
+	afterAuthMeta map[string]any
+	// onChunk runs inside the stream chunk interceptor for each data chunk.
+	onChunk func(ctx context.Context, index int)
 }
 
 func (h *chatWebImageInterceptorHost) record(event string) {
@@ -171,6 +175,7 @@ func (h *chatWebImageInterceptorHost) InterceptRequestBeforeAuth(_ context.Conte
 func (h *chatWebImageInterceptorHost) InterceptRequestAfterAuth(_ context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
 	h.mu.Lock()
 	h.afterAuth = req.SourceFormat
+	h.afterAuthMeta = req.Metadata
 	h.mu.Unlock()
 	return pluginapi.RequestInterceptResponse{}
 }
@@ -186,7 +191,7 @@ func (h *chatWebImageInterceptorHost) InterceptResponse(_ context.Context, req p
 	return pluginapi.ResponseInterceptResponse{}
 }
 
-func (h *chatWebImageInterceptorHost) InterceptStreamChunk(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+func (h *chatWebImageInterceptorHost) InterceptStreamChunk(ctx context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
 	if req.ChunkIndex == pluginapi.StreamChunkHeaderInitIndex {
 		return pluginapi.StreamChunkInterceptResponse{}
 	}
@@ -196,6 +201,9 @@ func (h *chatWebImageInterceptorHost) InterceptStreamChunk(_ context.Context, re
 	h.chunkMeta = append(h.chunkMeta, req.Metadata)
 	h.mu.Unlock()
 	h.record("chunk:" + req.RequestID)
+	if h.onChunk != nil {
+		h.onChunk(ctx, req.ChunkIndex)
+	}
 	if h.dropDataImage && strings.Contains(string(req.Body), "data:image") {
 		return pluginapi.StreamChunkInterceptResponse{DropChunk: true}
 	}
@@ -480,6 +488,112 @@ func TestChatCompletionsWebImageStreamChunksSeeExecutedRequest(t *testing.T) {
 		if got := host.chunkMeta[index][cliproxyexecutor.RequestPathMetadataKey]; got != "/v1/chat/completions" {
 			t.Fatalf("chunk %d request_path = %v", index, got)
 		}
+	}
+}
+
+func TestChatCompletionsWebImageStreamChunksSeeSessionMetadata(t *testing.T) {
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	host := &chatWebImageInterceptorHost{}
+	handler.BaseAPIHandler.PluginHost = host
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/v1/chat/completions", handler.ChatCompletions)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-image-web","stream":true,"messages":[{"role":"user","content":"draw"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Session-ID", "chat-web-image-session")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+	}
+	want, _ := host.afterAuthMeta[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
+	if want == "" {
+		t.Fatalf("after-auth metadata has no canonical session ID: %v", host.afterAuthMeta)
+	}
+	if len(host.chunkMeta) == 0 {
+		t.Fatal("stream chunk interceptor was not called")
+	}
+	for index, metadata := range host.chunkMeta {
+		if got := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != want {
+			t.Fatalf("chunk %d canonical session ID = %v, want %q", index, got, want)
+		}
+	}
+}
+
+func TestChatCompletionsWebImageDisconnectDuringChunkInterceptionIsCanceled(t *testing.T) {
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	clientCtx, disconnect := context.WithCancel(context.Background())
+	defer disconnect()
+	host := &chatWebImageInterceptorHost{onChunk: func(ctx context.Context, index int) {
+		if index == 0 {
+			disconnect()
+			<-ctx.Done()
+		}
+	}}
+	handler.BaseAPIHandler.PluginHost = host
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/v1/chat/completions", handler.ChatCompletions)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-image-web","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"draw"}]}`)).WithContext(clientCtx)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(httptest.NewRecorder(), req)
+
+	kinds := chatWebImageEventKinds(t, host.events)
+	if got, want := strings.Join(kinds, ","), "before,chunk,complete:"+string(pluginapi.RequestCompletionCanceled); got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
+type chatWebImageUsagePlugin struct {
+	records chan usage.Record
+}
+
+func (p *chatWebImageUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
+	if record.Provider != "web-plugin" {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+type chatWebImageNoopUsagePlugin struct{}
+
+func (chatWebImageNoopUsagePlugin) HandleUsage(context.Context, usage.Record) {}
+
+func TestChatCompletionsWebImagePluginExecutorInvalidResultPublishesFailedUsage(t *testing.T) {
+	plugin := &chatWebImageUsagePlugin{records: make(chan usage.Record, 8)}
+	const pluginName = "chat-web-image-test-usage"
+	usage.RegisterNamedPlugin(pluginName, plugin)
+	t.Cleanup(func() { usage.RegisterNamedPlugin(pluginName, chatWebImageNoopUsagePlugin{}) })
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	router := &chatWebImagePluginExecutorRouter{}
+	handler.BaseAPIHandler.ModelRouterHost = router
+
+	resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":"draw"}]}`)
+
+	if resp.Code != http.StatusBadGateway || router.executed.Load() != 1 {
+		t.Fatalf("status = %d, plugin executor calls = %d: %s", resp.Code, router.executed.Load(), resp.Body.String())
+	}
+	select {
+	case record := <-plugin.records:
+		if !record.Failed {
+			t.Fatalf("usage record = %+v, want Failed", record)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the usage record")
+	}
+	select {
+	case record := <-plugin.records:
+		t.Fatalf("unexpected second usage record %+v", record)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
