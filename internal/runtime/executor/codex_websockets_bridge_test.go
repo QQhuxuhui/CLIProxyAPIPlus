@@ -602,7 +602,7 @@ func TestCodexWebsocketBridgeRestoresConfusedIdentity(t *testing.T) {
 	t.Fatalf("no response.created downstream: %q", chunks)
 }
 
-func TestCodexWebsocketBridgeFiltersBeforeIdentityRewrite(t *testing.T) {
+func TestCodexWebsocketBridgeFiltersUnderIdentityRewrite(t *testing.T) {
 	for _, buffering := range []bool{false, true} {
 		up := newBridgeUpstream(t, bridgeFullFrames)
 		cfg := bridgeTestConfig(100)
@@ -655,7 +655,7 @@ func TestCodexWebsocketBridgeLogsFramesAsHTTPResponse(t *testing.T) {
 	}
 }
 
-func TestCodexWebsocketBridgeClassifiesErrorBeforeIdentityRewrite(t *testing.T) {
+func TestCodexWebsocketBridgeClassifiesErrorUnderIdentityRewrite(t *testing.T) {
 	const rateLimited = `{"type":"error","status":429,"error":{"type":"rate_limit_error","message":"slow down"},"headers":{"retry-after":"30"}}`
 	for _, buffering := range []bool{false, true} {
 		up := newBridgeUpstream(t, func([]byte) []string { return []string{rateLimited} })
@@ -681,7 +681,7 @@ func TestCodexWebsocketBridgeClassifiesErrorBeforeIdentityRewrite(t *testing.T) 
 	}
 }
 
-func TestCodexWebsocketBridgeTerminalAndQuotaUseRawFrame(t *testing.T) {
+func TestCodexWebsocketBridgeTerminalAndQuotaSurviveIdentityRewrite(t *testing.T) {
 	for _, buffering := range []bool{false, true} {
 		// The upstream keeps the connection open after response.completed, so the stream only
 		// ends if the executor recognises the terminal frame.
@@ -710,5 +710,62 @@ func TestCodexWebsocketBridgeTerminalAndQuotaUseRawFrame(t *testing.T) {
 		if len(logging.GetResponseHeaders(ctx)) == 0 {
 			t.Fatalf("buffering=%v: quota event was not captured", buffering)
 		}
+	}
+}
+
+type codexStreamExecutor interface {
+	ExecuteStream(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
+}
+
+// The identity replacement must not rename protocol fields on any transport: a client
+// prompt_cache_key of "completed" used to rewrite response.completed and hang the stream.
+func TestCodexIdentityConfuseKeepsTerminalOnAllTransports(t *testing.T) {
+	frames := func([]byte) []string { return []string{bridgeCreatedFrame, bridgeDeltaFrame, bridgeCompletedFrame} }
+	cfg := &config.Config{Routing: config.RoutingConfig{SessionAffinity: true}, Codex: config.CodexConfig{IdentityConfuse: true}}
+	payload := []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"completed"}`)
+
+	run := func(name string, ctx context.Context, exec codexStreamExecutor, opts cliproxyexecutor.Options, baseURL string) {
+		t.Helper()
+		result, errExec := exec.ExecuteStream(ctx, bridgeTestOAuth(baseURL), cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: payload}, opts)
+		if errExec != nil {
+			t.Fatalf("%s: ExecuteStream() error = %v", name, errExec)
+		}
+		chunks, errStream := collectBridgeChunks(t, result)
+		if errStream != nil {
+			t.Fatalf("%s: stream error = %v", name, errStream)
+		}
+		if len(chunks) == 0 || !strings.Contains(string(chunks[len(chunks)-1]), "response.completed") {
+			t.Fatalf("%s: last chunk is not response.completed: %q", name, chunks)
+		}
+	}
+
+	httpUp := newBridgeUpstream(t, frames)
+	run("http", context.Background(), NewCodexExecutor(cfg), bridgeTestOpts(), httpUp.server.URL)
+
+	nativeUp := newBridgeUpstream(t, frames)
+	nativeOpts := bridgeTestOpts()
+	run("downstream websocket", cliproxyexecutor.WithDownstreamWebsocket(context.Background()), NewCodexWebsocketsExecutor(cfg), nativeOpts, nativeUp.server.URL)
+}
+
+// Error bodies follow the HTTP contract on the bridge: client identity values quoted by the
+// upstream are replaced with their confused form before the error is built.
+func TestCodexWebsocketBridgeErrorBodyUsesConfusedIdentity(t *testing.T) {
+	const rejected = `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"bad prompt cache-original"}}`
+	up := newBridgeUpstream(t, func([]byte) []string { return []string{rejected} })
+	cfg := bridgeTestConfig(100)
+	cfg.Routing.SessionAffinity = true
+	cfg.Codex.IdentityConfuse = true
+	exec := NewCodexAutoExecutor(cfg)
+	req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"cache-original"}`)}
+	result, errExec := exec.ExecuteStream(context.Background(), bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+	if errExec == nil {
+		_, errExec = collectBridgeChunks(t, result)
+	}
+	if errExec == nil {
+		t.Fatal("rejection not returned as an error")
+	}
+	confused := codexIdentityConfuseUUID("auth-bridge-1", "prompt-cache", "cache-original")
+	if strings.Contains(errExec.Error(), "cache-original") || !strings.Contains(errExec.Error(), confused) {
+		t.Fatalf("error body = %q, want the confused identity %q", errExec.Error(), confused)
 	}
 }

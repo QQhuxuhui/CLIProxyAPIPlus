@@ -439,14 +439,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
-			// The bridge keeps the raw upstream frame for every internal decision (event type,
-			// errors, terminal events, usage, quota). Identity confusion rewrites bytes anywhere
-			// in the frame, so a client value such as "completed" or "error" could change what
-			// the frame is taken to be. Skipping it leaves the downstream output unchanged,
-			// because the expose step before output maps the confused values back on its own.
-			if !bridge {
-				payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			}
+			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 			if bridge {
 				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
 			} else {
@@ -742,14 +735,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
-			// The bridge keeps the raw upstream frame for every internal decision (event type,
-			// errors, terminal events, usage, quota). Identity confusion rewrites bytes anywhere
-			// in the frame, so a client value such as "completed" or "error" could change what
-			// the frame is taken to be. Skipping it leaves the downstream output unchanged,
-			// because the expose step before output maps the confused values back on its own.
-			if !bridge {
-				payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			}
+			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 			if bridge {
 				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
 			} else {

@@ -348,10 +348,10 @@ func (state *codexIdentityConfuseState) confuseTurnID(turnID string) string {
 func replaceCodexIdentityResponsePayload(payload []byte, from string, to string) []byte {
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
-	if len(payload) == 0 || from == "" || to == "" || from == to || !bytes.Contains(payload, []byte(from)) {
+	if len(payload) == 0 || from == "" || to == "" || from == to {
 		return payload
 	}
-	return bytes.ReplaceAll(payload, []byte(from), []byte(to))
+	return helps.ReplaceCodexIdentityInPayload(payload, from, to)
 }
 
 func codexIdentityConfuseEnabled(cfg *config.Config) bool {
