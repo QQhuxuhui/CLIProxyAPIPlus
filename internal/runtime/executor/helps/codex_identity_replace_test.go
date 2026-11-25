@@ -58,14 +58,3 @@ func TestReplaceCodexIdentityInPayloadPlainTextAndEventLines(t *testing.T) {
 		t.Fatal("payload without the value was copied")
 	}
 }
-
-func TestReplaceCodexIdentityInPayloadLeavesUpstreamHeaders(t *testing.T) {
-	payload := []byte(`{"type":"error","status":429,"headers":{"retry-after":"3600","x-note":{"v":"3600"}},"error":{"message":"wait 3600"}}`)
-	got := ReplaceCodexIdentityInPayload(payload, "3600", "uuid-4")
-	if gjson.GetBytes(got, "headers.retry-after").String() != "3600" || gjson.GetBytes(got, "headers.x-note.v").String() != "3600" {
-		t.Fatalf("upstream headers rewritten: %s", got)
-	}
-	if gjson.GetBytes(got, "error.message").String() != "wait uuid-4" {
-		t.Fatalf("values after the headers object not replaced: %s", got)
-	}
-}

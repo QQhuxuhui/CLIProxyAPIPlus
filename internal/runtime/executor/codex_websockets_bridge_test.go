@@ -823,3 +823,75 @@ func TestCodexWebsocketBridgeKeepsRetryAfterUnderIdentityRewrite(t *testing.T) {
 		}
 	}
 }
+
+// Error classification reads the raw frame: a client prompt_cache_key equal to a word of the
+// connection-limit code must not turn it into an account-wide rate limit.
+func TestCodexWebsocketBridgeConnectionLimitSurvivesIdentityRewrite(t *testing.T) {
+	const limited = `{"type":"error","status":429,"error":"websocket_connection_limit_reached","headers":{"retry-after":"3600"}}`
+	for _, buffering := range []bool{false, true} {
+		up := newBridgeUpstream(t, func([]byte) []string { return []string{limited} })
+		cfg := bridgeTestConfig(100)
+		cfg.Routing.SessionAffinity = true
+		cfg.Codex.IdentityConfuse = true
+		cfg.Codex.StreamBootstrapBuffering = buffering
+		exec := NewCodexAutoExecutor(cfg)
+		req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"connection"}`)}
+		result, errExec := exec.ExecuteStream(context.Background(), bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+		if errExec == nil {
+			_, errExec = collectBridgeChunks(t, result)
+		}
+		var se statusErr
+		if !errors.As(errExec, &se) {
+			t.Fatalf("buffering=%v: error = %T %v, want statusErr", buffering, errExec, errExec)
+		}
+		if _, hasQuota := se.QuotaDetail(); hasQuota || se.IsCredentialScoped() {
+			t.Fatalf("buffering=%v: connection limit became an account-wide cooldown: %+v", buffering, se)
+		}
+		if retry := se.RetryAfter(); retry == nil || *retry != 0 {
+			t.Fatalf("buffering=%v: RetryAfter = %v, want 0", buffering, retry)
+		}
+	}
+}
+
+// Quota headers come from the raw frame on both websocket modes.
+func TestCodexWebsocketQuotaPlanSurvivesIdentityRewrite(t *testing.T) {
+	frames := func([]byte) []string { return []string{bridgeRateLimitsFrame, bridgeCompletedFrame} }
+	cfg := bridgeTestConfig(100)
+	cfg.Routing.SessionAffinity = true
+	cfg.Codex.IdentityConfuse = true
+	payload := []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"free"}`)
+	for _, mode := range []string{"bridge", "downstream websocket"} {
+		up := newBridgeUpstream(t, frames)
+		ctx := logging.WithResponseHeadersHolder(context.Background())
+		var exec codexStreamExecutor = NewCodexAutoExecutor(cfg)
+		if mode != "bridge" {
+			ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
+			exec = NewCodexWebsocketsExecutor(cfg)
+		}
+		result, errExec := exec.ExecuteStream(ctx, bridgeTestOAuth(up.server.URL), cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: payload}, bridgeTestOpts())
+		if errExec != nil {
+			t.Fatalf("%s: ExecuteStream() error = %v", mode, errExec)
+		}
+		if _, errStream := collectBridgeChunks(t, result); errStream != nil {
+			t.Fatalf("%s: stream error = %v", mode, errStream)
+		}
+		if got := logging.GetResponseHeaders(ctx).Get("X-Codex-Plan-Type"); got != "free" {
+			t.Fatalf("%s: plan type = %q, want free", mode, got)
+		}
+	}
+}
+
+func TestCodexWebsocketBridgeLiteRequestDoesNotForwardRawSession(t *testing.T) {
+	ctx := withCodexWebsocketBridge(contextWithGinHeaders(nil))
+	ginCtx := ctx.Value("gin").(*gin.Context)
+	ginCtx.Request.Header = http.Header{"session_id": []string{"client-session-42"}, "conversation_id": []string{"client-conv-42"}}
+	cfg := &config.Config{Codex: config.CodexConfig{DisableCodexCloaking: true}}
+	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, bridgeTestOAuth(""), "oauth-token", cfg, true, nil)
+	for key, values := range headers {
+		for _, value := range values {
+			if strings.Contains(value, "client-session-42") || strings.Contains(value, "client-conv-42") {
+				t.Fatalf("raw client identity forwarded in %s: %q", key, value)
+			}
+		}
+	}
+}

@@ -206,3 +206,26 @@ func closeHTTPResponseBody(resp *http.Response, logPrefix string) {
 		log.Errorf("%s: %v", logPrefix, errClose)
 	}
 }
+
+// confuseCodexStatusErrMessage applies the response-side identity replacement to the error text
+// shown to the client and kept for failure logs, as the HTTP path does with its error bodies.
+// The error itself is classified from the raw upstream frame.
+func confuseCodexStatusErrMessage(err statusErr, state codexIdentityConfuseState) statusErr {
+	err.msg = string(applyCodexIdentityConfuseResponsePayload([]byte(err.msg), state))
+	if err.codexFailureBody != "" {
+		err.codexFailureBody = string(applyCodexIdentityConfuseResponsePayload([]byte(err.codexFailureBody), state))
+	}
+	return err
+}
+
+func confuseCodexWebsocketErrorMessage(err error, state codexIdentityConfuseState) error {
+	switch typed := err.(type) {
+	case statusErrWithHeaders:
+		typed.statusErr = confuseCodexStatusErrMessage(typed.statusErr, state)
+		return typed
+	case statusErr:
+		return confuseCodexStatusErrMessage(typed, state)
+	default:
+		return err
+	}
+}

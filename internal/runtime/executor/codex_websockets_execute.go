@@ -318,12 +318,18 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 		observeCodexTokenEvent(reporter, payload)
-		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
-		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
+		// Every internal decision (event type, errors, cooldown, quota, usage) reads the raw
+		// upstream frame: identity replacement could otherwise turn a client value such as
+		// "completed" or "free" into a different protocol meaning. The replaced copy is what the
+		// HTTP path shows in its response log and error bodies, so only those use it. Downstream
+		// output is unchanged because the expose step maps confused values back on its own.
+		displayPayload := applyCodexIdentityConfuseResponsePayload(payload, identityState)
+		helps.RecordCodexWebsocketResponseFrame(ctx, e.cfg, false, payload, displayPayload)
+		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, displayPayload)
 		payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
 		if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
+			wsErr = confuseCodexWebsocketErrorMessage(wsErr, identityState)
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 			}
@@ -334,6 +340,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, wsErr
 		}
 		if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+			streamErr = confuseCodexStatusErrMessage(streamErr, identityState)
 			if sess != nil {
 				unlockSession()
 				e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)

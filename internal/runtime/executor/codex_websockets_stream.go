@@ -439,13 +439,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			if bridge {
-				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
-			} else {
-				helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
-			}
-			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
+			// Every internal decision (event type, errors, cooldown, quota, usage) reads the raw
+			// upstream frame: identity replacement could otherwise turn a client value such as
+			// "completed" or "free" into a different protocol meaning. The replaced copy is what the
+			// HTTP path shows in its response log and error bodies, so only those use it. Downstream
+			// output is unchanged because the expose step maps confused values back on its own.
+			displayPayload := applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			helps.RecordCodexWebsocketResponseFrame(ctx, e.cfg, bridge, payload, displayPayload)
+			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, displayPayload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 			if bridgeDrop {
 				// Websocket-only frames never reach an HTTP downstream. They count against the
@@ -457,6 +458,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			if wsErr, ok := parseCodexWebsocketStreamError(bridge, payload, e.modelLevelCooling()); ok {
+				wsErr = confuseCodexWebsocketErrorMessage(wsErr, identityState)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 					sess.clearActive(conn, readCh)
@@ -480,6 +482,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, wsErr
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+				streamErr = confuseCodexStatusErrMessage(streamErr, identityState)
 				// A transient capacity rejection is retried on another credential, so the
 				// downstream websocket session must survive this upstream teardown. Notifying
 				// the disconnect here would close the client connection before the retry can
@@ -735,19 +738,21 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			if bridge {
-				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
-			} else {
-				helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
-			}
-			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
+			// Every internal decision (event type, errors, cooldown, quota, usage) reads the raw
+			// upstream frame: identity replacement could otherwise turn a client value such as
+			// "completed" or "free" into a different protocol meaning. The replaced copy is what the
+			// HTTP path shows in its response log and error bodies, so only those use it. Downstream
+			// output is unchanged because the expose step maps confused values back on its own.
+			displayPayload := applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			helps.RecordCodexWebsocketResponseFrame(ctx, e.cfg, bridge, payload, displayPayload)
+			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, displayPayload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 			if bridgeDrop {
 				continue
 			}
 
 			if wsErr, ok := parseCodexWebsocketStreamError(bridge, payload, e.modelLevelCooling()); ok {
+				wsErr = confuseCodexWebsocketErrorMessage(wsErr, identityState)
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				if sess != nil {
@@ -766,6 +771,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+				streamErr = confuseCodexStatusErrMessage(streamErr, identityState)
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				if sess != nil {

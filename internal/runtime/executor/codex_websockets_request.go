@@ -120,7 +120,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		}
 	}
 	ensureCodexWebsocketSessionHeader(headers, sessionSource, sessionFallback)
-	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking {
+	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking && !isCodexWebsocketBridge(ctx) {
 		deleteHeaderCaseInsensitive(headers, "session_id")
 		deleteHeaderCaseInsensitive(headers, "conversation_id")
 		for key, values := range ginHeaders {

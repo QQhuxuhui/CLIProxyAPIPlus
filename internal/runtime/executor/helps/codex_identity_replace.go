@@ -17,17 +17,10 @@ var codexIdentityProtectedKeys = map[string]struct{}{
 	"code":   {},
 }
 
-// codexIdentityProtectedObjects are JSON fields whose whole object value is left untouched: the
-// upstream response headers a websocket error frame carries (retry-after and the like), which
-// feed cooldown parsing.
-var codexIdentityProtectedObjects = map[string]struct{}{
-	"headers": {},
-}
-
 // ReplaceCodexIdentityInPayload replaces from with to inside the JSON string values of an
-// upstream payload: a JSON document, an SSE data line, or a full SSE body. Object keys,
-// protocol fields (see codexIdentityProtectedKeys) and protected objects are left untouched,
-// and replaced values are re-encoded, so a value containing quotes or backslashes keeps the
+// upstream payload: a JSON document, an SSE data line, or a full SSE body. Object keys and
+// protocol fields (see codexIdentityProtectedKeys) are left untouched, and replaced values are
+// re-encoded, so a value containing quotes or backslashes keeps the
 // JSON valid. A payload with
 // no JSON string in it (plain text) is replaced byte-wise, except an SSE event line.
 func ReplaceCodexIdentityInPayload(payload []byte, from, to string) []byte {
@@ -48,8 +41,6 @@ func ReplaceCodexIdentityInPayload(payload []byte, from, to string) []byte {
 	last := 0
 	pendingKey := ""
 	expectValue := false
-	depth := 0
-	protectedDepth := 0 // depth of the protected object being skipped, 0 when none
 	for i := 0; i < len(payload); i++ {
 		c := payload[i]
 		if c != '"' {
@@ -57,18 +48,6 @@ func ReplaceCodexIdentityInPayload(payload []byte, from, to string) []byte {
 			case ':':
 				expectValue = true
 			case ' ', '\t', '\r', '\n':
-			case '{', '[':
-				depth++
-				if _, ok := codexIdentityProtectedObjects[pendingKey]; ok && expectValue && c == '{' && protectedDepth == 0 {
-					protectedDepth = depth
-				}
-				expectValue = false
-			case '}', ']':
-				if protectedDepth != 0 && depth == protectedDepth {
-					protectedDepth = 0
-				}
-				depth--
-				expectValue = false
 			default:
 				expectValue = false
 			}
@@ -94,7 +73,7 @@ func ReplaceCodexIdentityInPayload(payload []byte, from, to string) []byte {
 			expectValue = false
 		} else {
 			_, protected := codexIdentityProtectedKeys[pendingKey]
-			protected = (protected && expectValue) || protectedDepth != 0
+			protected = protected && expectValue
 			expectValue = false
 			if decodedOK && !protected && strings.Contains(decoded, from) {
 				if encoded, ok := codexIdentityEncodeString(strings.ReplaceAll(decoded, from, to)); ok {
