@@ -208,13 +208,11 @@ func closeHTTPResponseBody(resp *http.Response, logPrefix string) {
 }
 
 // confuseCodexStatusErrMessage applies the response-side identity replacement to the error text
-// shown to the client and kept for failure logs, as the HTTP path does with its error bodies.
-// The error itself is classified from the raw upstream frame.
+// shown to the client, as the HTTP path does with its error bodies. The error is classified from
+// the raw upstream frame, and codexFailureBody stays raw because the conductor classifies
+// overloads from it (CodexFailureInfo).
 func confuseCodexStatusErrMessage(err statusErr, state codexIdentityConfuseState) statusErr {
 	err.msg = string(applyCodexIdentityConfuseResponsePayload([]byte(err.msg), state))
-	if err.codexFailureBody != "" {
-		err.codexFailureBody = string(applyCodexIdentityConfuseResponsePayload([]byte(err.codexFailureBody), state))
-	}
 	return err
 }
 

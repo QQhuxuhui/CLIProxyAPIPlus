@@ -895,3 +895,20 @@ func TestCodexWebsocketBridgeLiteRequestDoesNotForwardRawSession(t *testing.T) {
 		}
 	}
 }
+
+func TestConfuseCodexStatusErrMessageKeepsFailureBodyRaw(t *testing.T) {
+	cfg := &config.Config{Routing: config.RoutingConfig{SessionAffinity: true}, Codex: config.CodexConfig{IdentityConfuse: true}}
+	_, state := applyCodexIdentityConfuseBody(cfg, &cliproxyauth.Auth{ID: "auth-bridge-1"}, []byte(`{"prompt_cache_key":"retry"}`), []byte(`{"model":"m"}`))
+	frame := []byte(`{"type":"response.failed","response":{"error":{"type":"server_error","message":"you can retry your request"}}}`)
+	streamErr, _, ok := codexTerminalFailureErrWithCooling(frame, false)
+	if !ok {
+		t.Fatal("terminal failure not recognised")
+	}
+	confused := confuseCodexStatusErrMessage(streamErr, state)
+	if _, body, _ := confused.CodexFailureInfo(); !strings.Contains(body, "you can retry your request") {
+		t.Fatalf("failure body lost the classification phrase: %q", body)
+	}
+	if strings.Contains(confused.Error(), "can retry your") {
+		t.Fatalf("client error text not identity-replaced: %q", confused.Error())
+	}
+}
