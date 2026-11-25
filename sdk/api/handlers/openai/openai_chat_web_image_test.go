@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -541,6 +543,58 @@ func TestChatCompletionsWebImageInlineReferenceOverBudget(t *testing.T) {
 		if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "byte limit") || executor.callCount() != 0 {
 			t.Fatalf("status = %d calls = %d: %s", resp.Code, executor.callCount(), resp.Body.String())
 		}
+	}
+}
+
+func TestWebImageReferenceFetchCancelClosesPendingTLSHandshake(t *testing.T) {
+	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatalf("Listen() error = %v", errListen)
+	}
+	defer func() { _ = listener.Close() }()
+	accepted := make(chan struct{})
+	closed := make(chan struct{})
+	go func() {
+		conn, errAccept := listener.Accept()
+		if errAccept != nil {
+			return
+		}
+		close(accepted)
+		// Never answer the TLS ClientHello; wait for the client to drop the connection.
+		_, _ = io.Copy(io.Discard, conn)
+		_ = conn.Close()
+		close(closed)
+	}()
+
+	fetcher := newWebImageReferenceFetcher(func(netip.AddrPort) bool { return true })
+	ctx, cancel := context.WithCancel(context.Background())
+	fetchDone := make(chan error, 1)
+	go func() {
+		_, _, errFetch := fetcher.fetch(ctx, "https://"+listener.Addr().String()+"/a.png", 1024)
+		fetchDone <- errFetch
+	}()
+	<-accepted
+	cancel()
+	if errFetch := <-fetchDone; errFetch == nil {
+		t.Fatal("fetch succeeded against a server that never completes TLS")
+	}
+	<-closed
+}
+
+func TestChatWebImagePromptTokens(t *testing.T) {
+	if got := chatWebImagePromptTokens(context.Background(), "draw a red fox in the snow"); got <= 1 {
+		t.Fatalf("tokens = %d, want > 1", got)
+	}
+	if got := chatWebImagePromptTokens(context.Background(), strings.Repeat("你", 2000)); got <= 1 {
+		t.Fatalf("multibyte tokens = %d, want > 1", got)
+	}
+	if got := chatWebImagePromptTokens(context.Background(), "\x80"+strings.Repeat("a", 3000)); got <= 1 {
+		t.Fatalf("invalid utf-8 tokens = %d, want > 1", got)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := chatWebImagePromptTokens(cancelled, strings.Repeat("a", 1<<20)); got != 1 {
+		t.Fatalf("cancelled tokens = %d, want 1", got)
 	}
 }
 

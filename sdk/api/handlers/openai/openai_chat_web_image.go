@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -232,26 +234,40 @@ func lastResponsesUserTurn(input gjson.Result) (string, []string, *chatWebImageE
 // non-public addresses. The address check runs at dial time, so every redirect hop and every
 // DNS answer is validated.
 type webImageReferenceFetcher struct {
-	client *http.Client
+	allow func(netip.AddrPort) bool
 }
 
 func newWebImageReferenceFetcher(allow func(netip.AddrPort) bool) *webImageReferenceFetcher {
+	return &webImageReferenceFetcher{allow: allow}
+}
+
+// client builds a one-off client whose dials and TLS handshakes are bound to ctx. The shared
+// http.Transport dials with a context detached from the request, so a cancelled download could
+// otherwise leave a stalled handshake holding a socket; keep-alives are disabled for the same
+// reason, so no connection outlives its download.
+func (f *webImageReferenceFetcher) client(ctx context.Context) *http.Client {
 	dialer := &net.Dialer{
 		Control: func(_, address string, _ syscall.RawConn) error {
 			addrPort, errParse := netip.ParseAddrPort(address)
-			if errParse != nil || !allow(netip.AddrPortFrom(addrPort.Addr().Unmap(), addrPort.Port())) {
+			if errParse != nil || !f.allow(netip.AddrPortFrom(addrPort.Addr().Unmap(), addrPort.Port())) {
 				return fmt.Errorf("reference image address %s is not allowed", address)
 			}
 			return nil
 		},
 	}
+	tlsDialer := &tls.Dialer{NetDialer: dialer}
 	transport := &http.Transport{
 		// Never use an environment proxy: the proxy would make the dial-time address check moot.
 		Proxy:             nil,
-		DialContext:       dialer.DialContext,
-		ForceAttemptHTTP2: true,
+		DisableKeepAlives: true,
+		DialContext: func(_ context.Context, network, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
+		DialTLSContext: func(_ context.Context, network, address string) (net.Conn, error) {
+			return tlsDialer.DialContext(ctx, network, address)
+		},
 	}
-	return &webImageReferenceFetcher{client: &http.Client{
+	return &http.Client{
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > chatWebImageMaxRedirects {
@@ -262,7 +278,7 @@ func newWebImageReferenceFetcher(allow func(netip.AddrPort) bool) *webImageRefer
 			}
 			return nil
 		},
-	}}
+	}
 }
 
 // chatWebImageFetcher is replaced in tests to reach local servers.
@@ -276,7 +292,7 @@ func (f *webImageReferenceFetcher) fetch(ctx context.Context, rawURL string, lim
 	if errReq != nil {
 		return nil, 0, errReq
 	}
-	resp, errDo := f.client.Do(req)
+	resp, errDo := f.client(ctx).Do(req)
 	if errDo != nil {
 		return nil, 0, errDo
 	}
@@ -476,18 +492,37 @@ var chatWebImagePromptCodec = sync.OnceValues(func() (tokenizer.Codec, error) {
 	return tokenizer.Get(tokenizer.O200kBase)
 })
 
-// chatWebImagePromptTokens estimates prompt tokens. It never returns 0, because a zero prompt
-// count makes downstream gateways recount the whole (base64) assistant content as text.
-func chatWebImagePromptTokens(prompt string) int64 {
+// chatWebImagePromptTokenChunk bounds each tokenizer call: BPE merging is quadratic in the
+// length of a single pre-tokenized piece, and prompts have no length limit.
+const chatWebImagePromptTokenChunk = 1024
+
+// chatWebImagePromptTokens estimates prompt tokens in bounded UTF-8 chunks, stopping when ctx is
+// cancelled. It never returns 0, because a zero prompt count makes downstream gateways recount
+// the whole (base64) assistant content as text.
+func chatWebImagePromptTokens(ctx context.Context, prompt string) int64 {
 	codec, errCodec := chatWebImagePromptCodec()
 	if errCodec != nil {
 		return 1
 	}
-	count, errCount := codec.Count(prompt)
-	if errCount != nil || count <= 0 {
-		return 1
+	var total int64
+	for len(prompt) > 0 {
+		if ctx.Err() != nil {
+			break
+		}
+		end := min(len(prompt), chatWebImagePromptTokenChunk)
+		for end < len(prompt) && end > 0 && !utf8.RuneStart(prompt[end]) {
+			end--
+		}
+		if end == 0 {
+			// Invalid UTF-8 at the chunk start: cut at the byte limit instead.
+			end = min(len(prompt), chatWebImagePromptTokenChunk)
+		}
+		if count, errCount := codec.Count(prompt[:end]); errCount == nil {
+			total += int64(count)
+		}
+		prompt = prompt[end:]
 	}
-	return int64(count)
+	return max(total, 1)
 }
 
 func newChatCompletionID() string {
@@ -592,7 +627,6 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 		return chatWebImageResult{body: body, headers: headers, errMsg: errMsg}
 	}
 	id := newChatCompletionID()
-	promptTokens := chatWebImagePromptTokens(parsed.prompt)
 
 	if !stream {
 		c.Header("Content-Type", "application/json")
@@ -611,12 +645,12 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 			return
 		}
 		handlers.WriteUpstreamHeaders(c.Writer.Header(), result.headers)
-		_, _ = c.Writer.Write(buildChatWebImageCompletion(id, model, created, contents, promptTokens))
+		_, _ = c.Writer.Write(buildChatWebImageCompletion(id, model, created, contents, chatWebImagePromptTokens(cliCtx, parsed.prompt)))
 		cliCancel(nil)
 		return
 	}
 
-	h.streamChatWebImage(c, cfg, cliCancel, execute, chatWebImageStream{id: id, model: model, n: parsed.n, includeUsage: parsed.includeUsage, promptTokens: promptTokens})
+	h.streamChatWebImage(c, cfg, cliCancel, execute, chatWebImageStream{id: id, model: model, n: parsed.n, includeUsage: parsed.includeUsage, prompt: parsed.prompt})
 }
 
 type chatWebImageStream struct {
@@ -624,7 +658,7 @@ type chatWebImageStream struct {
 	model        string
 	n            int
 	includeUsage bool
-	promptTokens int64
+	prompt       string
 }
 
 // streamChatWebImage runs the generation while sending SSE keep-alives. Headers are committed
@@ -717,7 +751,7 @@ func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfi
 			}
 			if meta.includeUsage {
 				usageChunk := buildChatWebImageChunk(meta.id, meta.model, created, nil)
-				usageChunk, _ = sjson.SetRawBytes(usageChunk, "usage", chatWebImageUsage(meta.promptTokens))
+				usageChunk, _ = sjson.SetRawBytes(usageChunk, "usage", chatWebImageUsage(chatWebImagePromptTokens(c.Request.Context(), meta.prompt)))
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(usageChunk))
 			}
 			_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
