@@ -321,3 +321,20 @@ func TestRewriteForceMappedStreamChunk_CodexDataLinesWithoutNewlines_FinishParse
 		t.Fatalf("missing response.completed; types=%v", types)
 	}
 }
+
+// The Codex HTTP websocket bridge emits one chunk per event holding both the event line and
+// the data line, without the trailing blank line.
+func TestStreamRewriter_RewriteChunk_CodexWebsocketBridgeEventChunk(t *testing.T) {
+	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "gpt-alias"})
+	chunk := []byte("event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"id":"resp-1","model":"gpt-6-luna","status":"completed"}}`)
+
+	got := rewriter.RewriteChunk(chunk)
+	got = append(got, rewriter.Finish()...)
+	if !strings.Contains(string(got), `"model":"gpt-alias"`) || strings.Contains(string(got), "gpt-6-luna") {
+		t.Fatalf("rewritten chunk = %q, want alias model gpt-alias", got)
+	}
+	if !strings.HasPrefix(string(got), "event: response.completed\n") {
+		t.Fatalf("rewritten chunk lost its event line: %q", got)
+	}
+}

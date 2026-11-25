@@ -258,6 +258,9 @@ type CodexConfig struct {
 	// proxies: retries after upstream overloads, and a share of first attempts while the direct
 	// route is overloaded.
 	EgressPool CodexEgressPoolConfig `yaml:"egress-pool" json:"egress-pool"`
+	// HTTPWebsocketBridge sends a share of HTTP-downstream streaming /responses requests to the
+	// upstream over the websocket transport, which has no 15-minute stream cap.
+	HTTPWebsocketBridge CodexHTTPWebsocketBridgeConfig `yaml:"http-websocket-bridge" json:"http-websocket-bridge"`
 }
 
 // DefaultCodexAccountConcurrencyLimit is the per-account limit used when default-limit is omitted.
@@ -291,6 +294,17 @@ func (c CodexAccountConcurrencyConfig) Validate() error {
 // CodexFastSessionIDsConfig configures the Codex fast Session-Id pool.
 // Only the upstream Session-Id header is rewritten; the body prompt_cache_key and every
 // internal session identity stay unchanged.
+// CodexHTTPWebsocketBridgeConfig routes HTTP-downstream streaming Codex /v1/responses requests
+// on Codex OAuth credentials over the upstream websocket transport. The HTTP/2 SSE upstream
+// resets a stream after 15 minutes; the websocket transport does not.
+type CodexHTTPWebsocketBridgeConfig struct {
+	// Enable turns the bridge on. Default is false.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Percent is the canary share (0-100) of requests that are bridged, chosen by a stable hash
+	// of the request ID. Values outside the range are clamped.
+	Percent int `yaml:"percent" json:"percent"`
+}
+
 type CodexFastSessionIDsConfig struct {
 	// Enable turns the remapping on. Default is false.
 	Enable bool `yaml:"enable" json:"enable"`
