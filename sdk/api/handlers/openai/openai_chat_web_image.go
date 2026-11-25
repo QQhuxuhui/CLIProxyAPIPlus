@@ -652,15 +652,16 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 		return
 	}
 
-	h.streamChatWebImage(c, cfg, cliCancel, execute, chatWebImageStream{id: id, model: model, n: parsed.n, includeUsage: parsed.includeUsage, prompt: parsed.prompt})
+	h.streamChatWebImage(c, cfg, cliCancel, execute, chatWebImageStream{id: id, model: model, n: parsed.n, includeUsage: parsed.includeUsage, prompt: parsed.prompt, originalRequest: originalJSON})
 }
 
 type chatWebImageStream struct {
-	id           string
-	model        string
-	n            int
-	includeUsage bool
-	prompt       string
+	id              string
+	model           string
+	n               int
+	includeUsage    bool
+	prompt          string
+	originalRequest []byte
 }
 
 // streamChatWebImage runs the generation while sending SSE keep-alives. Headers are committed
@@ -739,22 +740,30 @@ func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfi
 				cliCancel(nil)
 				return
 			}
-			commit(result.headers)
+			// The chunks are synthesized here, so run them through the stream chunk
+			// interceptors that executor streams get in ExecuteStreamWithAuthManager.
+			interceptor := h.NewSynthesizedStreamInterceptor(c.Request.Context(), h.HandlerType(), meta.model, meta.model, c.Request.Header, result.headers, meta.originalRequest, nil)
+			commit(interceptor.DownstreamHeaders(result.headers))
+			writeChunk := func(chunk []byte) {
+				if payload, keep := interceptor.Chunk(chunk); keep {
+					_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(payload))
+				}
+			}
 			for index, content := range contents {
 				choice := []byte(`{"delta":{"role":"assistant"},"finish_reason":null}`)
 				choice, _ = sjson.SetBytes(choice, "index", index)
 				choice, _ = sjson.SetBytes(choice, "delta.content", content)
-				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(buildChatWebImageChunk(meta.id, meta.model, created, choice)))
+				writeChunk(buildChatWebImageChunk(meta.id, meta.model, created, choice))
 			}
 			for index := range contents {
 				choice := []byte(`{"delta":{},"finish_reason":"stop"}`)
 				choice, _ = sjson.SetBytes(choice, "index", index)
-				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(buildChatWebImageChunk(meta.id, meta.model, created, choice)))
+				writeChunk(buildChatWebImageChunk(meta.id, meta.model, created, choice))
 			}
 			if meta.includeUsage {
 				usageChunk := buildChatWebImageChunk(meta.id, meta.model, created, nil)
 				usageChunk, _ = sjson.SetRawBytes(usageChunk, "usage", chatWebImageUsage(chatWebImagePromptTokens(c.Request.Context(), meta.prompt)))
-				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(usageChunk))
+				writeChunk(usageChunk)
 			}
 			_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 			flusher.Flush()

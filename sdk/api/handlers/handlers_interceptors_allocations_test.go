@@ -85,7 +85,7 @@ func TestDirectPluginInterceptionUsesResolvedProvider(t *testing.T) {
 	if len(providers) != 1 || providers[0] != "actual-provider" {
 		t.Fatalf("pre-auth providers=%v", providers)
 	}
-	_, _, err := handler.applyRequestInterceptorsAfterPluginExecutorRoute(context.Background(), host, "different-plugin-id", "openai", "model", "request", coreexecutor.Request{Payload: []byte(`{}`)}, opts, "")
+	_, _, err := handler.applyRequestInterceptorsAfterPluginExecutorRoute(context.Background(), host, "different-plugin-id", "openai", "", "model", "request", coreexecutor.Request{Payload: []byte(`{}`)}, opts, "")
 	if err != nil || !host.afterAuthCalled || host.afterAuthReq.Provider != "actual-provider" {
 		t.Fatalf("after-auth provider=%q, err=%v", host.afterAuthReq.Provider, err)
 	}

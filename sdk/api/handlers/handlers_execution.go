@@ -80,10 +80,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	ctx = coreauth.WithCodexRetryBudget(ctx)
 	originalRequestedModel := modelName
-	pluginProtocol := entryProtocol
-	if clientFormat := strings.TrimSpace(execOptions.ClientSourceFormat); clientFormat != "" {
-		pluginProtocol = clientFormat
-	}
+	pluginProtocol := execOptions.pluginProtocol(entryProtocol)
 	routeDecision := h.applyModelRouter(ctx, pluginProtocol, modelName, rawJSON, false, execOptions)
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
@@ -243,14 +240,15 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	execCtx, nestedTracker := withNestedExecutionTracker(coreusage.WithStream(ctx, false))
 	req, opts := h.pluginExecutorRequest(execCtx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	setPluginExecutorProviders(host, executorPluginID, &opts)
-	lifecycle := h.newRequestLifecycleTracker(execCtx, entryProtocol, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
+	pluginProtocol := execOptions.pluginProtocol(entryProtocol)
+	lifecycle := h.newRequestLifecycleTracker(execCtx, pluginProtocol, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
 	var interceptErr *interfaces.ErrorMessage
-	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(execCtx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
+	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(execCtx, pluginProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
 		lifecycle.completeError(execCtx, interceptErr)
 		return nil, nil, interceptErr
 	}
-	req, opts, interceptErr = h.applyRequestInterceptorsAfterPluginExecutorRoute(execCtx, host, executorPluginID, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
+	req, opts, interceptErr = h.applyRequestInterceptorsAfterPluginExecutorRoute(execCtx, host, executorPluginID, entryProtocol, pluginProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
 		lifecycle.completeError(execCtx, interceptErr)
 		return nil, nil, interceptErr
@@ -299,7 +297,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
-	req, opts, interceptErr = h.applyRequestInterceptorsAfterPluginExecutorRoute(ctx, host, executorPluginID, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
+	req, opts, interceptErr = h.applyRequestInterceptorsAfterPluginExecutorRoute(ctx, host, executorPluginID, handlerType, "", originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
@@ -345,9 +343,15 @@ func (h *BaseAPIHandler) pluginExecutorRequest(ctx context.Context, entryProtoco
 	return req, opts
 }
 
-func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx context.Context, host PluginExecutorHost, executorPluginID, entryProtocol, originalRequestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
+// clientProtocol, when non-empty, is reported to interceptors as the source format in place of
+// opts.SourceFormat (see modelExecutionOptions.ClientSourceFormat).
+func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx context.Context, host PluginExecutorHost, executorPluginID, entryProtocol, clientProtocol, originalRequestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
 	if !requestInterceptorsEnabled(h.interceptorHost()) {
 		return req, opts, nil
+	}
+	sourceFormat := opts.SourceFormat
+	if clientProtocol != "" {
+		sourceFormat = sdktranslator.FromString(clientProtocol)
 	}
 	toFormat := sdktranslator.FromString(entryProtocol)
 	if resolver, ok := host.(pluginExecutorFormatResolver); ok && resolver != nil {
@@ -357,7 +361,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx co
 	}
 	resp := h.applyRequestInterceptorsAfterAuth(ctx, coreexecutor.RequestAfterAuthInterceptRequest{
 		Provider:       pluginExecutorProvider(host, executorPluginID),
-		SourceFormat:   opts.SourceFormat,
+		SourceFormat:   sourceFormat,
 		ToFormat:       toFormat,
 		Model:          req.Model,
 		RequestedModel: originalRequestedModel,

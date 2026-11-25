@@ -127,10 +127,12 @@ func (h *chatWebImageRouterHost) HasModelRouters() bool { return true }
 // denyOpenAI is set, terminates requests whose client protocol is openai with 403, as a plugin
 // configured with source-formats: [openai] would.
 type chatWebImageInterceptorHost struct {
-	mu         sync.Mutex
-	denyOpenAI bool
-	beforeAuth string
-	afterAuth  string
+	mu            sync.Mutex
+	denyOpenAI    bool
+	dropDataImage bool
+	beforeAuth    string
+	afterAuth     string
+	streamChunks  int
 }
 
 func (h *chatWebImageInterceptorHost) InterceptRequestBeforeAuth(_ context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
@@ -154,8 +156,42 @@ func (h *chatWebImageInterceptorHost) InterceptResponse(context.Context, plugina
 	return pluginapi.ResponseInterceptResponse{}
 }
 
-func (h *chatWebImageInterceptorHost) InterceptStreamChunk(context.Context, pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+func (h *chatWebImageInterceptorHost) InterceptStreamChunk(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+	if req.ChunkIndex == pluginapi.StreamChunkHeaderInitIndex {
+		return pluginapi.StreamChunkInterceptResponse{}
+	}
+	h.mu.Lock()
+	h.streamChunks++
+	h.mu.Unlock()
+	if h.dropDataImage && strings.Contains(string(req.Body), "data:image") {
+		return pluginapi.StreamChunkInterceptResponse{DropChunk: true}
+	}
 	return pluginapi.StreamChunkInterceptResponse{}
+}
+
+// chatWebImagePluginExecutorRouter routes every request to a plugin executor and records calls.
+type chatWebImagePluginExecutorRouter struct {
+	executed atomic.Int32
+}
+
+func (r *chatWebImagePluginExecutorRouter) RouteModel(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+	return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: "web-plugin"}, true
+}
+
+func (r *chatWebImagePluginExecutorRouter) HasModelRouters() bool { return true }
+
+func (r *chatWebImagePluginExecutorRouter) ExecutePluginExecutor(context.Context, string, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	r.executed.Add(1)
+	return cliproxyexecutor.Response{Payload: []byte(`{"created":1,"data":[]}`)}, nil
+}
+
+func (r *chatWebImagePluginExecutorRouter) ExecutePluginExecutorStream(context.Context, string, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	r.executed.Add(1)
+	return nil, nil
+}
+
+func (r *chatWebImagePluginExecutorRouter) CountPluginExecutor(context.Context, string, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
 }
 
 func defaultChatWebImageConfig() *sdkconfig.SDKConfig {
@@ -278,6 +314,40 @@ func TestChatCompletionsWebImageInterceptorsSeeClientProtocol(t *testing.T) {
 			t.Fatalf("executor SourceFormat = %q", executor.opts.SourceFormat)
 		}
 	})
+}
+
+func TestChatCompletionsWebImagePluginExecutorRouteSeesClientProtocol(t *testing.T) {
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	router := &chatWebImagePluginExecutorRouter{}
+	handler.BaseAPIHandler.ModelRouterHost = router
+	handler.BaseAPIHandler.PluginHost = &chatWebImageInterceptorHost{denyOpenAI: true}
+
+	resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":"draw"}]}`)
+
+	if resp.Code != http.StatusForbidden || router.executed.Load() != 0 || executor.callCount() != 0 {
+		t.Fatalf("status = %d, plugin executor calls = %d, executor calls = %d: %s", resp.Code, router.executed.Load(), executor.callCount(), resp.Body.String())
+	}
+}
+
+func TestChatCompletionsWebImageStreamChunksPassInterceptors(t *testing.T) {
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	host := &chatWebImageInterceptorHost{dropDataImage: true}
+	handler.BaseAPIHandler.PluginHost = host
+
+	resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","stream":true,"messages":[{"role":"user","content":"draw"}]}`)
+
+	body := resp.Body.String()
+	if resp.Code != http.StatusOK || strings.Contains(body, "data:image") {
+		t.Fatalf("status = %d, body = %q", resp.Code, body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) || !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Fatalf("stream did not finish after the dropped chunk: %q", body)
+	}
+	if host.streamChunks != 2 {
+		t.Fatalf("stream chunk interceptor calls = %d, want 2", host.streamChunks)
+	}
 }
 
 func TestChatCompletionsWebImageDataURLUsesEditsWithActualMIME(t *testing.T) {

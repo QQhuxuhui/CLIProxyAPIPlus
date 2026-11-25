@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"golang.org/x/net/context"
@@ -31,6 +32,15 @@ type modelExecutionOptions struct {
 	// execution protocol (such as chatgpt-web-image) keep plugin filters keyed on the real
 	// client protocol working.
 	ClientSourceFormat string
+}
+
+// pluginProtocol is the protocol reported to plugins: the client protocol when set, otherwise
+// the entry protocol.
+func (o modelExecutionOptions) pluginProtocol(entryProtocol string) string {
+	if clientFormat := strings.TrimSpace(o.ClientSourceFormat); clientFormat != "" {
+		return clientFormat
+	}
+	return entryProtocol
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.
