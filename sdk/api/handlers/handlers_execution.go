@@ -294,7 +294,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 		if reporter != nil && !nestedTracker.hasNestedExecution() {
 			detail := parsePluginExecutorResponseUsage(responseProtocol, resp.Payload)
 			if errFinalize != nil {
-				reporter.PublishFailureWithDetail(execCtx, detail, errFinalize.Error)
+				reporter.PublishFailureWithDetail(execCtx, detail, finalizerUsageError(errFinalize))
 			} else {
 				reporter.Publish(execCtx, detail)
 			}

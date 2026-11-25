@@ -460,9 +460,17 @@ func chatWebImageMarkdown(imagesResponse []byte, n int) ([]string, int64, *chatW
 	}
 	contents := make([]string, 0, n)
 	for _, item := range data {
-		b64 := strings.TrimSpace(item.Get("b64_json").String())
-		if b64 == "" {
+		field := item.Get("b64_json")
+		b64 := strings.TrimSpace(field.String())
+		if strings.ContainsAny(b64, "\r\n") {
+			// Line-folded base64 decodes fine but would break the markdown link.
+			b64 = strings.NewReplacer("\r", "", "\n", "").Replace(b64)
+		}
+		if field.Type != gjson.String || b64 == "" {
 			return nil, 0, unexpected
+		}
+		if !validChatWebImageBase64(b64) {
+			return nil, 0, &chatWebImageError{status: http.StatusBadGateway, message: "web image upstream returned invalid image data", errType: "server_error"}
 		}
 		contents = append(contents, "![image](data:"+chatWebImageOutputMIME(b64, fallbackMIME)+";base64,"+b64+")")
 	}
@@ -471,6 +479,26 @@ func chatWebImageMarkdown(imagesResponse []byte, n int) ([]string, int64, *chatW
 		created = time.Now().Unix()
 	}
 	return contents, created, nil
+}
+
+// validChatWebImageBase64 reports whether b64 is complete, padded standard base64: only
+// alphabet characters, a length that is a multiple of four, and at most two padding
+// characters at the very end. It scans in place, so validation holds no second copy of the
+// image.
+func validChatWebImageBase64(b64 string) bool {
+	if len(b64)%4 != 0 {
+		return false
+	}
+	body := strings.TrimSuffix(b64, "=")
+	body = strings.TrimSuffix(body, "=")
+	for index := 0; index < len(body); index++ {
+		switch char := body[index]; {
+		case char >= 'A' && char <= 'Z', char >= 'a' && char <= 'z', char >= '0' && char <= '9', char == '+', char == '/':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // chatWebImageOutputMIME sniffs each image separately: the executor drops the top-level
