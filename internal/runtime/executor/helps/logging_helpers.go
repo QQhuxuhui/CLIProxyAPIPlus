@@ -407,6 +407,14 @@ func AppendCodexAPIWebsocketResponse(ctx context.Context, cfg *config.Config, pa
 	AppendAPIWebsocketResponse(ctx, cfg, payload)
 }
 
+// AppendCodexAPIBridgeResponse records a websocket frame of a request bridged from an HTTP
+// downstream. It goes to the HTTP response log like an SSE line, because an HTTP request has no
+// file-backed websocket timeline and appending there would copy the whole history per frame.
+func AppendCodexAPIBridgeResponse(ctx context.Context, cfg *config.Config, payload []byte) {
+	logging.MergeResponseHeaders(ctx, ParseCodexQuotaEventHeaders(payload))
+	AppendAPIResponseChunk(ctx, cfg, payload)
+}
+
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
 func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage string, err error) {
 	if !requestLogCaptureEnabled(cfg) || err == nil {

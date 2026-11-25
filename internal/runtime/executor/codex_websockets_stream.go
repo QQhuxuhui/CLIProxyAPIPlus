@@ -437,12 +437,19 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				continue
 			}
+			// Decide on the raw upstream frame: identity handling rewrites bytes anywhere in the
+			// frame, which could alter the event type it is matched on.
+			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
 			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
+			if bridge {
+				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
+			} else {
+				helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
+			}
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
-			if bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload) {
+			if bridgeDrop {
 				// Websocket-only frames never reach an HTTP downstream. They count against the
 				// bootstrap budgets like an empty frame but do not release the buffered stream.
 				if !windowOpen {
@@ -728,12 +735,19 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if len(payload) == 0 {
 				continue
 			}
+			// Decide on the raw upstream frame: identity handling rewrites bytes anywhere in the
+			// frame, which could alter the event type it is matched on.
+			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
 			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
+			if bridge {
+				helps.AppendCodexAPIBridgeResponse(ctx, e.cfg, payload)
+			} else {
+				helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
+			}
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
-			if bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload) {
+			if bridgeDrop {
 				continue
 			}
 

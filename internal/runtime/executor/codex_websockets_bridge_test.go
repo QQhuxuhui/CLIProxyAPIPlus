@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -599,4 +600,57 @@ func TestCodexWebsocketBridgeRestoresConfusedIdentity(t *testing.T) {
 		return
 	}
 	t.Fatalf("no response.created downstream: %q", chunks)
+}
+
+func TestCodexWebsocketBridgeFiltersBeforeIdentityRewrite(t *testing.T) {
+	for _, buffering := range []bool{false, true} {
+		up := newBridgeUpstream(t, bridgeFullFrames)
+		cfg := bridgeTestConfig(100)
+		cfg.Routing.SessionAffinity = true
+		cfg.Codex.IdentityConfuse = true
+		cfg.Codex.StreamBootstrapBuffering = buffering
+		exec := NewCodexAutoExecutor(cfg)
+		// A prompt_cache_key equal to the event prefix makes identity handling rewrite the type.
+		req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"codex"}`)}
+		result, errExec := exec.ExecuteStream(context.Background(), bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+		if errExec != nil {
+			t.Fatalf("buffering=%v: ExecuteStream() error = %v", buffering, errExec)
+		}
+		chunks, errStream := collectBridgeChunks(t, result)
+		if errStream != nil {
+			t.Fatalf("buffering=%v: stream error = %v", buffering, errStream)
+		}
+		for _, chunk := range chunks {
+			text := string(chunk)
+			if strings.Contains(text, "rate_limits") || strings.Contains(text, "secret-turn-state") || strings.Contains(text, "websocket_timing") {
+				t.Fatalf("buffering=%v: websocket-only event leaked downstream: %s", buffering, text)
+			}
+		}
+	}
+}
+
+func TestCodexWebsocketBridgeLogsFramesAsHTTPResponse(t *testing.T) {
+	up := newBridgeUpstream(t, bridgeFullFrames)
+	cfg := bridgeTestConfig(100)
+	cfg.RequestLog = true
+	exec := NewCodexAutoExecutor(cfg)
+	ctx := contextWithGinHeaders(nil)
+	ginCtx := ctx.Value("gin").(*gin.Context)
+	req := cliproxyexecutor.Request{Model: "gpt-6-luna", Payload: []byte(`{"model":"gpt-6-luna","stream":true,"input":"hi"}`)}
+	result, errExec := exec.ExecuteStream(ctx, bridgeTestOAuth(up.server.URL), req, bridgeTestOpts())
+	if errExec != nil {
+		t.Fatalf("ExecuteStream() error = %v", errExec)
+	}
+	if _, errStream := collectBridgeChunks(t, result); errStream != nil {
+		t.Fatalf("stream error = %v", errStream)
+	}
+	if timeline, exists := ginCtx.Get("API_WEBSOCKET_TIMELINE"); exists {
+		if data, _ := timeline.([]byte); bytes.Contains(data, []byte("response.output_text.delta")) {
+			t.Fatalf("bridged frames went to the websocket timeline: %s", data)
+		}
+	}
+	response, _ := ginCtx.Get("API_RESPONSE")
+	if data, _ := response.([]byte); !bytes.Contains(data, []byte("response.output_text.delta")) {
+		t.Fatalf("bridged frames missing from the HTTP response log: %q", data)
+	}
 }
