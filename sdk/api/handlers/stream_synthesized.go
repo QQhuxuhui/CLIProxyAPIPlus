@@ -34,6 +34,28 @@ type ResponseFinalizer struct {
 
 var errFinalizerBodyCount = errors.New("response finalizer must emit exactly one body")
 
+// finalizerStatusError carries a finalizer failure's HTTP status to usage reporting.
+type finalizerStatusError struct {
+	err    error
+	status int
+}
+
+func (e finalizerStatusError) Error() string   { return e.err.Error() }
+func (e finalizerStatusError) Unwrap() error   { return e.err }
+func (e finalizerStatusError) StatusCode() int { return e.status }
+
+// finalizerUsageError returns the error to report in usage for a finalizer failure. It carries
+// the status the client receives, except for cancellations, which keep their own mapping.
+func finalizerUsageError(msg *interfaces.ErrorMessage) error {
+	if msg == nil || msg.Error == nil {
+		return nil
+	}
+	if msg.StatusCode <= 0 || errors.Is(msg.Error, context.Canceled) || errors.Is(msg.Error, context.DeadlineExceeded) {
+		return msg.Error
+	}
+	return finalizerStatusError{err: msg.Error, status: msg.StatusCode}
+}
+
 // finalizeResponse runs a ResponseFinalizer and the interceptors for its protocol.
 func (h *BaseAPIHandler) finalizeResponse(ctx context.Context, requestID string, fin *ResponseFinalizer, model, requestedModel string, opts coreexecutor.Options, requestBody []byte, rawHeaders, responseHeaders http.Header, payload []byte, skipPluginID string) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequest := opts.OriginalRequest

@@ -584,8 +584,8 @@ func TestChatCompletionsWebImagePluginExecutorInvalidResultPublishesFailedUsage(
 	}
 	select {
 	case record := <-plugin.records:
-		if !record.Failed {
-			t.Fatalf("usage record = %+v, want Failed", record)
+		if !record.Failed || record.Fail.StatusCode != http.StatusBadGateway {
+			t.Fatalf("usage record = %+v, want Failed with status 502", record)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the usage record")
@@ -732,6 +732,19 @@ func TestChatCompletionsWebImageChoiceCount(t *testing.T) {
 			t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
 		}
 	})
+
+	for _, item := range []string{`{"b64_json":"%%%"}`, `{"b64_json":"iVBORw0KGgo"}`, `{"b64_json":123}`} {
+		t.Run("invalid image data is a bad gateway: "+item, func(t *testing.T) {
+			executor := &chatWebImageTestExecutor{respond: func([]byte) ([]byte, error) {
+				return []byte(`{"created":1,"data":[` + item + `]}`), nil
+			}}
+			handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+			resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":"draw"}]}`)
+			if resp.Code != http.StatusBadGateway || strings.Contains(resp.Body.String(), "data:image") {
+				t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+			}
+		})
+	}
 
 	t.Run("mixed formats are labelled per image", func(t *testing.T) {
 		executor := &chatWebImageTestExecutor{respond: func([]byte) ([]byte, error) {
