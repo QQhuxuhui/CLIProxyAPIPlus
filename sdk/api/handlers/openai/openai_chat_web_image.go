@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -157,38 +158,64 @@ func parseChatWebImageRequest(rawJSON []byte) (chatWebImageRequest, *chatWebImag
 	return parsed, nil
 }
 
+// lastUserTurn scans items once and returns the prompt and image URLs of the last item for
+// which isUser is true. textTypes and imageType name the content part types of the protocol.
+// It stops as soon as the reference image limit is exceeded.
+func lastUserTurn(items gjson.Result, isUser func(gjson.Result) bool, textTypes []string, imageType string) (string, []string, *chatWebImageError) {
+	var last gjson.Result
+	found := false
+	items.ForEach(func(_, item gjson.Result) bool {
+		if isUser(item) {
+			last = item
+			found = true
+		}
+		return true
+	})
+	if !found {
+		return "", nil, nil
+	}
+	content := last.Get("content")
+	if content.Type == gjson.String {
+		return content.String(), nil, nil
+	}
+	var texts, images []string
+	var errItem *chatWebImageError
+	content.ForEach(func(_, part gjson.Result) bool {
+		partType := part.Get("type").String()
+		if slices.Contains(textTypes, partType) {
+			texts = append(texts, part.Get("text").String())
+			return true
+		}
+		if partType != imageType {
+			return true
+		}
+		imageURL := part.Get("image_url")
+		if imageURL.IsObject() {
+			imageURL = imageURL.Get("url")
+		}
+		if imageURL.Type != gjson.String || strings.TrimSpace(imageURL.String()) == "" {
+			errItem = invalidChatWebImageRequest(chatWebImageInvalidImageURLMsg)
+			return false
+		}
+		if len(images) == internalconfig.WebImageMaxInputImages {
+			errItem = invalidChatWebImageRequest("web image edits contain too many reference images")
+			return false
+		}
+		images = append(images, strings.TrimSpace(imageURL.String()))
+		return true
+	})
+	if errItem != nil {
+		return "", nil, errItem
+	}
+	return strings.Join(texts, "\n"), images, nil
+}
+
 func lastChatUserTurn(messages gjson.Result) (string, []string, *chatWebImageError) {
 	if !messages.IsArray() {
 		return "", nil, nil
 	}
-	items := messages.Array()
-	for i := len(items) - 1; i >= 0; i-- {
-		if items[i].Get("role").String() != "user" {
-			continue
-		}
-		content := items[i].Get("content")
-		if content.Type == gjson.String {
-			return content.String(), nil, nil
-		}
-		var texts, images []string
-		for _, part := range content.Array() {
-			switch part.Get("type").String() {
-			case "text":
-				texts = append(texts, part.Get("text").String())
-			case "image_url":
-				imageURL := part.Get("image_url")
-				if imageURL.IsObject() {
-					imageURL = imageURL.Get("url")
-				}
-				if imageURL.Type != gjson.String || strings.TrimSpace(imageURL.String()) == "" {
-					return "", nil, invalidChatWebImageRequest(chatWebImageInvalidImageURLMsg)
-				}
-				images = append(images, strings.TrimSpace(imageURL.String()))
-			}
-		}
-		return strings.Join(texts, "\n"), images, nil
-	}
-	return "", nil, nil
+	isUser := func(item gjson.Result) bool { return item.Get("role").String() == "user" }
+	return lastUserTurn(messages, isUser, []string{"text"}, "image_url")
 }
 
 func lastResponsesUserTurn(input gjson.Result) (string, []string, *chatWebImageError) {
@@ -198,36 +225,11 @@ func lastResponsesUserTurn(input gjson.Result) (string, []string, *chatWebImageE
 	if !input.IsArray() {
 		return "", nil, nil
 	}
-	items := input.Array()
-	for i := len(items) - 1; i >= 0; i-- {
-		item := items[i]
+	isUser := func(item gjson.Result) bool {
 		itemType := item.Get("type").String()
-		if item.Get("role").String() != "user" || (itemType != "" && itemType != "message") {
-			continue
-		}
-		content := item.Get("content")
-		if content.Type == gjson.String {
-			return content.String(), nil, nil
-		}
-		var texts, images []string
-		for _, part := range content.Array() {
-			switch part.Get("type").String() {
-			case "input_text", "text":
-				texts = append(texts, part.Get("text").String())
-			case "input_image":
-				imageURL := part.Get("image_url")
-				if imageURL.IsObject() {
-					imageURL = imageURL.Get("url")
-				}
-				if imageURL.Type != gjson.String || strings.TrimSpace(imageURL.String()) == "" {
-					return "", nil, invalidChatWebImageRequest(chatWebImageInvalidImageURLMsg)
-				}
-				images = append(images, strings.TrimSpace(imageURL.String()))
-			}
-		}
-		return strings.Join(texts, "\n"), images, nil
+		return item.Get("role").String() == "user" && (itemType == "" || itemType == "message")
 	}
-	return "", nil, nil
+	return lastUserTurn(input, isUser, []string{"input_text", "text"}, "input_image")
 }
 
 // webImageReferenceFetcher downloads http(s) reference images while refusing to connect to

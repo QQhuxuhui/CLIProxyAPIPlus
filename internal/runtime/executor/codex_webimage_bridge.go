@@ -39,7 +39,7 @@ func isCodexWebImageRequest(opts cliproxyexecutor.Options) bool {
 	if !strings.EqualFold(strings.TrimSpace(opts.SourceFormat.String()), webimage.SourceFormat) {
 		return false
 	}
-	path := strings.TrimSpace(helps.PayloadRequestPath(opts))
+	path := strings.TrimSpace(helps.PayloadImagesRequestPath(opts))
 	return path == codexImagesGenerationsPath || strings.HasSuffix(path, codexImagesGenerationsPath) || path == codexImagesEditsPath || strings.HasSuffix(path, codexImagesEditsPath)
 }
 
@@ -278,7 +278,7 @@ func codexRequireSingleWebImageResult(results []webimage.ImageResult, meta *webi
 }
 
 func isCodexWebImageEditRequest(opts cliproxyexecutor.Options) bool {
-	path := strings.TrimSpace(helps.PayloadRequestPath(opts))
+	path := strings.TrimSpace(helps.PayloadImagesRequestPath(opts))
 	return path == codexImagesEditsPath || strings.HasSuffix(path, codexImagesEditsPath)
 }
 

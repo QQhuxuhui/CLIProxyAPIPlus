@@ -19,6 +19,12 @@ const RequestProvidersMetadataKey = "request_providers"
 // It is optional and may be absent for non-HTTP executions.
 const RequestPathMetadataKey = "request_path"
 
+// ImagesRequestPathMetadataKey stores the Images API path ("/v1/images/generations" or
+// "/v1/images/edits") that a non-Images entry point, such as /v1/chat/completions serving a web
+// image model, asks the web image executor to handle. RequestPathMetadataKey keeps the inbound
+// path so interceptors and observers still see the real route.
+const ImagesRequestPathMetadataKey = "images_request_path"
+
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 

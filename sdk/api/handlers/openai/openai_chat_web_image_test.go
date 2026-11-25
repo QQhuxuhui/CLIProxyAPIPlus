@@ -199,8 +199,12 @@ func TestChatCompletionsWebImageNonStreamingReturnsMarkdownImage(t *testing.T) {
 	if got := gjson.GetBytes(executor.payload, "prompt").String(); got != "draw\na cat" {
 		t.Fatalf("prompt = %q", got)
 	}
-	if got := executor.opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]; got != imagesGenerationsPath {
-		t.Fatalf("executor request path = %v", got)
+	if got := executor.opts.Metadata[cliproxyexecutor.ImagesRequestPathMetadataKey]; got != imagesGenerationsPath {
+		t.Fatalf("executor images request path = %v", got)
+	}
+	// Interceptors and observers share this metadata, so the inbound path must stay the chat route.
+	if got := executor.opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]; got != "/v1/chat/completions" {
+		t.Fatalf("executor request path = %v, want /v1/chat/completions", got)
 	}
 	if executor.opts.SourceFormat.String() != webImagesHandlerType {
 		t.Fatalf("SourceFormat = %q", executor.opts.SourceFormat)
@@ -221,7 +225,7 @@ func TestChatCompletionsWebImageDataURLUsesEditsWithActualMIME(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
 	}
-	if got := executor.opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]; got != imagesEditsPath {
+	if got := executor.opts.Metadata[cliproxyexecutor.ImagesRequestPathMetadataKey]; got != imagesEditsPath {
 		t.Fatalf("executor request path = %v", got)
 	}
 	if got := gjson.GetBytes(executor.payload, "images.0.image_url").String(); got != dataURL("image/png", chatWebImagePNG) {
@@ -377,6 +381,7 @@ func TestChatCompletionsWebImageRejectsBeforeExecution(t *testing.T) {
 		{name: "image item without url", body: `{"model":"gpt-image-web","messages":[{"role":"user","content":[{"type":"text","text":"edit"},{"type":"image_url","image_url":{"url":"` + dataURL("image/png", chatWebImagePNG) + `"}},{"type":"image_url","image_url":{}}]}]}`, want: http.StatusBadRequest},
 		{name: "unsupported scheme", body: `{"model":"gpt-image-web","messages":[{"role":"user","content":[{"type":"text","text":"edit"},{"type":"image_url","image_url":{"url":"file:///etc/passwd"}}]}]}`, want: http.StatusBadRequest},
 		{name: "non image bytes", body: `{"model":"gpt-image-web","messages":[{"role":"user","content":[{"type":"text","text":"edit"},{"type":"image_url","image_url":{"url":"` + dataURL("image/png", []byte("plain text")) + `"}}]}]}`, want: http.StatusBadRequest},
+		{name: "too many reference images", body: `{"model":"gpt-image-web","messages":[{"role":"user","content":[{"type":"text","text":"edit"}` + strings.Repeat(`,{"type":"image_url","image_url":"https://example.com/a.png"}`, 17) + `]}]}`, want: http.StatusBadRequest},
 		{name: "n too large", body: `{"model":"gpt-image-web","n":11,"messages":[{"role":"user","content":"draw"}]}`, want: http.StatusBadRequest},
 		{name: "json output", body: `{"model":"gpt-image-web","response_format":{"type":"json_object"},"messages":[{"role":"user","content":"draw"}]}`, want: http.StatusBadRequest},
 		{name: "responses json schema output", body: `{"model":"gpt-image-web","input":"draw","text":{"format":{"type":"json_schema"}}}`, want: http.StatusBadRequest},

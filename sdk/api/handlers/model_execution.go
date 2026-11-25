@@ -22,8 +22,9 @@ type modelExecutionOptions struct {
 	SkipRouterPluginID      string
 	ForcedProvider          string
 	AuthSelectionModel      string
-	// ExecutorRequestPath, when set, replaces the request path in the metadata handed to the
-	// executor only. Model router plugins still observe the real inbound path.
+	// ExecutorRequestPath, when set, is the Images API path the web image executor should serve
+	// (ImagesRequestPathMetadataKey). The inbound request_path is left untouched for routers,
+	// interceptors and observers.
 	ExecutorRequestPath string
 }
 

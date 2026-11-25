@@ -957,10 +957,23 @@ func PayloadRequestedModel(opts cliproxyexecutor.Options, fallback string) strin
 }
 
 func PayloadRequestPath(opts cliproxyexecutor.Options) string {
+	return payloadMetadataString(opts, cliproxyexecutor.RequestPathMetadataKey)
+}
+
+// PayloadImagesRequestPath returns the Images API path the request should be served as: the
+// explicit ImagesRequestPathMetadataKey when present, otherwise the inbound request path.
+func PayloadImagesRequestPath(opts cliproxyexecutor.Options) string {
+	if path := payloadMetadataString(opts, cliproxyexecutor.ImagesRequestPathMetadataKey); path != "" {
+		return path
+	}
+	return PayloadRequestPath(opts)
+}
+
+func payloadMetadataString(opts cliproxyexecutor.Options, key string) string {
 	if len(opts.Metadata) == 0 {
 		return ""
 	}
-	raw, ok := opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]
+	raw, ok := opts.Metadata[key]
 	if !ok || raw == nil {
 		return ""
 	}

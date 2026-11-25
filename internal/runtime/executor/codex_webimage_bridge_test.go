@@ -481,6 +481,17 @@ func TestIsCodexWebImageRequestIsNarrow(t *testing.T) {
 	if !isCodexWebImageRequest(base) {
 		t.Fatal("expected web image edits request to match")
 	}
+	base.Metadata = map[string]any{
+		cliproxyexecutor.RequestPathMetadataKey:       "/v1/chat/completions",
+		cliproxyexecutor.ImagesRequestPathMetadataKey: codexImagesEditsPath,
+	}
+	if !isCodexWebImageRequest(base) || !isCodexWebImageEditRequest(base) {
+		t.Fatal("expected chat entry with an images request path to be served as a web image edit")
+	}
+	delete(base.Metadata, cliproxyexecutor.ImagesRequestPathMetadataKey)
+	if isCodexWebImageRequest(base) {
+		t.Fatal("chat request without an images request path matched the web image bridge")
+	}
 }
 
 func TestCodexAutoExecutorClosesWebImageSessionsWhenReplaced(t *testing.T) {

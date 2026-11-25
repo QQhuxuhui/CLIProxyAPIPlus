@@ -97,7 +97,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	if path := strings.TrimSpace(execOptions.ExecutorRequestPath); path != "" {
-		reqMeta[coreexecutor.RequestPathMetadataKey] = path
+		reqMeta[coreexecutor.ImagesRequestPathMetadataKey] = path
 	}
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
