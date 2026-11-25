@@ -133,12 +133,35 @@ type chatWebImageInterceptorHost struct {
 	beforeAuth    string
 	afterAuth     string
 	streamChunks  int
+	// replaceOpenAIResponse makes the response interceptor replace openai bodies.
+	replaceOpenAIResponse bool
+	responseFormats       []string
+	// markRequest makes the before-auth interceptor set X-Stage on the request.
+	markRequest bool
+	// events records request IDs in call order: before, response, chunk, complete.
+	events       []string
+	chunkHeaders []http.Header
+	chunkMeta    []map[string]any
+}
+
+func (h *chatWebImageInterceptorHost) record(event string) {
+	h.mu.Lock()
+	h.events = append(h.events, event)
+	h.mu.Unlock()
+}
+
+func (h *chatWebImageInterceptorHost) CompleteRequest(_ context.Context, completion pluginapi.RequestCompletion) {
+	h.record("complete:" + completion.RequestID + ":" + string(completion.Outcome))
 }
 
 func (h *chatWebImageInterceptorHost) InterceptRequestBeforeAuth(_ context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
 	h.mu.Lock()
 	h.beforeAuth = req.SourceFormat
 	h.mu.Unlock()
+	h.record("before:" + req.RequestID)
+	if h.markRequest {
+		return pluginapi.RequestInterceptResponse{Headers: http.Header{"X-Stage": {"before-auth"}}}
+	}
 	if h.denyOpenAI && req.SourceFormat == "openai" {
 		return pluginapi.RequestInterceptResponse{Terminate: true, StatusCode: http.StatusForbidden, ResponseBody: []byte(`{"error":"denied"}`)}
 	}
@@ -152,7 +175,14 @@ func (h *chatWebImageInterceptorHost) InterceptRequestAfterAuth(_ context.Contex
 	return pluginapi.RequestInterceptResponse{}
 }
 
-func (h *chatWebImageInterceptorHost) InterceptResponse(context.Context, pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+func (h *chatWebImageInterceptorHost) InterceptResponse(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+	h.mu.Lock()
+	h.responseFormats = append(h.responseFormats, req.SourceFormat)
+	h.mu.Unlock()
+	h.record("response:" + req.RequestID)
+	if h.replaceOpenAIResponse && req.SourceFormat == "openai" {
+		return pluginapi.ResponseInterceptResponse{Body: []byte(`{"replaced":true}`)}
+	}
 	return pluginapi.ResponseInterceptResponse{}
 }
 
@@ -162,7 +192,10 @@ func (h *chatWebImageInterceptorHost) InterceptStreamChunk(_ context.Context, re
 	}
 	h.mu.Lock()
 	h.streamChunks++
+	h.chunkHeaders = append(h.chunkHeaders, req.RequestHeaders.Clone())
+	h.chunkMeta = append(h.chunkMeta, req.Metadata)
 	h.mu.Unlock()
+	h.record("chunk:" + req.RequestID)
 	if h.dropDataImage && strings.Contains(string(req.Body), "data:image") {
 		return pluginapi.StreamChunkInterceptResponse{DropChunk: true}
 	}
@@ -347,6 +380,106 @@ func TestChatCompletionsWebImageStreamChunksPassInterceptors(t *testing.T) {
 	}
 	if host.streamChunks != 2 {
 		t.Fatalf("stream chunk interceptor calls = %d, want 2", host.streamChunks)
+	}
+}
+
+func TestChatCompletionsWebImageNonStreamPassesOpenAIResponseInterceptor(t *testing.T) {
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	host := &chatWebImageInterceptorHost{replaceOpenAIResponse: true}
+	handler.BaseAPIHandler.PluginHost = host
+
+	resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":"draw"}]}`)
+
+	if resp.Code != http.StatusOK || resp.Body.String() != `{"replaced":true}` {
+		t.Fatalf("status = %d, body = %q", resp.Code, resp.Body.String())
+	}
+	if len(host.responseFormats) != 1 || host.responseFormats[0] != "openai" {
+		t.Fatalf("response interceptor formats = %v, want [openai]", host.responseFormats)
+	}
+}
+
+// chatWebImageEventKinds checks that every recorded event shares one request ID and returns the
+// event kinds in order.
+func chatWebImageEventKinds(t *testing.T, events []string) []string {
+	t.Helper()
+	var id string
+	kinds := make([]string, 0, len(events))
+	for _, event := range events {
+		parts := strings.SplitN(event, ":", 3)
+		if id == "" {
+			id = parts[1]
+		} else if parts[1] != id {
+			t.Fatalf("request IDs differ across events: %v", events)
+		}
+		kind := parts[0]
+		if len(parts) == 3 {
+			kind += ":" + parts[2]
+		}
+		kinds = append(kinds, kind)
+	}
+	return kinds
+}
+
+func TestChatCompletionsWebImageStreamSharesLifecycle(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		executor := &chatWebImageTestExecutor{}
+		handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+		host := &chatWebImageInterceptorHost{}
+		handler.BaseAPIHandler.PluginHost = host
+
+		resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","stream":true,"messages":[{"role":"user","content":"draw"}]}`)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+		}
+		got := strings.Join(chatWebImageEventKinds(t, host.events), ",")
+		if want := "before,chunk,chunk,complete:" + string(pluginapi.RequestCompletionSucceeded); got != want {
+			t.Fatalf("events = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("wrong image count fails the lifecycle", func(t *testing.T) {
+		executor := &chatWebImageTestExecutor{respond: func([]byte) ([]byte, error) {
+			return []byte(`{"created":1,"data":[]}`), nil
+		}}
+		handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+		host := &chatWebImageInterceptorHost{}
+		handler.BaseAPIHandler.PluginHost = host
+
+		resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","stream":true,"messages":[{"role":"user","content":"draw"}]}`)
+
+		if resp.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+		}
+		kinds := chatWebImageEventKinds(t, host.events)
+		if last := kinds[len(kinds)-1]; last != "complete:"+string(pluginapi.RequestCompletionFailed) {
+			t.Fatalf("events = %v, want a failed completion last", kinds)
+		}
+	})
+}
+
+func TestChatCompletionsWebImageStreamChunksSeeExecutedRequest(t *testing.T) {
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	host := &chatWebImageInterceptorHost{markRequest: true}
+	handler.BaseAPIHandler.PluginHost = host
+
+	resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","stream":true,"messages":[{"role":"user","content":"draw"}]}`)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+	}
+	if len(host.chunkHeaders) == 0 {
+		t.Fatal("stream chunk interceptor was not called")
+	}
+	for index, headers := range host.chunkHeaders {
+		if headers.Get("X-Stage") != "before-auth" {
+			t.Fatalf("chunk %d request headers = %#v, want the request interceptor's header", index, headers)
+		}
+		if got := host.chunkMeta[index][cliproxyexecutor.RequestPathMetadataKey]; got != "/v1/chat/completions" {
+			t.Fatalf("chunk %d request_path = %v", index, got)
+		}
 	}
 }
 

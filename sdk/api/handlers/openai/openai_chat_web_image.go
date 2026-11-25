@@ -624,11 +624,11 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 		executorPath = imagesEditsPath
 	}
 	imageReq := buildChatWebImageImagesRequest(model, parsed, references)
+	finalizer := chatWebImageFinalizer(cliCtx, newChatCompletionID(), model, parsed, stream, originalJSON)
 	execute := func() chatWebImageResult {
-		body, headers, errMsg := h.ExecuteWebImageForPathWithAuthManager(cliCtx, webImagesHandlerType, model, imageReq, "", internalconfig.DefaultWebImageModel, executorPath, h.HandlerType())
+		body, headers, errMsg := h.ExecuteWebImageForPathWithAuthManager(cliCtx, webImagesHandlerType, model, imageReq, "", internalconfig.DefaultWebImageModel, executorPath, h.HandlerType(), finalizer)
 		return chatWebImageResult{body: body, headers: headers, errMsg: errMsg}
 	}
-	id := newChatCompletionID()
 
 	if !stream {
 		c.Header("Content-Type", "application/json")
@@ -640,33 +640,56 @@ func (h *OpenAIAPIHandler) chatCompletionsWebImage(c *gin.Context, originalJSON 
 			cliCancel(result.errMsg.Error)
 			return
 		}
-		contents, created, errImages := chatWebImageMarkdown(result.body, parsed.n)
-		if errImages != nil {
-			errImages.write(c)
-			cliCancel(nil)
-			return
-		}
 		handlers.WriteUpstreamHeaders(c.Writer.Header(), result.headers)
-		_, _ = c.Writer.Write(buildChatWebImageCompletion(id, model, created, contents, chatWebImagePromptTokens(cliCtx, parsed.prompt)))
+		_, _ = c.Writer.Write(result.body)
 		cliCancel(nil)
 		return
 	}
 
-	h.streamChatWebImage(c, cfg, cliCancel, execute, chatWebImageStream{id: id, model: model, n: parsed.n, includeUsage: parsed.includeUsage, prompt: parsed.prompt, originalRequest: originalJSON})
+	h.streamChatWebImage(c, cfg, cliCancel, execute)
 }
 
-type chatWebImageStream struct {
-	id              string
-	model           string
-	n               int
-	includeUsage    bool
-	prompt          string
-	originalRequest []byte
+// chatWebImageFinalizer converts the Images response into the chat completion (or its SSE
+// chunks) inside the execution, so response and stream chunk interceptors see the chat
+// response under the request's own lifecycle.
+func chatWebImageFinalizer(ctx context.Context, id, model string, parsed chatWebImageRequest, stream bool, originalJSON []byte) *handlers.ResponseFinalizer {
+	return &handlers.ResponseFinalizer{
+		Protocol:        "openai",
+		Stream:          stream,
+		OriginalRequest: originalJSON,
+		Build: func(imagesResponse []byte) ([][]byte, *interfaces.ErrorMessage) {
+			contents, created, errImages := chatWebImageMarkdown(imagesResponse, parsed.n)
+			if errImages != nil {
+				return nil, &interfaces.ErrorMessage{StatusCode: errImages.status, Error: errors.New(errImages.message)}
+			}
+			if !stream {
+				return [][]byte{buildChatWebImageCompletion(id, model, created, contents, chatWebImagePromptTokens(ctx, parsed.prompt))}, nil
+			}
+			chunks := make([][]byte, 0, 2*len(contents)+1)
+			for index, content := range contents {
+				choice := []byte(`{"delta":{"role":"assistant"},"finish_reason":null}`)
+				choice, _ = sjson.SetBytes(choice, "index", index)
+				choice, _ = sjson.SetBytes(choice, "delta.content", content)
+				chunks = append(chunks, buildChatWebImageChunk(id, model, created, choice))
+			}
+			for index := range contents {
+				choice := []byte(`{"delta":{},"finish_reason":"stop"}`)
+				choice, _ = sjson.SetBytes(choice, "index", index)
+				chunks = append(chunks, buildChatWebImageChunk(id, model, created, choice))
+			}
+			if parsed.includeUsage {
+				usageChunk := buildChatWebImageChunk(id, model, created, nil)
+				usageChunk, _ = sjson.SetRawBytes(usageChunk, "usage", chatWebImageUsage(chatWebImagePromptTokens(ctx, parsed.prompt)))
+				chunks = append(chunks, usageChunk)
+			}
+			return chunks, nil
+		},
+	}
 }
 
 // streamChatWebImage runs the generation while sending SSE keep-alives. Headers are committed
 // on the first write, so failures before any keep-alive still return a real status code.
-func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfig.SDKConfig, cliCancel handlers.APIHandlerCancelFunc, execute func() chatWebImageResult, meta chatWebImageStream) {
+func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfig.SDKConfig, cliCancel handlers.APIHandlerCancelFunc, execute func() chatWebImageResult) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		(&chatWebImageError{status: http.StatusInternalServerError, message: "Streaming not supported", errType: "server_error"}).write(c)
@@ -730,42 +753,9 @@ func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfi
 				cliCancel(result.errMsg.Error)
 				return
 			}
-			contents, created, errImages := chatWebImageMarkdown(result.body, meta.n)
-			if errImages != nil {
-				if !committed {
-					errImages.write(c)
-				} else {
-					writeTerminalError(errImages.status, errImages.message)
-				}
-				cliCancel(nil)
-				return
-			}
-			// The chunks are synthesized here, so run them through the stream chunk
-			// interceptors that executor streams get in ExecuteStreamWithAuthManager.
-			interceptor := h.NewSynthesizedStreamInterceptor(c.Request.Context(), h.HandlerType(), meta.model, meta.model, c.Request.Header, result.headers, meta.originalRequest, nil)
-			commit(interceptor.DownstreamHeaders(result.headers))
-			writeChunk := func(chunk []byte) {
-				if payload, keep := interceptor.Chunk(chunk); keep {
-					_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(payload))
-				}
-			}
-			for index, content := range contents {
-				choice := []byte(`{"delta":{"role":"assistant"},"finish_reason":null}`)
-				choice, _ = sjson.SetBytes(choice, "index", index)
-				choice, _ = sjson.SetBytes(choice, "delta.content", content)
-				writeChunk(buildChatWebImageChunk(meta.id, meta.model, created, choice))
-			}
-			for index := range contents {
-				choice := []byte(`{"delta":{},"finish_reason":"stop"}`)
-				choice, _ = sjson.SetBytes(choice, "index", index)
-				writeChunk(buildChatWebImageChunk(meta.id, meta.model, created, choice))
-			}
-			if meta.includeUsage {
-				usageChunk := buildChatWebImageChunk(meta.id, meta.model, created, nil)
-				usageChunk, _ = sjson.SetRawBytes(usageChunk, "usage", chatWebImageUsage(chatWebImagePromptTokens(c.Request.Context(), meta.prompt)))
-				writeChunk(usageChunk)
-			}
-			_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+			// The body is already SSE framed and terminated by [DONE].
+			commit(result.headers)
+			_, _ = c.Writer.Write(result.body)
 			flusher.Flush()
 			cliCancel(nil)
 			return

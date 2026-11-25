@@ -57,19 +57,23 @@ func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handle
 // ExecuteWebImageWithAuthManager executes a web image request while preserving
 // the standard OpenAI Images response protocol for downstream interceptors.
 func (h *BaseAPIHandler) ExecuteWebImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	return h.ExecuteWebImageForPathWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, authSelectionModel, "", "")
+	return h.ExecuteWebImageForPathWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, authSelectionModel, "", "", nil)
 }
 
 // ExecuteWebImageForPathWithAuthManager executes a web image request on behalf of an entry point
 // whose inbound path is not an Images API path. executorRequestPath is the Images API path the
 // executor should serve; clientSourceFormat is the client protocol plugins should see. Empty
 // values keep the inbound path and the entry protocol.
-func (h *BaseAPIHandler) ExecuteWebImageForPathWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel, executorRequestPath, clientSourceFormat string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+//
+// finalizer, when non-nil, converts the Images response into the client protocol's response
+// inside the execution; interceptors and the lifecycle then see that response.
+func (h *BaseAPIHandler) ExecuteWebImageForPathWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt, authSelectionModel, executorRequestPath, clientSourceFormat string, finalizer *ResponseFinalizer) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	return h.executeWithAuthManagerFormats(ctx, handlerType, "openai-image", modelName, rawJSON, alt, true, modelExecutionOptions{
 		ForcedProvider:      "codex",
 		AuthSelectionModel:  authSelectionModel,
 		ExecutorRequestPath: executorRequestPath,
 		ClientSourceFormat:  clientSourceFormat,
+		ResponseFinalizer:   finalizer,
 	})
 }
 
@@ -154,6 +158,15 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	ctx = enrichContextWithSessionHierarchy(ctx, executedOpts.Headers, executedReq.Payload, executedOpts.Metadata)
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
+	if fin := execOptions.ResponseFinalizer; fin != nil {
+		body, finalHeaders, errFinalize := h.finalizeResponse(ctx, lifecycle.requestID(), fin, normalizedModel, originalRequestedModel, executedOpts, executedReq.Payload, rawResponseHeaders, responseHeaders, resp.Payload, execOptions.SkipInterceptorPluginID)
+		if errFinalize != nil {
+			lifecycle.completeError(ctx, errFinalize)
+			return nil, nil, errFinalize
+		}
+		lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
+		return body, finalHeaders, nil
+	}
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
@@ -275,6 +288,15 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	}
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
+	if fin := execOptions.ResponseFinalizer; fin != nil {
+		body, finalHeaders, errFinalize := h.finalizeResponse(execCtx, lifecycle.requestID(), fin, modelName, originalRequestedModel, opts, req.Payload, rawResponseHeaders, responseHeaders, resp.Payload, execOptions.SkipInterceptorPluginID)
+		if errFinalize != nil {
+			lifecycle.completeError(execCtx, errFinalize)
+			return nil, nil, errFinalize
+		}
+		lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
+		return body, finalHeaders, nil
+	}
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
