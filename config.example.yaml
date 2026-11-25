@@ -545,6 +545,13 @@ codex:
   #   probe:
   #     percent-per-minute: 1.7   # share of schedulable accounts probed each minute (1-10); 1.7 = one round per hour
   #     model: "gpt-6-luna"
+  # Send a share of HTTP-downstream streaming /v1/responses requests on Codex OAuth credentials to
+  # the upstream over websocket. The HTTP/2 SSE upstream resets a stream after 15 minutes; the
+  # websocket transport does not. Downstream still receives HTTP SSE; websocket-only codex.* and
+  # responsesapi.* events are dropped. percent is chosen by a stable hash of the request ID.
+  # http-websocket-bridge:
+  #   enable: false
+  #   percent: 0
   # Outbound proxy pool for HTTP/SSE /responses attempts. Credentials with their own proxy_url
   # never use it. Retries after an upstream overload/5xx/transport error go through the pool
   # (control-percent of them stay direct as the control group); with shift enabled, a share of

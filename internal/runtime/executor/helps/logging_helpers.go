@@ -407,6 +407,19 @@ func AppendCodexAPIWebsocketResponse(ctx context.Context, cfg *config.Config, pa
 	AppendAPIWebsocketResponse(ctx, cfg, payload)
 }
 
+// RecordCodexWebsocketResponseFrame records one upstream websocket frame. Quota headers come
+// from the raw frame, the log body from the identity-replaced copy. A request bridged from an
+// HTTP downstream logs to the HTTP response log like an SSE line, because an HTTP request has no
+// file-backed websocket timeline and appending there would copy the whole history per frame.
+func RecordCodexWebsocketResponseFrame(ctx context.Context, cfg *config.Config, httpLog bool, raw, display []byte) {
+	logging.MergeResponseHeaders(ctx, ParseCodexQuotaEventHeaders(raw))
+	if httpLog {
+		AppendAPIResponseChunk(ctx, cfg, display)
+		return
+	}
+	AppendAPIWebsocketResponse(ctx, cfg, display)
+}
+
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
 func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage string, err error) {
 	if !requestLogCaptureEnabled(cfg) || err == nil {

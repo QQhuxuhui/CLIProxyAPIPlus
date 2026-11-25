@@ -29,6 +29,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	bridge := isCodexWebsocketBridge(ctx)
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
@@ -62,7 +63,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
-	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
+	if bridge {
+		body = prepareCodexWebsocketBridgeBody(body, auth, opts.Headers)
+	} else {
+		body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
+	}
 	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
@@ -96,6 +101,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	authType, authValue = auth.AccountInfo()
 
 	executionSessionID := executionSessionIDFromOptions(opts)
+	if bridge {
+		// A bridged HTTP request never reuses or continues an upstream websocket session.
+		executionSessionID = ""
+	}
 	var sess *codexWebsocketSession
 	isEphemeralSession := false
 	if executionSessionID != "" {
@@ -151,13 +160,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
-			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
+			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), applyCodexIdentityConfuseResponsePayload(bodyErr, identityState))
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
 			unlockStreamSession()
 			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
 				if errBudget := cliproxyauth.CheckCodexRetryAdmission(ctx); errBudget != nil {
-					return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+					return nil, confuseCodexStatusErrMessage(statusErr{code: respHS.StatusCode, msg: string(bodyErr)}, identityState)
 				}
 				cliproxyexecutor.ObserveUpstreamRequestRetry(ctx)
 
@@ -166,23 +175,44 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			}
-			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
+			return nil, confuseCodexStatusErrMessage(statusErr{code: respHS.StatusCode, msg: string(bodyErr)}, identityState)
 		}
 		if cliproxyexecutor.UpstreamAttempted(dialCtx) {
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
 			unlockStreamSession()
-			return nil, newCodexStatusErrWithHeaders(respHS.StatusCode, bodyErr, respHS.Header, e.modelLevelCooling())
+			return nil, confuseCodexStatusErrMessage(newCodexStatusErrWithHeaders(respHS.StatusCode, bodyErr, respHS.Header, e.modelLevelCooling()), identityState)
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		unlockStreamSession()
 		return nil, errDial
 	}
-	if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
-		unlockStreamSession()
-		closeWebsocketAfterBindFailure(sess, conn, closer)
-		return nil, errBind
+	// A bridged request keeps the Home selection with the conductor, which ends it after the
+	// stream has been forwarded. Binding it to the one-shot session would end the selection, and
+	// cancel the attempt context, when the session closes on the terminal frame, before the
+	// conductor has delivered that frame.
+	if !bridge {
+		if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
+			unlockStreamSession()
+			closeWebsocketAfterBindFailure(sess, conn, closer)
+			return nil, errBind
+		}
+	}
+	// Without a bound lifecycle nothing would interrupt a blocked write once the downstream
+	// goes away, so a bridged request closes its connection when the context is cancelled.
+	stopBridgeClose := func() bool { return false }
+	bridgeCloseHandedOff := false
+	if bridge && closer != nil {
+		stopBridgeClose = context.AfterFunc(ctx, func() { _ = closer.Close() })
+		defer func() {
+			if !bridgeCloseHandedOff {
+				stopBridgeClose()
+			}
+		}()
+	}
+	if bridge {
+		upstreamHeaders = nil
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
@@ -407,13 +437,28 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				continue
 			}
+			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
-			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
+			// Every internal decision (event type, errors, cooldown, quota, usage) reads the raw
+			// upstream frame: identity replacement could otherwise turn a client value such as
+			// "completed" or "free" into a different protocol meaning. The replaced copy is what the
+			// HTTP path shows in its response log and error bodies, so only those use it. Downstream
+			// output is unchanged because the expose step maps confused values back on its own.
+			displayPayload := applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			helps.RecordCodexWebsocketResponseFrame(ctx, e.cfg, bridge, payload, displayPayload)
+			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, displayPayload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
+			if bridgeDrop {
+				// Websocket-only frames never reach an HTTP downstream. They count against the
+				// bootstrap budgets like an empty frame but do not release the buffered stream.
+				if !windowOpen {
+					break
+				}
+				continue
+			}
 
-			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketStreamError(bridge, payload, e.modelLevelCooling()); ok {
+				wsErr = confuseCodexWebsocketErrorMessage(wsErr, identityState)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 					sess.clearActive(conn, readCh)
@@ -437,6 +482,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, wsErr
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+				streamErr = confuseCodexStatusErrMessage(streamErr, identityState)
 				// A transient capacity rejection is retried on another credential, so the
 				// downstream websocket session must survive this upstream teardown. Notifying
 				// the disconnect here would close the client connection before the retry can
@@ -475,7 +521,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					// status the upstream refused to put on the wire.
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
 					cliproxyexecutor.ObserveCodexBootstrapRelease("overload")
-					bootstrapErr := newCodexBootstrapOverloadErr(terminalBody)
+					bootstrapErr := confuseCodexStatusErrMessage(newCodexBootstrapOverloadErr(terminalBody), identityState)
 					bootstrapErr.credentialScoped = streamErr.IsCredentialScoped()
 					return nil, bootstrapErr
 				}
@@ -519,6 +565,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
+				if bridge {
+					publishCodexImageToolUsage(ctx, reporter, clientBody, completedPayload)
+				}
 			}
 
 			var currentChunks [][]byte
@@ -537,6 +586,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
 				line := encodeCodexWebsocketAsSSE(clientPayload)
 				currentChunks = helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
+				if bridge {
+					currentChunks = helps.FrameCodexWebsocketBridgeChunks(currentChunks)
+				}
 			}
 
 			// !isTerminalEvent is redundant against the closed allow-list, which admits no terminal
@@ -606,10 +658,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return &cliproxyexecutor.StreamResult{Headers: upstreamHeaders, Chunks: out}, nil
 	}
 
+	bridgeCloseHandedOff = true
 	go func() {
 		terminateReason := "completed"
 		var terminateErr error
 
+		defer stopBridgeClose()
 		defer close(out)
 		defer func() {
 			if sess != nil {
@@ -682,13 +736,23 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if len(payload) == 0 {
 				continue
 			}
+			bridgeDrop := bridge && helps.IsCodexWebsocketBridgeDroppedEvent(payload)
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
-			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
+			// Every internal decision (event type, errors, cooldown, quota, usage) reads the raw
+			// upstream frame: identity replacement could otherwise turn a client value such as
+			// "completed" or "free" into a different protocol meaning. The replaced copy is what the
+			// HTTP path shows in its response log and error bodies, so only those use it. Downstream
+			// output is unchanged because the expose step maps confused values back on its own.
+			displayPayload := applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			helps.RecordCodexWebsocketResponseFrame(ctx, e.cfg, bridge, payload, displayPayload)
+			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, displayPayload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
+			if bridgeDrop {
+				continue
+			}
 
-			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
+			if wsErr, ok := parseCodexWebsocketStreamError(bridge, payload, e.modelLevelCooling()); ok {
+				wsErr = confuseCodexWebsocketErrorMessage(wsErr, identityState)
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				if sess != nil {
@@ -707,6 +771,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
+				streamErr = confuseCodexStatusErrMessage(streamErr, identityState)
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				if sess != nil {
@@ -761,6 +826,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
+				if bridge {
+					publishCodexImageToolUsage(ctx, reporter, clientBody, completedPayload)
+				}
 			}
 
 			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
@@ -788,6 +856,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			clientPayload = applyCodexIdentityExposeResponsePayload(payload, identityState)
 			line := encodeCodexWebsocketAsSSE(clientPayload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
+			if bridge {
+				chunks = helps.FrameCodexWebsocketBridgeChunks(chunks)
+			}
 			for i := range chunks {
 				if !send(cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
 					terminateReason = "context_done"

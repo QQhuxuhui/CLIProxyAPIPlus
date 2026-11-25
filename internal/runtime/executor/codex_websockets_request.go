@@ -110,8 +110,17 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") {
 		sessionFallback = uuid.NewString()
 	}
-	ensureCodexWebsocketSessionHeader(headers, ginHeaders, sessionFallback)
-	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking {
+	sessionSource := ginHeaders
+	if isCodexWebsocketBridge(ctx) {
+		// A bridged HTTP request forwards only the client header the HTTP path forwards
+		// (Session-Id); other spellings such as session_id never reach the upstream there.
+		sessionSource = http.Header{}
+		if value := strings.TrimSpace(ginHeaders.Get("Session-Id")); value != "" {
+			sessionSource.Set("Session-Id", value)
+		}
+	}
+	ensureCodexWebsocketSessionHeader(headers, sessionSource, sessionFallback)
+	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking && !isCodexWebsocketBridge(ctx) {
 		deleteHeaderCaseInsensitive(headers, "session_id")
 		deleteHeaderCaseInsensitive(headers, "conversation_id")
 		for key, values := range ginHeaders {

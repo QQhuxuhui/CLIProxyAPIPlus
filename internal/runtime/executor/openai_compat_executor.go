@@ -1023,6 +1023,19 @@ type statusErr struct {
 	retryAfter         *time.Duration
 	quota              *cliproxyexecutor.QuotaDetail
 	credentialScoped   bool
+	// classifyMsg keeps the upstream text when msg was rewritten for display (identity
+	// replacement), so credential and retry decisions are not driven by client-chosen values.
+	classifyMsg string
+}
+
+// ClassificationError returns the error as the upstream sent it when its display text was
+// rewritten, or nil when the display text is the upstream text.
+func (e statusErr) ClassificationError() error {
+	if e.classifyMsg == "" {
+		return nil
+	}
+	e.msg, e.classifyMsg = e.classifyMsg, ""
+	return e
 }
 
 // CodexFailureInfo preserves the upstream failure before protocol normalization.

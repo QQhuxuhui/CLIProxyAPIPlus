@@ -9,10 +9,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/webimage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
@@ -32,11 +37,12 @@ func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
 	}
 }
 
-// CodexAutoExecutor routes Codex requests to the websocket transport only when:
-//  1. The downstream transport is websocket, and
-//  2. The selected auth enables websockets.
+// CodexAutoExecutor routes Codex requests to the websocket transport when:
+//  1. The downstream transport is websocket and the selected auth enables websockets, or
+//  2. codex.http-websocket-bridge selects an HTTP-downstream streaming /responses request
+//     (see shouldBridgeCodexStreamToWebsocket).
 //
-// For non-websocket downstream requests, it always uses the legacy HTTP implementation.
+// Every other request uses the HTTP implementation.
 type CodexAutoExecutor struct {
 	httpExec     *CodexExecutor
 	wsExec       *CodexWebsocketsExecutor
@@ -95,6 +101,9 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	}
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+	}
+	if shouldBridgeCodexStreamToWebsocket(ctx, e.httpExec.cfg, auth, opts) {
+		return e.wsExec.ExecuteStream(withCodexWebsocketBridge(ctx), auth, req, opts)
 	}
 	return e.httpExec.ExecuteStream(ctx, auth, req, opts)
 }
@@ -164,4 +173,92 @@ func codexWebsocketsEnabled(auth *cliproxyauth.Auth) bool {
 	default:
 	}
 	return false
+}
+
+type codexWebsocketBridgeContextKey struct{}
+
+// withCodexWebsocketBridge marks a context whose HTTP-downstream request is served over the
+// upstream websocket transport by the HTTP websocket bridge.
+func withCodexWebsocketBridge(ctx context.Context) context.Context {
+	return context.WithValue(ctx, codexWebsocketBridgeContextKey{}, true)
+}
+
+func isCodexWebsocketBridge(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	bridged, _ := ctx.Value(codexWebsocketBridgeContextKey{}).(bool)
+	return bridged
+}
+
+// shouldBridgeCodexStreamToWebsocket reports whether an HTTP-downstream streaming request should
+// use the upstream websocket transport, which has no 15-minute stream cap. Only plain
+// /responses traffic on Codex OAuth credentials is bridged; compact, image, Grok client, API
+// key and explicitly routed (proxy or injected RoundTripper) requests keep the HTTP transport.
+func shouldBridgeCodexStreamToWebsocket(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
+	if cfg == nil || !cfg.Codex.HTTPWebsocketBridge.Enable || cfg.Codex.HTTPWebsocketBridge.Percent <= 0 {
+		return false
+	}
+	if cliproxyexecutor.DownstreamWebsocket(ctx) {
+		return false
+	}
+	if opts.SourceFormat != sdktranslator.FormatOpenAIResponse || cliproxyexecutor.ResponseFormatOrSource(opts) != sdktranslator.FormatOpenAIResponse {
+		return false
+	}
+	if opts.Alt != "" {
+		return false
+	}
+	if isCodexOpenAIImageRequest(opts) || codexIsImagesEndpointPath(helps.PayloadRequestPath(opts)) {
+		return false
+	}
+	if grokbuild.IsGrokClientContext(ctx, opts.Headers) {
+		return false
+	}
+	if auth == nil || codexAuthUsesAPIKey(auth) {
+		return false
+	}
+	// The websocket dialer does not honour every outbound route the HTTP client does (HTTPS
+	// proxies, context-aware SOCKS5 dialing, an SDK-injected RoundTripper), so a request with an
+	// explicit route keeps the HTTP transport.
+	if helps.ResolveProxyURL(cfg, auth) != "" {
+		return false
+	}
+	if roundTripper, _ := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); roundTripper != nil {
+		return false
+	}
+	if token, _ := codexCreds(auth); strings.TrimSpace(token) == "" {
+		return false
+	}
+	return helps.CodexWebsocketBridgeBucketHit(logging.GetRequestID(ctx), cfg.Codex.HTTPWebsocketBridge.Percent)
+}
+
+// prepareCodexWebsocketBridgeBody applies the request normalization of the HTTP/SSE path to a
+// bridged websocket request, in place of the websocket-only parallel_tool_calls handling.
+func prepareCodexWebsocketBridgeBody(body []byte, auth *cliproxyauth.Auth, headers http.Header) []byte {
+	body = applyCodexAuthServiceTier(body, auth)
+	body = helps.CleanCodexBridgeResponsesBody(body)
+	return normalizeCodexParallelToolCalls(body, headers)
+}
+
+// parseCodexWebsocketStreamError parses an upstream websocket error frame. On the bridge the
+// result follows the HTTP error contract the HTTP downstream already relies on (status and body
+// normalization, account-wide 429 cooldown from Retry-After) and carries no upstream headers,
+// so nothing reaches the client through passthrough headers. The websocket connection limit
+// has no HTTP counterpart and keeps its websocket classification.
+func parseCodexWebsocketStreamError(bridge bool, payload []byte, modelLevelCooling bool) (error, bool) {
+	wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, modelLevelCooling)
+	if !ok || !bridge {
+		return wsErr, ok
+	}
+	if isCodexWebsocketConnectionLimitError(payload) {
+		if withHeaders, isWithHeaders := wsErr.(statusErrWithHeaders); isWithHeaders {
+			return withHeaders.statusErr, true
+		}
+		return wsErr, true
+	}
+	status := int(gjson.GetBytes(payload, "status").Int())
+	if status == 0 {
+		status = int(gjson.GetBytes(payload, "status_code").Int())
+	}
+	return newCodexStatusErrWithHeaders(status, buildCodexWebsocketErrorPayload(payload, status), parseCodexWebsocketErrorHeaders(payload), modelLevelCooling), true
 }

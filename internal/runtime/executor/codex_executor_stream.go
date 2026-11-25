@@ -131,13 +131,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			return nil, readErr
 		}
-		data = applyCodexIdentityConfuseResponsePayload(fastSessionState.restoreResponsePayload(data), identityState)
+		rawData := fastSessionState.restoreResponsePayload(data)
+		data = applyCodexIdentityConfuseResponsePayload(rawData, identityState)
 		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, data); errClearReplay != nil {
 			return nil, errClearReplay
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrWithHeaders(httpResp.StatusCode, data, httpResp.Header, e.modelLevelCooling())
+		err = confuseCodexStatusErrMessage(newCodexStatusErrWithHeaders(httpResp.StatusCode, rawData, httpResp.Header, e.modelLevelCooling()), identityState)
 		return nil, err
 	}
 
