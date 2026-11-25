@@ -45,11 +45,21 @@ type chatWebImageTestExecutor struct {
 	payload []byte
 	respond func(payload []byte) ([]byte, error)
 	release chan struct{}
+	// waitForCancel makes Execute block until its context is cancelled.
+	waitForCancel bool
+	started       chan struct{}
+	finished      atomic.Bool
 }
 
 func (e *chatWebImageTestExecutor) Identifier() string { return "codex" }
 
-func (e *chatWebImageTestExecutor) Execute(_ context.Context, _ *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *chatWebImageTestExecutor) Execute(ctx context.Context, _ *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if e.waitForCancel {
+		close(e.started)
+		<-ctx.Done()
+		e.finished.Store(true)
+		return cliproxyexecutor.Response{}, ctx.Err()
+	}
 	e.mu.Lock()
 	e.calls++
 	e.opts = opts
@@ -494,6 +504,44 @@ func TestChatCompletionsWebImageStreaming(t *testing.T) {
 			t.Fatalf("body = %q", body)
 		}
 	})
+}
+
+func TestChatCompletionsWebImageStreamDisconnectWaitsForExecution(t *testing.T) {
+	executor := &chatWebImageTestExecutor{waitForCancel: true, started: make(chan struct{})}
+	handler := newChatWebImageTestHandler(t, defaultChatWebImageConfig(), executor)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/v1/chat/completions", handler.ChatCompletions)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-image-web","stream":true,"messages":[{"role":"user","content":"draw"}]}`)).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+	<-executor.started
+	cancel()
+	<-done
+	if !executor.finished.Load() {
+		t.Fatal("handler returned before the execution goroutine finished")
+	}
+}
+
+func TestChatCompletionsWebImageInlineReferenceOverBudget(t *testing.T) {
+	cfg := defaultChatWebImageConfig()
+	cfg.WebImageMaxBytes = int64(len(chatWebImagePNG) - 1)
+	executor := &chatWebImageTestExecutor{}
+	handler := newChatWebImageTestHandler(t, cfg, executor)
+	for _, src := range []string{
+		dataURL("image/png", chatWebImagePNG),
+		"data:image/png;base64," + base64.RawStdEncoding.EncodeToString(chatWebImagePNG),
+	} {
+		resp := performChatWebImageRequest(handler, `{"model":"gpt-image-web","messages":[{"role":"user","content":[
+			{"type":"text","text":"edit"},{"type":"image_url","image_url":{"url":"`+src+`"}}]}]}`)
+		if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "byte limit") || executor.callCount() != 0 {
+			t.Fatalf("status = %d calls = %d: %s", resp.Code, executor.callCount(), resp.Body.String())
+		}
+	}
 }
 
 func TestIsPublicWebImageReferenceAddr(t *testing.T) {

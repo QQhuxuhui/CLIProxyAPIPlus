@@ -353,25 +353,27 @@ func normalizeChatWebImageReferences(ctx context.Context, cfg *internalconfig.SD
 	normalized := make([]string, 0, len(imageURLs))
 	for index, imageURL := range imageURLs {
 		var data []byte
-		lower := strings.ToLower(imageURL)
 		switch {
-		case strings.HasPrefix(lower, "data:"):
+		case hasPrefixFold(imageURL, "data:"):
 			header, encoded, ok := strings.Cut(imageURL, ",")
 			if !ok || !strings.Contains(strings.ToLower(header), ";base64") {
 				return nil, invalidChatWebImageRequest("web image reference image data is invalid"), nil
 			}
-			decoded, errDecode := base64.StdEncoding.DecodeString(encoded)
-			if errDecode != nil {
-				decoded, errDecode = base64.RawStdEncoding.DecodeString(strings.TrimRight(encoded, "="))
+			// Decode as a stream bounded by the remaining budget, like the executor's
+			// decodeCodexWebImageBase64, so oversized inline images are never fully allocated.
+			encoding := base64.RawStdEncoding
+			if strings.HasSuffix(encoded, "=") {
+				encoding = base64.StdEncoding
+			}
+			decoded, errDecode := io.ReadAll(io.LimitReader(base64.NewDecoder(encoding, strings.NewReader(encoded)), budget+1))
+			if int64(len(decoded)) > budget {
+				return nil, tooLarge, nil
 			}
 			if errDecode != nil || len(decoded) == 0 {
 				return nil, invalidChatWebImageRequest("web image reference image data is invalid"), nil
 			}
-			if int64(len(decoded)) > budget {
-				return nil, tooLarge, nil
-			}
 			data = decoded
-		case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
+		case hasPrefixFold(imageURL, "http://") || hasPrefixFold(imageURL, "https://"):
 			if release == nil {
 				releaseSlot, errAcquire := chatWebImageDownloadLimiter.acquire(ctx, capacity)
 				if errAcquire != nil {
@@ -404,6 +406,10 @@ func normalizeChatWebImageReferences(ctx context.Context, cfg *internalconfig.SD
 		normalized = append(normalized, "data:"+mimeType+";base64,"+base64.StdEncoding.EncodeToString(data))
 	}
 	return normalized, nil, nil
+}
+
+func hasPrefixFold(value, prefix string) bool {
+	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
 }
 
 // buildChatWebImageImagesRequest builds the internal Images API body for the web executor.
@@ -661,6 +667,9 @@ func (h *OpenAIAPIHandler) streamChatWebImage(c *gin.Context, cfg *internalconfi
 		select {
 		case <-c.Request.Context().Done():
 			cliCancel(c.Request.Context().Err())
+			// The execution goroutine reads the gin context through cliCtx; wait for it to
+			// unwind so gin does not recycle the context while it is still in use.
+			<-results
 			return
 		case <-ticks:
 			commit(nil)
